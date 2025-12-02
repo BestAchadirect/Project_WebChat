@@ -1,0 +1,20 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+asyncpg
+psycopg2-binary
+pydantic
+pydantic-settings
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+openai
+pgvector
+httpx
+alembic
+
+# File parsing
+pdfplumber
+python-docx
+PyPDF2
+

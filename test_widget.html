@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GenAI Chat Widget Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f3f4f6;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #111827;
+        }
+
+        p {
+            color: #4b5563;
+            line-height: 1.6;
+        }
+
+        .code-block {
+            background: #1f2937;
+            color: #e5e7eb;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            overflow-x: auto;
+            margin: 20px 0;
+        }
+    </style>
+
+    <!-- Widget Styles -->
+    <link rel="stylesheet" href="./frontend-widget/dist/genai-chat-widget.css">
+</head>
+
+<body>
+    <div class="container">
+        <h1>GenAI Chat Widget Test Page</h1>
+        <p>This page demonstrates the embedded chat widget. Look for the chat bubble in the bottom right corner!</p>
+
+        <h2>Integration Code</h2>
+        <p>To add this widget to a Magento store, simply include the following code:</p>
+
+        <div class="code-block">
+            &lt;link rel="stylesheet" href="https://cdn.your-saas.com/widget.css"&gt;
+            &lt;script
+            src="https://cdn.your-saas.com/widget.js"
+            data-merchant-id="YOUR_MERCHANT_ID"
+            data-primary-color="#4F46E5"
+            data-title="Customer Support"
+            &gt;&lt;/script&gt;
+        </div>
+
+        <p>Try asking questions about the documents you uploaded to the admin dashboard.</p>
+    </div>
+
+    <!-- Widget Script -->
+    <script src="./frontend-widget/dist/widget.js" data-merchant-id="test-merchant-123" data-primary-color="#4F46E5"
+        data-title="GenAI Assistant"></script>
+</body>
+
+</html>
