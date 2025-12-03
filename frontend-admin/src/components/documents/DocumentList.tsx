@@ -4,6 +4,8 @@ import { documentsApi } from '../../api/documents';
 import { useToast } from '../../hooks/useToast';
 import { Button } from '../common/Button';
 
+import { DocumentStatus } from './DocumentStatus';
+
 interface DocumentListProps {
     documents: Document[];
     onDeleteSuccess: () => void;
@@ -85,21 +87,18 @@ export const DocumentList: React.FC<DocumentListProps> = ({
                                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                                     {doc.filename}
                                 </td>
+
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                    {doc.fileType.toUpperCase()}
+                                    {(doc.content_type || 'unknown').toUpperCase()}
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                    {(doc.fileSize / 1024 / 1024).toFixed(2)} MB
+                                    {doc.file_size ? (doc.file_size / 1024 / 1024).toFixed(2) : '0.00'} MB
                                 </td>
-                                import {DocumentStatus} from './DocumentStatus';
-
-                                // ... (inside DocumentList component)
-
                                 <td className="px-6 py-4 whitespace-nowrap">
                                     <DocumentStatus document={doc} />
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                    {new Date(doc.uploadedAt).toLocaleDateString()}
+                                    {new Date(doc.created_at).toLocaleDateString()}
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                                     <Button

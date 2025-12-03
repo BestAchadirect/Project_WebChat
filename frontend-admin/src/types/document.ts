@@ -1,11 +1,11 @@
 export interface Document {
     id: string;
     filename: string;
-    fileType: 'pdf' | 'doc' | 'docx' | 'csv';
-    fileSize: number;
-    uploadedAt: string;
+    content_type: string;
+    file_size: number;
+    created_at: string;
     status: 'pending' | 'processing' | 'completed' | 'failed';
-    errorMessage?: string;
+    error_message?: string;
 }
 
 export interface DocumentUploadResponse {

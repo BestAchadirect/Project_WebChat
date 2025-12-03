@@ -138,11 +138,9 @@ async def upload_document(
         db.add(doc)
         await db.commit()
         await db.refresh(doc)
-        print(f"✅ Document record created: {doc.id}")
         
         # Read file content to pass to background task
         content = await file.read()
-        print(f"📦 File content read: {len(content)} bytes")
         
         background_tasks.add_task(
             process_document_task, 
@@ -150,11 +148,9 @@ async def upload_document(
             content, 
             file.content_type
         )
-        print("🚀 Background task scheduled")
         
         return {"id": doc.id, "status": "processing"}
     except Exception as e:
-        print(f"❌ Error in upload_document: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

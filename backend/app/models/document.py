@@ -20,6 +20,7 @@ class Document(Base):
     tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
     
     filename = Column(String(512), nullable=False)
+    content_type = Column(String(128), nullable=True)
     file_path = Column(String(1024), nullable=True)  # S3 path or local path
     content_hash = Column(String(64), nullable=True)  # SHA256 hash
     file_size = Column(Integer, nullable=True)  # in bytes

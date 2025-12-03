@@ -4,6 +4,7 @@ from app.api.v1.api import api_router
 from app.db.session import engine
 from app.db.base import Base
 from sqlalchemy import text
+import app.models # Ensure models are registered
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -39,7 +40,7 @@ app = FastAPI(title="GenAI SaaS API", lifespan=lifespan)
 if settings.ALLOWED_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[str(origin).strip() for origin in settings.ALLOWED_ORIGINS.split(",")],
+        allow_origins=[str(origin).strip() for origin in settings.ALLOWED_ORIGINS.split(",")] + ["http://localhost:8080"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
