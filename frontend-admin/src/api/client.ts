@@ -28,11 +28,8 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
     (response) => response,
     (error: AxiosError) => {
-        if (error.response?.status === 401) {
-            // Unauthorized - clear token and redirect to login
-            localStorage.removeItem('authToken');
-            window.location.href = '/login';
-        }
+        // Log error for debugging
+        console.error('API Error:', error);
         return Promise.reject(error);
     }
 );

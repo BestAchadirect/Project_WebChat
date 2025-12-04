@@ -4,7 +4,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models.document import Document, DocumentStatus
 from app.models.embedding import Embedding
-from app.models.tenant import Tenant
 from app.utils.file_parsers import parse_uploaded_file
 from app.utils.text_splitter import TextSplitter
 from app.services.llm_service import llm_service
@@ -23,7 +22,6 @@ class DocumentService:
     async def create_document(
         self,
         db: AsyncSession,
-        tenant_id: UUID,
         filename: str,
         file_content: bytes
     ) -> Document:
@@ -32,7 +30,6 @@ class DocumentService:
         
         Args:
             db: Database session
-            tenant_id: Tenant ID
             filename: Original filename
             file_content: File content as bytes
         
@@ -44,7 +41,6 @@ class DocumentService:
         
         # Create document record
         document = Document(
-            tenant_id=tenant_id,
             filename=filename,
             content_hash=content_hash,
             file_size=len(file_content),
@@ -127,34 +123,66 @@ class DocumentService:
     async def get_document(
         self,
         db: AsyncSession,
-        document_id: UUID,
-        tenant_id: UUID
+        document_id: UUID
     ) -> Optional[Document]:
         """Get a document by ID."""
-        stmt = select(Document).where(
-            Document.id == document_id,
-            Document.tenant_id == tenant_id
-        )
+        stmt = select(Document).where(Document.id == document_id)
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
     
     async def list_documents(
         self,
         db: AsyncSession,
-        tenant_id: UUID,
         skip: int = 0,
         limit: int = 100
     ) -> List[Document]:
-        """List all documents for a tenant."""
+        """List all documents."""
         stmt = (
             select(Document)
-            .where(Document.tenant_id == tenant_id)
             .offset(skip)
             .limit(limit)
             .order_by(Document.created_at.desc())
         )
         result = await db.execute(stmt)
         return list(result.scalars().all())
+    
+    async def delete_document(
+        self,
+        db: AsyncSession,
+        document_id: UUID
+    ) -> bool:
+        """
+        Delete a document and all its associated embeddings.
+        
+        Args:
+            db: Database session
+            document_id: Document ID to delete
+        
+        Returns:
+            True if deleted, False if not found
+        """
+        # Get document
+        stmt = select(Document).where(Document.id == document_id)
+        result = await db.execute(stmt)
+        document = result.scalar_one_or_none()
+        
+        if not document:
+            return False
+        
+        # Delete embeddings (cascade should handle this, but being explicit)
+        delete_embeddings_stmt = select(Embedding).where(Embedding.document_id == document_id)
+        embeddings_result = await db.execute(delete_embeddings_stmt)
+        embeddings = embeddings_result.scalars().all()
+        
+        for embedding in embeddings:
+            await db.delete(embedding)
+        
+        # Delete document
+        await db.delete(document)
+        await db.commit()
+        
+        logger.info(f"Deleted document {document_id} with {len(embeddings)} embeddings")
+        return True
 
 # Singleton instance
 document_service = DocumentService()

@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     
     # Vector DB
     VECTOR_DIMENSIONS: int = 1536  # for text-embedding-3-small
+    
+    # File Storage
+    UPLOAD_DIR: str = "uploads"  # Directory for storing uploaded files
+    MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB max file size
 
     class Config:
         env_file = "../.env"

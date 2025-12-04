@@ -20,7 +20,7 @@ interface AuthState {
 export const useAuth = create<AuthState>((set) => ({
     user: null,
     isAuthenticated: false,
-    isLoading: false,
+    isLoading: true,
     error: null,
 
     login: async (credentials) => {
@@ -78,7 +78,7 @@ export const useAuth = create<AuthState>((set) => ({
     checkAuth: async () => {
         const token = localStorage.getItem('authToken');
         if (!token) {
-            set({ isAuthenticated: false, user: null });
+            set({ isAuthenticated: false, user: null, isLoading: false });
             return;
         }
 

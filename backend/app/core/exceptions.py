@@ -1,12 +1,5 @@
 from fastapi import HTTPException, status
 
-class TenantNotFoundException(HTTPException):
-    def __init__(self, tenant_id: str):
-        super().__init__(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tenant {tenant_id} not found"
-        )
-
 class DocumentNotFoundException(HTTPException):
     def __init__(self, document_id: str):
         super().__init__(

@@ -12,6 +12,7 @@ openai
 pgvector
 httpx
 alembic
+aiofiles
 
 # File parsing
 pdfplumber

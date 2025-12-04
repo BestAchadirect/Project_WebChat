@@ -15,7 +15,6 @@ class RAGService:
     async def search_similar_chunks(
         self,
         db: AsyncSession,
-        tenant_id: str,
         query: str,
         limit: int = 5,
         similarity_threshold: float = 0.7
@@ -25,7 +24,6 @@ class RAGService:
         
         Args:
             db: Database session
-            tenant_id: Tenant ID to filter results
             query: Search query
             limit: Maximum number of results
             similarity_threshold: Minimum similarity score (0-1)
@@ -46,7 +44,6 @@ class RAGService:
                     Embedding.embedding.cosine_distance(query_embedding).label("distance")
                 )
                 .join(Document, Embedding.document_id == Document.id)
-                .where(Document.tenant_id == tenant_id)
                 .order_by("distance")
                 .limit(limit)
             )
@@ -78,7 +75,6 @@ class RAGService:
     async def build_context(
         self,
         db: AsyncSession,
-        tenant_id: str,
         query: str,
         max_chunks: int = 5
     ) -> str:
@@ -87,7 +83,6 @@ class RAGService:
         
         Args:
             db: Database session
-            tenant_id: Tenant ID
             query: User query
             max_chunks: Maximum number of chunks to include
         
@@ -96,7 +91,6 @@ class RAGService:
         """
         chunks = await self.search_similar_chunks(
             db=db,
-            tenant_id=tenant_id,
             query=query,
             limit=max_chunks
         )

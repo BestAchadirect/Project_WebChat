@@ -19,7 +19,7 @@ export const documentsApi = {
     },
 
     async listDocuments(): Promise<Document[]> {
-        const response = await apiClient.get<Document[]>('/documents');
+        const response = await apiClient.get<Document[]>('/documents/');
         return response.data;
     },
 

@@ -14,7 +14,6 @@ class ChatRequest(BaseModel):
     """Request to chat endpoint."""
     message: str
     session_id: Optional[str] = None
-    tenant_id: UUID
     history: Optional[List[ChatMessage]] = []
 
 class ChatResponse(BaseModel):

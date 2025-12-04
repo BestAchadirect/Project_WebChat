@@ -9,11 +9,10 @@ class DocumentBase(BaseModel):
     filename: str
 
 class DocumentCreate(DocumentBase):
-    tenant_id: UUID
+    pass
 
 class DocumentResponse(DocumentBase):
     id: UUID
-    tenant_id: UUID
     file_path: Optional[str] = None
     content_hash: Optional[str] = None
     file_size: Optional[int] = None

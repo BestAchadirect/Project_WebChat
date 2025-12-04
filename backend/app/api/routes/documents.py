@@ -4,11 +4,8 @@ from uuid import UUID
 from typing import List
 
 from app.dependencies import get_db
-from app.api.deps import get_current_user, get_current_tenant
 from app.schemas.document import DocumentResponse, DocumentUploadResponse
 from app.services.document_service import document_service
-from app.models.user import User
-from app.models.tenant import Tenant
 
 router = APIRouter()
 
@@ -16,9 +13,7 @@ router = APIRouter()
 async def upload_document(
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = None,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    current_tenant: Tenant = Depends(get_current_tenant)
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Upload a document for processing.
@@ -41,7 +36,6 @@ async def upload_document(
     # Create document record
     document = await document_service.create_document(
         db=db,
-        tenant_id=current_tenant.id,
         filename=file.filename,
         file_content=file_content
     )
@@ -67,17 +61,14 @@ async def upload_document(
 @router.get("/{document_id}", response_model=DocumentResponse)
 async def get_document(
     document_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    current_tenant: Tenant = Depends(get_current_tenant)
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Get document by ID.
     """
     document = await document_service.get_document(
         db=db,
-        document_id=document_id,
-        tenant_id=current_tenant.id
+        document_id=document_id
     )
     
     if not document:
@@ -92,18 +83,36 @@ async def get_document(
 async def list_documents(
     skip: int = 0,
     limit: int = 100,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    current_tenant: Tenant = Depends(get_current_tenant)
+    db: AsyncSession = Depends(get_db)
 ):
     """
-    List all documents for current tenant.
+    List all documents.
     """
     documents = await document_service.list_documents(
         db=db,
-        tenant_id=current_tenant.id,
         skip=skip,
         limit=limit
     )
     
     return documents
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    document_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Delete a document and all its associated embeddings.
+    """
+    deleted = await document_service.delete_document(
+        db=db,
+        document_id=document_id
+    )
+    
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found"
+        )
+    
+    return None

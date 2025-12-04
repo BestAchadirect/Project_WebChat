@@ -1,6 +1,4 @@
-import React from 'react';
 import { createBrowserRouter, Navigate } from 'react-router-dom';
-import { LoginPage } from './LoginPage';
 import { DashboardLayout } from './DashboardLayout';
 import { DocumentsPage } from './DocumentsPage';
 import { MagentoSettingsPage } from './MagentoSettingsPage';
@@ -10,10 +8,6 @@ export const router = createBrowserRouter([
     {
         path: '/',
         element: <Navigate to="/dashboard/documents" replace />,
-    },
-    {
-        path: '/login',
-        element: <LoginPage />,
     },
     {
         path: '/dashboard',
