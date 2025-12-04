@@ -24,9 +24,16 @@ class Settings(BaseSettings):
     # Vector DB
     VECTOR_DIMENSIONS: int = 1536  # for text-embedding-3-small
     
+    # Supabase Storage
+    SUPABASE_URL: str
+    SUPABASE_KEY: str  # Anon key
+    SUPABASE_SERVICE_KEY: str  # Service role key for admin operations
+    SUPABASE_BUCKET: str = "documents"
+    
     # File Storage
     UPLOAD_DIR: str = "uploads"  # Directory for storing uploaded files
-    MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB max file size
+    MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB max file size
+    ALLOWED_EXTENSIONS: str = "pdf,doc,docx,txt,csv"
 
     class Config:
         env_file = "../.env"

@@ -13,9 +13,9 @@ pgvector
 httpx
 alembic
 aiofiles
+supabase
 
 # File parsing
 pdfplumber
 python-docx
 PyPDF2
-
