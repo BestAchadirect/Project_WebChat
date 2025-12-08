@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 backend/venv/
+venv/
+.env.local
+.env.*.local
 __pycache__/
 *.pyc
 *.pyo
@@ -9,8 +12,6 @@ __pycache__/
 
 # Environment variables
 .env
-.env.local
-.env.*.local
 
 # Build outputs
 dist/
@@ -23,10 +24,11 @@ build/
 *.swp
 *.swo
 *~
+*.DS_Store
 
 # OS
-.DS_Store
 Thumbs.db
+desktop.ini
 
 # Logs
 *.log
@@ -35,7 +37,13 @@ logs/
 # Testing
 coverage/
 .pytest_cache/
+htmlcov/
+.coverage
 
 # Temporary files
 *.tmp
 test.txt
+check_documents.py
+test_upload_fixed.py
+test_doc.txt
+backend/test_doc.txt
