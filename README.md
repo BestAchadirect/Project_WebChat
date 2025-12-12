@@ -115,7 +115,11 @@ JWT_SECRET=your-secret-key-here
 #### Start Backend
 
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Windows (PowerShell)
+.\venv\Scripts\python -m uvicorn app.main:app --reload
+
+# Linux/Mac
+python -m uvicorn app.main:app --reload
 ```
 
 Backend runs at: **http://localhost:8000**

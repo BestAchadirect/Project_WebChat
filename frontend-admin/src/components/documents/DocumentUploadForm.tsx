@@ -1,10 +1,23 @@
 import React, { useState, useCallback } from 'react';
 import { useToast } from '../../hooks/useToast';
-import { documentsApi } from '../../api/documents';
 import { Button } from '../common/Button';
 
-export const DocumentUploadForm: React.FC<{ onUploadSuccess: () => void }> = ({
+interface FileUploadFormProps {
+    onUploadSuccess: () => void;
+    uploadFunction: (file: File) => Promise<any>;
+    title?: string;
+    description?: string;
+    accept?: string;
+    acceptedDescription?: string;
+}
+
+export const FileUploadForm: React.FC<FileUploadFormProps> = ({
     onUploadSuccess,
+    uploadFunction,
+    title = "Upload Documents",
+    description = "Drag and drop files here",
+    accept = ".pdf,.doc,.docx,.csv",
+    acceptedDescription = "PDF, DOC, DOCX, CSV up to 10MB"
 }) => {
     const [isDragging, setIsDragging] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
@@ -44,13 +57,14 @@ export const DocumentUploadForm: React.FC<{ onUploadSuccess: () => void }> = ({
         setIsUploading(true);
         try {
             for (const file of selectedFiles) {
-                await documentsApi.uploadDocument(file);
+                await uploadFunction(file);
             }
             showToast(`Successfully uploaded ${selectedFiles.length} file(s)`, 'success');
             setSelectedFiles([]);
             onUploadSuccess();
         } catch (error: any) {
-            showToast(error.response?.data?.message || 'Upload failed', 'error');
+            console.error(error);
+            showToast(error.response?.data?.detail || error.message || 'Upload failed', 'error');
         } finally {
             setIsUploading(false);
         }
@@ -58,7 +72,7 @@ export const DocumentUploadForm: React.FC<{ onUploadSuccess: () => void }> = ({
 
     return (
         <div className="bg-white rounded-xl shadow-sm p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Upload Documents</h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">{title}</h3>
 
             {/* Drag and Drop Area */}
             <div
@@ -66,8 +80,8 @@ export const DocumentUploadForm: React.FC<{ onUploadSuccess: () => void }> = ({
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
                 className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${isDragging
-                        ? 'border-primary-500 bg-primary-50'
-                        : 'border-gray-300 hover:border-primary-400'
+                    ? 'border-primary-500 bg-primary-50'
+                    : 'border-gray-300 hover:border-primary-400'
                     }`}
             >
                 <svg
@@ -84,19 +98,19 @@ export const DocumentUploadForm: React.FC<{ onUploadSuccess: () => void }> = ({
                     />
                 </svg>
                 <p className="mt-2 text-sm text-gray-600">
-                    Drag and drop files here, or{' '}
+                    {description}, or{' '}
                     <label className="text-primary-600 hover:text-primary-700 cursor-pointer font-medium">
                         browse
                         <input
                             type="file"
                             multiple
-                            accept=".pdf,.doc,.docx,.csv"
+                            accept={accept}
                             onChange={handleFileSelect}
                             className="hidden"
                         />
                     </label>
                 </p>
-                <p className="mt-1 text-xs text-gray-500">PDF, DOC, DOCX, CSV up to 10MB</p>
+                <p className="mt-1 text-xs text-gray-500">{acceptedDescription}</p>
             </div>
 
             {/* Selected Files */}

@@ -6,6 +6,7 @@ from app.models.document import Document, DocumentStatus
 from app.models.embedding import Embedding
 from app.utils.file_parsers import parse_uploaded_file
 from app.utils.text_splitter import TextSplitter
+from app.utils.supabase_storage import supabase_storage
 from app.services.llm_service import llm_service
 from app.core.logging import get_logger
 from app.core.exceptions import DocumentNotFoundException, DocumentProcessingException
@@ -23,15 +24,17 @@ class DocumentService:
         self,
         db: AsyncSession,
         filename: str,
-        file_content: bytes
+        file_content: bytes,
+        content_type: str = None
     ) -> Document:
         """
-        Create a new document record.
+        Create a new document record and upload file to Supabase Storage.
         
         Args:
             db: Database session
             filename: Original filename
             file_content: File content as bytes
+            content_type: MIME type of the file
         
         Returns:
             Created Document object
@@ -39,9 +42,10 @@ class DocumentService:
         # Calculate content hash
         content_hash = hashlib.sha256(file_content).hexdigest()
         
-        # Create document record
+        # Create document record first to get ID
         document = Document(
             filename=filename,
+            content_type=content_type,
             content_hash=content_hash,
             file_size=len(file_content),
             status=DocumentStatus.PENDING
@@ -50,6 +54,30 @@ class DocumentService:
         db.add(document)
         await db.commit()
         await db.refresh(document)
+        
+        # Upload file to Supabase Storage
+        try:
+            storage_path = await supabase_storage.upload_file_bytes(
+                file_content=file_content,
+                filename=filename,
+                document_id=document.id,
+                content_type=content_type or "application/octet-stream"
+            )
+            
+            # Update document with file path
+            document.file_path = storage_path
+            await db.commit()
+            await db.refresh(document)
+            
+            logger.info(f"Document created and uploaded: {document.id}")
+            
+        except Exception as e:
+            # Mark document as failed if upload fails
+            document.status = DocumentStatus.FAILED
+            document.error_message = f"Failed to upload to storage: {str(e)}"
+            await db.commit()
+            logger.error(f"Failed to upload document to storage: {e}")
+            raise
         
         return document
     
@@ -79,13 +107,16 @@ class DocumentService:
             document.status = DocumentStatus.PROCESSING
             await db.commit()
             
-            # TODO: Load file content from storage
-            # For now, assuming file_path contains the actual content or path
-            # In production, you'd load from S3 or local storage
+            # Download file content from Supabase Storage
+            if not document.file_path:
+                raise DocumentProcessingException("Document has no file path - file may not have been uploaded")
             
-            # Placeholder: Extract text
-            # text = await parse_uploaded_file(file_content, document.filename)
-            text = "Sample document text for processing..."  # Placeholder
+            logger.info(f"Downloading file from Supabase: {document.file_path}")
+            file_content = await supabase_storage.download_file(document.file_path)
+            
+            # Extract text from file
+            logger.info(f"Parsing file: {document.filename}")
+            text = await parse_uploaded_file(file_content, document.filename)
             
             # Chunk text
             chunks = self.text_splitter.split_text(text)
@@ -168,6 +199,18 @@ class DocumentService:
         
         if not document:
             return False
+        
+        # Delete file from Supabase Storage
+        if document.file_path:
+            try:
+                deleted_from_storage = await supabase_storage.delete_file(document.file_path)
+                if deleted_from_storage:
+                    logger.info(f"Deleted file from storage: {document.file_path}")
+                else:
+                    logger.warning(f"Could not delete file from storage: {document.file_path}")
+            except Exception as e:
+                logger.warning(f"Error deleting file from storage: {e}")
+                # Continue with database deletion even if storage deletion fails
         
         # Delete embeddings (cascade should handle this, but being explicit)
         delete_embeddings_stmt = select(Embedding).where(Embedding.document_id == document_id)

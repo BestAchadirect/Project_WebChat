@@ -3,6 +3,7 @@ import { DashboardLayout } from './DashboardLayout';
 import { DocumentsPage } from './DocumentsPage';
 import { MagentoSettingsPage } from './MagentoSettingsPage';
 import { AnalyticsPage } from './AnalyticsPage';
+import { ChatSettingsPage } from './ChatSettingsPage';
 
 export const router = createBrowserRouter([
     {
@@ -28,6 +29,10 @@ export const router = createBrowserRouter([
             {
                 path: 'analytics',
                 element: <AnalyticsPage />,
+            },
+            {
+                path: 'chat',
+                element: <ChatSettingsPage />,
             },
         ],
     },
