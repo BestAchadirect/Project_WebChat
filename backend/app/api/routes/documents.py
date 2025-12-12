@@ -43,12 +43,13 @@ async def upload_document(
     # TODO: Save file to storage (S3 or local)
     # For now, we'll process in background
     
-    # Schedule background processing
+    # Schedule background processing using a background-friendly wrapper
+    # that creates its own DB session. Do NOT pass the request-scoped
+    # `db` session into background tasks.
     if background_tasks:
         background_tasks.add_task(
-            document_service.process_document,
-            db=db,
-            document_id=document.id
+            document_service.process_document_background,
+            document.id
         )
     
     return DocumentUploadResponse(

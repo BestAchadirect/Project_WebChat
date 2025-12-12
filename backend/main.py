@@ -37,14 +37,20 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="GenAI SaaS API", lifespan=lifespan)
 
 # Set all CORS enabled origins
-if settings.ALLOWED_ORIGINS:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[str(origin).strip() for origin in settings.ALLOWED_ORIGINS.split(",")] + ["http://localhost:8080"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+allowed_origins = ["http://localhost:5173", "http://localhost:8080", "http://localhost:3000"]
+if settings.ALLOWED_ORIGINS and settings.ALLOWED_ORIGINS != "*":
+    allowed_origins = [str(origin).strip() for origin in settings.ALLOWED_ORIGINS.split(",")] + allowed_origins
+elif settings.ALLOWED_ORIGINS == "*":
+    allowed_origins = ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 
 app.include_router(api_router, prefix="/api/v1")
 

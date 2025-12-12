@@ -1,6 +1,9 @@
 """Supabase Storage Service for file management."""
 from typing import Optional
 from uuid import UUID
+import io
+import asyncio
+import httpx
 from fastapi import UploadFile, HTTPException
 from supabase import create_client, Client
 from app.core.config import settings
@@ -62,6 +65,54 @@ class SupabaseStorageService:
                 status_code=500,
                 detail=f"Failed to upload file: {str(e)}"
             )
+
+    async def upload_file_bytes(
+        self,
+        *,
+        file_content: bytes,
+        filename: str,
+        document_id: UUID,
+        content_type: Optional[str] = None,
+    ) -> str:
+        """
+        Upload raw bytes to Supabase Storage in a non-blocking way by running
+        the synchronous client call in a threadpool. Returns a public URL
+        or storage path on success.
+        """
+        storage_path = f"{document_id}/{filename}"
+
+        def _sync_upload():
+            try:
+                # Use same upload signature as in upload_file
+                response = self.client.storage.from_(self.bucket_name).upload(
+                    path=storage_path,
+                    file=file_content,
+                    file_options={"content-type": content_type} if content_type else None,
+                )
+
+                # Attempt to get a public URL; adapt to client response shape
+                pub = self.client.storage.from_(self.bucket_name).get_public_url(
+                    path=storage_path
+                )
+                if isinstance(pub, dict):
+                    return pub.get("publicURL") or pub.get("publicUrl") or storage_path
+                return pub
+
+            except Exception:
+                # Re-raise to be caught by executor wrapper
+                raise
+
+        loop = asyncio.get_running_loop()
+        try:
+            result = await loop.run_in_executor(None, _sync_upload)
+            logger.info(f"File uploaded successfully: {storage_path}")
+            return result
+        except Exception as e:
+            logger.error(f"Error uploading file to Supabase: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to upload file: {str(e)}"
+            )
     
     async def download_file(self, storage_path: str) -> bytes:
         """
@@ -74,12 +125,45 @@ class SupabaseStorageService:
             File content as bytes
         """
         try:
-            response = self.client.storage.from_(self.bucket_name).download(
-                path=storage_path
-            )
+            # If storage_path is a full URL (public URL), fetch it over HTTP
+            if isinstance(storage_path, str) and storage_path.startswith("http"):
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(storage_path)
+                    if resp.status_code == 200:
+                        logger.info(f"File downloaded successfully from URL: {storage_path}")
+                        return resp.content
+                    # If public URL fetch fails (private bucket or other), fall back
+                    # to using the Supabase client download with the object path.
+                    logger.warning(f"Public URL fetch failed ({resp.status_code}), falling back to SDK download: {resp.text}")
+                    # Extract object path after '/storage/v1/object/public/{bucket}/'
+                    from urllib.parse import urlparse
+                    parsed = urlparse(storage_path)
+                    path = parsed.path
+                    marker = f"/storage/v1/object/public/{self.bucket_name}/"
+                    if marker in path:
+                        object_path = path.split(marker, 1)[1]
+                    else:
+                        # As a last resort, try to strip prefix up to bucket name
+                        parts = path.split(f"/{self.bucket_name}/")
+                        object_path = parts[-1] if len(parts) > 1 else path
+                    def _sync_download():
+                        return self.client.storage.from_(self.bucket_name).download(path=object_path)
+                    loop = asyncio.get_running_loop()
+                    result = await loop.run_in_executor(None, _sync_download)
+                    logger.info(f"File downloaded successfully via SDK: {object_path}")
+                    return result
+
+            # Otherwise, call the Supabase client download in a thread to avoid blocking
+            def _sync_download():
+                return self.client.storage.from_(self.bucket_name).download(path=storage_path)
+
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, _sync_download)
             logger.info(f"File downloaded successfully: {storage_path}")
-            return response
-            
+            return result
+
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error downloading file from Supabase: {e}")
             raise HTTPException(

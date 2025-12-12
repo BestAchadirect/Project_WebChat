@@ -1,33 +1,60 @@
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
-from datetime import datetime
-from uuid import UUID
-from app.schemas.product import ProductCarouselItem
+from pydantic import BaseModel, Field
+from typing import Literal, Optional, List, Dict, Any, Union
+import uuid
 
-# Chat Message Schemas
-class ChatMessage(BaseModel):
-    """Single message in chat history."""
-    role: str  # "user" or "assistant"
-    content: str
+# --- Product Data Models ---
+
+class ProductCard(BaseModel):
+    id: uuid.UUID
+    object_id: Optional[str] = None
+    sku: str
+    legacy_sku: List[str] = []
+    name: str
+    price: float
+    currency: str
+    image_url: Optional[str] = None
+    product_url: Optional[str] = None
+    attributes: Dict[str, Any] = {}
+
+class ProductSearchResult(BaseModel):
+    product: ProductCard
+    distance: float
+    score: float
+
+# --- Knowledge Data Models ---
+
+class KnowledgeSource(BaseModel):
+    title: str
+    url: Optional[str] = None
+    content_snippet: str
+    distance: float
+
+# --- Chat Interaction Models ---
 
 class ChatRequest(BaseModel):
-    """Request to chat endpoint."""
+    # User Identification
+    user_id: str = Field(..., description="Unique ID for the user (e.g. guest_123)")
+    customer_name: Optional[str] = None
+    email: Optional[str] = None
+    
+    # Session
+    conversation_id: Optional[int] = None # Changed to int/BigInt
+    
     message: str
-    session_id: Optional[str] = None
-    history: Optional[List[ChatMessage]] = []
+    locale: Optional[str] = "en-US"
+
+class ParsedQuery(BaseModel):
+    intent: Literal["search_products", "ask_info", "mixed", "smalltalk", "other"]
+    query_text: str
+    language: Literal["en", "th", "auto"]
+    filters: Dict[str, str] = {}
+    price_min: Optional[float] = None
+    price_max: Optional[float] = None
 
 class ChatResponse(BaseModel):
-    """Response from chat endpoint."""
-    message: str
-    session_id: str
-    intent: Optional[str] = None  # "product", "faq", "both"
-    products: Optional[List[ProductCarouselItem]] = None
-    sources: Optional[List[Dict[str, Any]]] = None  # FAQ sources
-    metadata: Optional[Dict[str, Any]] = None
-
-# Intent Classification
-class IntentClassification(BaseModel):
-    """Result of intent classification."""
-    intent: str  # "product", "faq", "both", "general"
-    confidence: float
-    reasoning: Optional[str] = None
+    conversation_id: int
+    reply_text: str
+    product_carousel: List[ProductCard] = []
+    follow_up_questions: List[str] = []
+    intent: str
+    sources: List[KnowledgeSource] = []

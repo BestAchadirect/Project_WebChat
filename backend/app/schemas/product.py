@@ -7,7 +7,9 @@ from uuid import UUID
 class Product(BaseModel):
     """Product information from Magento."""
     id: str
+    object_id: Optional[str] = None
     sku: str
+    legacy_sku: List[str] = []
     name: str
     price: float
     image_url: Optional[str] = None

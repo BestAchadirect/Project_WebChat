@@ -11,6 +11,7 @@ from app.services.llm_service import llm_service
 from app.core.logging import get_logger
 from app.core.exceptions import DocumentNotFoundException, DocumentProcessingException
 import hashlib
+from app.db.session import AsyncSessionLocal
 
 logger = get_logger(__name__)
 
@@ -150,6 +151,18 @@ class DocumentService:
                 await db.commit()
             
             raise DocumentProcessingException(f"Failed to process document: {str(e)}")
+
+    async def process_document_background(self, document_id: UUID) -> None:
+        """
+        Background wrapper that creates its own DB session so it can be
+        scheduled with FastAPI BackgroundTasks without relying on the
+        request-scoped session.
+        """
+        async with AsyncSessionLocal() as db:
+            try:
+                await self.process_document(db=db, document_id=document_id)
+            except Exception as e:
+                logger.error(f"Background processing failed for {document_id}: {e}")
     
     async def get_document(
         self,
