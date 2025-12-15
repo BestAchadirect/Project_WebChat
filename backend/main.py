@@ -1,10 +1,14 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
-from app.api.v1.api import api_router
 from app.db.session import engine
 from app.db.base import Base
 from sqlalchemy import text
 import app.models # Ensure models are registered
+from app.api.routes.health import router as health_router
+from app.api.routes.chat import router as chat_router
+from app.api.routes.data_import import router as data_import_router
+from app.api.routes.tasks import router as tasks_router
+from app.api.routes.documents import router as documents_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -52,7 +56,12 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-app.include_router(api_router, prefix="/api/v1")
+# Include routers with proper prefixes
+app.include_router(health_router, tags=["Health"])
+app.include_router(chat_router, prefix=f"{settings.API_V1_STR}/chat", tags=["Chat"])
+app.include_router(data_import_router, prefix=f"{settings.API_V1_STR}/import", tags=["Import"])
+app.include_router(tasks_router, prefix=f"{settings.API_V1_STR}/tasks", tags=["Tasks"])
+app.include_router(documents_router, prefix=f"{settings.API_V1_STR}/documents", tags=["Documents"])
 
 @app.get("/health")
 async def health_check():

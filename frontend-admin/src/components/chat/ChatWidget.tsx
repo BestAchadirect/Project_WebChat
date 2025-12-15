@@ -6,10 +6,21 @@ interface Message {
     content: string;
 }
 
+interface KnowledgeSource {
+    source_id: string;
+    title: string;
+    content_snippet: string;
+    category?: string | null;
+    relevance: number;
+    url?: string | null;
+}
+
 interface ChatResponse {
     conversation_id: number;
     reply_text: string;
     product_carousel: any[];
+    intent: string;
+    sources?: KnowledgeSource[];
 }
 
 interface ChatWidgetProps {
@@ -136,6 +147,11 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         if (textareaRef.current) textareaRef.current.style.height = 'auto';
         setIsLoading(true);
 
+        const formatSources = (sources: KnowledgeSource[]) =>
+            `Sources:\n${sources
+                .map((source) => `• ${source.title}${source.url ? ` (${source.url})` : ''}`)
+                .join('\n')}`;
+
         try {
             const payload = {
                 user_id: getUserId(),
@@ -144,13 +160,27 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                 locale: 'en-US'
             };
 
-            const response = await apiClient.post<ChatResponse>('/chat', payload);
+            const { data } = await apiClient.post<ChatResponse>('/chat', payload);
 
-            setConversationId(response.data.conversation_id);
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: response.data.reply_text
-            }]);
+            setConversationId(data.conversation_id);
+            setMessages(prev => {
+                const updated = [
+                    ...prev,
+                    {
+                        role: 'assistant',
+                        content: data.reply_text
+                    }
+                ];
+
+                if (data.sources && data.sources.length > 0) {
+                    updated.push({
+                        role: 'assistant',
+                        content: formatSources(data.sources)
+                    });
+                }
+
+                return updated;
+            });
 
         } catch (error) {
             console.error('Chat error:', error);

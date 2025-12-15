@@ -1,7 +1,7 @@
 import json
 from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_, text
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
@@ -13,12 +13,12 @@ from app.models.chat import AppUser, Conversation, Message, MessageRole
 from app.models.product import Product, ProductEmbedding
 from app.models.knowledge import KnowledgeArticle, KnowledgeEmbedding
 
-import openai
+from openai import AsyncOpenAI
 
 class ChatService:
     def __init__(self, db: AsyncSession):
         self.db = db
-        openai.api_key = settings.OPENAI_API_KEY
+        self.openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
     async def get_or_create_user(self, user_id: str, name: str = None, email: str = None) -> AppUser:
         """Finds or creates an AppUser."""
@@ -101,7 +101,7 @@ class ChatService:
         messages.append({"role": "user", "content": message})
 
         try:
-            response = await openai.chat.completions.create(
+            response = await self.openai_client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=messages,
                 temperature=0,
@@ -109,15 +109,24 @@ class ChatService:
             )
             content = response.choices[0].message.content
             data = json.loads(content)
-            return ParsedQuery(**data)
+            parsed = ParsedQuery(**data)
         except Exception as e:
             # Fallback
             print(f"Intent Error: {e}")
-            return ParsedQuery(intent="other", query_text=message, language="auto")
+            parsed = ParsedQuery(intent="other", query_text=message, language="auto")
+
+        # Simple keyword heuristic to force ask_info intent for FAQ-style questions
+        if parsed.intent == "other":
+            lowered = message.lower()
+            faq_keywords = ["policy", "shipping", "return", "warranty", "faq", "information", "hours", "support"]
+            if any(keyword in lowered for keyword in faq_keywords):
+                parsed.intent = "ask_info"
+
+        return parsed
 
     async def embed_text(self, text: str) -> List[float]:
         try:
-            response = await openai.embeddings.create(
+            response = await self.openai_client.embeddings.create(
                 model="text-embedding-3-small", 
                 input=text
             )
@@ -143,16 +152,167 @@ class ChatService:
             print(f"Product Search Error: {e}")
             return []
 
-    async def search_knowledge(self, query_embedding: List[float], limit: int = 3) -> List[KnowledgeSource]:
-        return []
+    async def search_knowledge(self, query_text: str, query_embedding: List[float], limit: int = 5) -> List[KnowledgeSource]:
+        """
+        Search knowledge base for relevant articles using vector similarity.
+        Returns top matching knowledge sources ranked by relevance.
+        """
+        if not query_embedding:
+            return []
+        try:
+            # Query knowledge embeddings using cosine distance
+            stmt = (
+                select(
+                    KnowledgeEmbedding,
+                    KnowledgeArticle,
+                    KnowledgeEmbedding.embedding.cosine_distance(query_embedding).label("distance")
+                )
+                .join(KnowledgeArticle, KnowledgeEmbedding.article_id == KnowledgeArticle.id)
+                .order_by("distance")
+                .limit(limit)
+            )
+            
+            result = await self.db.execute(stmt)
+            rows = result.all()
+            
+            sources = []
+            for embedding, article, distance in rows:
+                similarity = 1 - distance  # Convert distance to similarity (0-1)
+
+                if similarity >= 0.3:  # Looser relevance threshold
+                    sources.append(
+                        KnowledgeSource(
+                            source_id=str(article.id),
+                            title=article.title,
+                            content_snippet=getattr(embedding, 'chunk_text', article.content[:500]),
+                            category=article.category,
+                            relevance=float(similarity),
+                            url=article.url or ""
+                        )
+                    )
+
+            if not sources:
+                # Simple keyword fallback search
+                stmt = (
+                    select(KnowledgeArticle)
+                    .where(
+                        or_(
+                            KnowledgeArticle.title.ilike(f"%{query_text}%"),
+                            KnowledgeArticle.content.ilike(f"%{query_text}%"),
+                        )
+                    )
+                    .limit(limit)
+                )
+                fallback_articles = (await self.db.execute(stmt)).scalars().all()
+                for article in fallback_articles:
+                    sources.append(
+                        KnowledgeSource(
+                            source_id=str(article.id),
+                            title=article.title,
+                            content_snippet=article.content[:500],
+                            category=article.category,
+                            relevance=0.2,
+                            url=article.url or ""
+                        )
+                    )
+
+            return sources
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return []
 
     async def generate_response(self, parsed: ParsedQuery, products: List[ProductCard], docs: List[KnowledgeSource]) -> ChatResponse:
+        """
+        Generate AI response based on intent, retrieved products, and knowledge sources.
+        Synthesizes multiple sources into a coherent answer.
+        """
+        reply_text = ""
+        
+        # Handle "other" intent - ask for clarification
+        if parsed.intent == "other":
+            reply_text = "I'm not sure I understand your question. Could you please rephrase it or provide more details? For example, you could ask about our products, minimum order, or company policies."
+        
+        # Handle "smalltalk" intent
+        elif parsed.intent == "smalltalk":
+            reply_text = "Thank you for reaching out! I'm here to help with any questions about our products, policies, or services. What would you like to know?"
+        
+        # Handle "ask_info" (FAQ/Knowledge base) intent
+        elif parsed.intent == "ask_info":
+            if docs:
+                # Synthesize knowledge sources into a response
+                reply_text = await self._synthesize_knowledge_response(parsed.query_text, docs)
+            else:
+                reply_text = "I don't have information about that topic in my knowledge base. Could you try asking something else or rephrase your question?"
+        
+        # Handle "search_products" intent
+        elif parsed.intent == "search_products":
+            if products:
+                reply_text = f"I found {len(products)} product(s) that match your search. Here are the best matches:"
+            else:
+                reply_text = "I couldn't find any products matching your search. Could you try different keywords?"
+        
+        # Handle "mixed" intent (both products and info)
+        elif parsed.intent == "mixed":
+            parts = []
+            if docs:
+                knowledge_response = await self._synthesize_knowledge_response(parsed.query_text, docs)
+                parts.append(f"Information: {knowledge_response}")
+            if products:
+                parts.append(f"I also found {len(products)} relevant product(s).")
+            
+            reply_text = " ".join(parts) if parts else "I found some information that might help. Here are the details:"
+        
+        if docs and reply_text:
+            source_lines = "\n".join(
+                f"- {doc.title}{f' ({doc.url})' if doc.url else ''}" for doc in docs
+            )
+            reply_text = f"{reply_text}\n\nSources:\n{source_lines}"
+
         return ChatResponse(
-            conversation_id=0, # Placeholder, will be overwritten
-            reply_text=f"I understood your intent is {parsed.intent}. (Placeholder response)", 
+            conversation_id=0,  # Placeholder, will be overwritten
+            reply_text=reply_text,
             intent=parsed.intent,
-            product_carousel=products
+            product_carousel=products,
+            sources=docs
         )
+    
+    async def _synthesize_knowledge_response(self, query: str, docs: List[KnowledgeSource]) -> str:
+        """
+        Synthesize multiple knowledge sources into a coherent answer using LLM.
+        """
+        if not docs:
+            return "I don't have information on that topic."
+        
+        # Combine top sources
+        combined_content = "\n\n".join([
+            f"[{doc.title}] {doc.content_snippet[:500]}"
+            for doc in docs[:3]  # Use top 3 most relevant sources
+        ])
+        
+        try:
+            # Use LLM to synthesize a natural answer
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant answering customer questions based on provided knowledge sources. Provide clear, concise answers."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Based on this knowledge:\n{combined_content}\n\nAnswer this question: {query}"
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=500
+            )
+            
+            return response.choices[0].message.content
+        except Exception as e:
+            # Fallback: simple concatenation if LLM fails
+            return " ".join([doc.content_snippet[:300] for doc in docs[:2]])
 
     async def process_chat(self, req: ChatRequest) -> ChatResponse:
         # 1. Identify/Create User
@@ -180,7 +340,7 @@ class ChatService:
             
         if parsed.intent in ["ask_info", "mixed"]:
             emb = await self.embed_text(parsed.query_text)
-            docs = await self.search_knowledge(emb)
+            docs = await self.search_knowledge(parsed.query_text, emb)
             
         # 6. Generation
         response = await self.generate_response(parsed, products, docs)

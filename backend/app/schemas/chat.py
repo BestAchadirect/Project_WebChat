@@ -24,10 +24,12 @@ class ProductSearchResult(BaseModel):
 # --- Knowledge Data Models ---
 
 class KnowledgeSource(BaseModel):
+    source_id: str
     title: str
-    url: Optional[str] = None
     content_snippet: str
-    distance: float
+    category: Optional[str] = None
+    relevance: float
+    url: Optional[str] = None
 
 # --- Chat Interaction Models ---
 

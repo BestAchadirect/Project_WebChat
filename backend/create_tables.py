@@ -3,10 +3,10 @@ from app.db.session import engine
 from app.db.base import Base
 # Import all models to ensure they are registered with Base metadata
 from app.models import (
-    Document, Embedding, 
     Product, ProductEmbedding,
     KnowledgeArticle, KnowledgeEmbedding,
-    AppUser, Conversation, Message
+    AppUser, Conversation, Message,
+    Task
 )
 
 async def create_tables():

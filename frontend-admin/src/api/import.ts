@@ -1,4 +1,6 @@
 import apiClient from './client';
+import { KnowledgeUpload } from '../types/knowledge';
+import { ProductUpload } from '../types/product';
 
 export const importApi = {
     async downloadTemplate(type: 'products' | 'knowledge'): Promise<void> {
@@ -16,7 +18,7 @@ export const importApi = {
         link.remove();
     },
 
-    async importProducts(file: File): Promise<{ message: string; stats: any }> {
+    async importProducts(file: File): Promise<{ message: string; stats: any; upload_id: string; status: string }> {
         const formData = new FormData();
         formData.append('file', file);
 
@@ -28,15 +30,60 @@ export const importApi = {
         return response.data;
     },
 
-    async importKnowledge(file: File): Promise<{ message: string; stats: any }> {
+    async listProductUploads(): Promise<ProductUpload[]> {
+        const response = await apiClient.get('/import/products/uploads');
+        return response.data;
+    },
+
+    async downloadProductUpload(uploadId: string, filename: string): Promise<void> {
+        const response = await apiClient.get(`/import/products/uploads/${uploadId}/download`, {
+            responseType: 'blob',
+        });
+        const url = window.URL.createObjectURL(new Blob([response.data]));
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', filename);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    },
+
+    async deleteProductUpload(uploadId: string): Promise<void> {
+        await apiClient.delete(`/import/products/uploads/${uploadId}`);
+    },
+
+    async importKnowledge(file: File, uploadedBy?: string): Promise<{ message: string; stats: any; upload_id: string; status: string }> {
         const formData = new FormData();
         formData.append('file', file);
 
         const response = await apiClient.post('/import/knowledge', formData, {
             headers: {
                 'Content-Type': 'multipart/form-data',
+                ...(uploadedBy ? { 'X-Uploaded-By': uploadedBy } : {}),
             },
         });
         return response.data;
+    },
+
+    async listKnowledgeUploads(): Promise<KnowledgeUpload[]> {
+        const response = await apiClient.get('/import/knowledge/uploads');
+        return response.data;
+    },
+
+    async downloadKnowledgeUpload(uploadId: string, filename: string): Promise<void> {
+        const response = await apiClient.get(`/import/knowledge/uploads/${uploadId}/download`, {
+            responseType: 'blob',
+        });
+        const url = window.URL.createObjectURL(new Blob([response.data]));
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', filename);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    },
+
+    async deleteKnowledgeUpload(uploadId: string): Promise<void> {
+        await apiClient.delete(`/import/knowledge/uploads/${uploadId}`);
     },
 };

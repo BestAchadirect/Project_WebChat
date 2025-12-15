@@ -2,8 +2,7 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pgvector.sqlalchemy import Vector
-from app.models.embedding import Embedding
-from app.models.document import Document
+from app.models.knowledge import KnowledgeArticle, KnowledgeEmbedding
 from app.services.llm_service import llm_service
 from app.core.logging import get_logger
 
@@ -39,11 +38,11 @@ class RAGService:
             # Using cosine distance (1 - cosine_similarity)
             stmt = (
                 select(
-                    Embedding,
-                    Document,
-                    Embedding.embedding.cosine_distance(query_embedding).label("distance")
+                    KnowledgeEmbedding,
+                    KnowledgeArticle,
+                    KnowledgeEmbedding.embedding.cosine_distance(query_embedding).label("distance")
                 )
-                .join(Document, Embedding.document_id == Document.id)
+                .join(KnowledgeArticle, KnowledgeEmbedding.article_id == KnowledgeArticle.id)
                 .order_by("distance")
                 .limit(limit)
             )
@@ -53,17 +52,17 @@ class RAGService:
             
             # Format results
             chunks = []
-            for embedding, document, distance in rows:
+            for embedding, article, distance in rows:
                 similarity = 1 - distance  # Convert distance to similarity
                 
                 if similarity >= similarity_threshold:
                     chunks.append({
                         "chunk_id": str(embedding.id),
-                        "document_id": str(document.id),
-                        "document_name": document.filename,
+                        "article_id": str(article.id),
+                        "article_title": article.title,
                         "content": embedding.chunk_text,
                         "similarity": similarity,
-                        "chunk_index": embedding.chunk_index
+                        "category": article.category
                     })
             
             return chunks
