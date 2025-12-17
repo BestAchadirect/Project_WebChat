@@ -2,7 +2,7 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pgvector.sqlalchemy import Vector
-from app.models.knowledge import KnowledgeArticle, KnowledgeEmbedding
+from app.models.knowledge import KnowledgeArticle, KnowledgeEmbedding, KnowledgeChunk
 from app.services.llm_service import llm_service
 from app.core.logging import get_logger
 
@@ -16,7 +16,7 @@ class RAGService:
         db: AsyncSession,
         query: str,
         limit: int = 5,
-        similarity_threshold: float = 0.7
+        similarity_threshold: float = 0.5
     ) -> List[Dict[str, Any]]:
         """
         Search for similar document chunks using vector similarity.
@@ -53,16 +53,17 @@ class RAGService:
             # Format results
             chunks = []
             for embedding, article, distance in rows:
-                similarity = 1 - distance  # Convert distance to similarity
+                similarity = 1 - distance
                 
                 if similarity >= similarity_threshold:
                     chunks.append({
-                        "chunk_id": str(embedding.id),
+                        "chunk_id": str(embedding.chunk_id) if embedding.chunk_id else str(embedding.id),
                         "article_id": str(article.id),
                         "article_title": article.title,
                         "content": embedding.chunk_text,
                         "similarity": similarity,
-                        "category": article.category
+                        "category": article.category,
+                        "version": embedding.version
                     })
             
             return chunks
@@ -100,8 +101,11 @@ class RAGService:
         # Format context
         context_parts = []
         for i, chunk in enumerate(chunks, 1):
+            title = chunk.get('article_title', 'Unknown Document')
+            version = f" (v{chunk['version']})" if chunk.get('version') else ""
+            content = chunk['content']
             context_parts.append(
-                f"[Source {i}: {chunk['document_name']}]\n{chunk['content']}\n"
+                f"[Source {i}: {title}{version}]\n{content}\n"
             )
         
         return "\n".join(context_parts)

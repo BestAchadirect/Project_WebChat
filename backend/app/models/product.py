@@ -1,5 +1,4 @@
 from sqlalchemy import Column, String, Float, Boolean, Integer, JSON, ForeignKey, DateTime
-from sqlalchemy import Column, String, Float, Boolean, Integer, JSON, ForeignKey, DateTime
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
@@ -25,12 +24,18 @@ class Product(Base):
     product_url = Column(String, nullable=True)
     attributes = Column(JSON, default={})  # Key-value pairs for filters
     is_active = Column(Boolean, default=True)
+    product_upload_id = Column(UUID(as_uuid=True), ForeignKey("product_uploads.id"), nullable=True)
+    
+    # New fields
+    search_text = Column(String, nullable=True)
+    search_hash = Column(String, nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
     embeddings = relationship("ProductEmbedding", back_populates="product", cascade="all, delete-orphan")
+    upload = relationship("ProductUpload", back_populates="products")
 
 class ProductEmbedding(Base):
     __tablename__ = "product_embeddings"
@@ -44,6 +49,7 @@ class ProductEmbedding(Base):
     
     # Vector embedding
     embedding = Column(Vector(settings.VECTOR_DIMENSIONS), nullable=False)
+    model = Column(String, nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

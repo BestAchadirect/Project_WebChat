@@ -1,12 +1,13 @@
 import csv
 import io
+import hashlib
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from uuid import uuid4, UUID
 from datetime import datetime
 from fastapi import UploadFile, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func, and_
 from sqlalchemy.orm import selectinload
 import PyPDF2
 from docx import Document as DocxDocument
@@ -14,6 +15,8 @@ from docx import Document as DocxDocument
 from app.models.product import Product, ProductEmbedding
 from app.models.knowledge import (
     KnowledgeArticle,
+    KnowledgeArticleVersion,
+    KnowledgeChunk,
     KnowledgeEmbedding,
     KnowledgeUpload,
     KnowledgeUploadStatus,
@@ -69,6 +72,12 @@ class DataImportService:
                         continue
 
                     sku = row["sku"].strip()
+                    row_desc = row.get("description", "")
+                    row_name = row["name"]
+                    
+                    # Compute search values
+                    search_text = f"{row_name} {row_desc} {sku}"
+                    search_hash = self._hash_text(search_text)
 
                     # Check exist
                     stmt = select(Product).where(Product.sku == sku)
@@ -76,20 +85,27 @@ class DataImportService:
                     existing_product = result.scalar_one_or_none()
 
                     if existing_product:
-                        existing_product.name = row["name"]
+                        existing_product.name = row_name
                         existing_product.price = float(row.get("price", 0))
-                        existing_product.description = row.get("description", "")
+                        existing_product.description = row_desc
+                        existing_product.product_upload_id = upload_record.id
+                        existing_product.search_text = search_text
+                        existing_product.search_hash = search_hash
+                        
                         stats["updated"] += 1
                         products_to_embed.append(existing_product)
                     else:
                         new_product = Product(
                             sku=sku,
-                            name=row["name"],
+                            name=row_name,
                             price=float(row.get("price", 0)),
-                            description=row.get("description", ""),
+                            description=row_desc,
                             image_url=row.get("image_url"),
                             product_url=row.get("product_url"),
                             object_id=row.get("object_id"),
+                            product_upload_id=upload_record.id,
+                            search_text=search_text,
+                            search_hash=search_hash
                         )
                         db.add(new_product)
                         stats["created"] += 1
@@ -130,7 +146,7 @@ class DataImportService:
             )
             raise
 
-    async def _generate_product_embeddings_background(self, product_ids: List[int]) -> None:
+    async def _generate_product_embeddings_background(self, product_ids: List[UUID]) -> None:
         """Background task to generate embeddings for products."""
         from app.db.session import AsyncSessionLocal
         
@@ -160,8 +176,34 @@ class DataImportService:
                 await task_service.update_task_status(db, task.id, TaskStatus.COMPLETED, progress=100)
                 
             except Exception as e:
-                print(f"Error in background embedding generation: {e}")
-                # Task status update would happen here if we had task_id
+                logger.error(f"Error in background embedding generation: {e}")
+
+    async def _update_product_embedding(self, db: AsyncSession, product: Product):
+        # Check if embedding exists and hash matches
+        # For simplicity, we regenerate if calling this function. 
+        # But we can optimize using search_hash in future.
+        
+        text = product.search_text or f"{product.name} {product.description or ''} {product.sku}"
+        embedding_vector = await llm_service.generate_embedding(text)
+        
+        # Clear old embeddings? Or just add new one? 
+        # Assuming 1:1 for product for now, or just append. 
+        # Logic: Delete existing if we want to replace.
+        # Getting existing:
+        stmt = select(ProductEmbedding).where(ProductEmbedding.product_id == product.id)
+        result = await db.execute(stmt)
+        existing = result.scalars().all()
+        for e in existing:
+            await db.delete(e)
+            
+        emb = ProductEmbedding(
+            product_id=product.id,
+            embedding=embedding_vector,
+            price_cache=product.price,
+            model="text-embedding-3-small" # Example, should match LLM service
+        )
+        db.add(emb)
+        await db.commit()
 
     async def import_knowledge(
         self,
@@ -172,7 +214,6 @@ class DataImportService:
     ) -> Dict[str, int]:
         """
         Import knowledge articles from CSV, PDF, or DOCX files.
-        Supports multiple file formats for flexible knowledge base population.
         """
         content = await file.read()
         filename = file.filename
@@ -185,17 +226,17 @@ class DataImportService:
             uploaded_by=uploaded_by,
         )
 
-        articles_to_create: List[Dict[str, Any]] = []
+        parsed_items: List[Dict[str, Any]] = [] # list of {title, full_text, chunks: [str], category, url}
 
         try:
             await self._update_upload_status(db, upload_session.id, KnowledgeUploadStatus.PROCESSING)
-            # Parse file based on extension
+            # Parse file
             if lower_filename.endswith('.csv'):
-                articles_to_create = await self._parse_csv_knowledge(content)
+                parsed_items = await self._parse_csv_knowledge(content)
             elif lower_filename.endswith('.pdf'):
-                articles_to_create = await self._parse_pdf_knowledge(content, lower_filename)
+                parsed_items = await self._parse_pdf_knowledge(content, lower_filename)
             elif lower_filename.endswith('.docx'):
-                articles_to_create = await self._parse_docx_knowledge(content, lower_filename)
+                parsed_items = await self._parse_docx_knowledge(content, lower_filename)
             else:
                 raise HTTPException(status_code=400, detail="Unsupported file type. Use CSV, PDF, or DOCX.")
         except Exception as e:
@@ -203,27 +244,75 @@ class DataImportService:
             await self._update_upload_status(db, upload_session.id, KnowledgeUploadStatus.FAILED, str(e))
             raise HTTPException(status_code=400, detail=f"Error parsing file: {str(e)}")
         
-        # Create articles and schedule embeddings
-        stats = {"created": 0, "errors": 0}
+        # Create Data Structure (Article -> Version -> Chunks)
+        stats = {"created": 0, "new_versions": 0, "errors": 0}
         articles_to_embed = []
         
-        for article_data in articles_to_create:
+        for item in parsed_items:
             try:
-                article = KnowledgeArticle(**article_data, upload_session_id=upload_session.id)
-                db.add(article)
+                # Check if exists
+                stmt = select(KnowledgeArticle).where(KnowledgeArticle.title == item["title"])
+                result = await db.execute(stmt)
+                article = result.scalar_one_or_none()
+                
+                if not article:
+                    # Create new
+                    article = KnowledgeArticle(
+                        title=item["title"],
+                        content=item["full_text"], # Legacy field
+                        category=item.get("category"),
+                        url=item.get("url"),
+                        upload_session_id=upload_session.id
+                    )
+                    db.add(article)
+                    await db.commit()
+                    await db.refresh(article)
+                    stats["created"] += 1
+                
+                # Determine next version
+                # Get max version
+                stmt_v = select(func.max(KnowledgeArticleVersion.version)).where(KnowledgeArticleVersion.article_id == article.id)
+                res_v = await db.execute(stmt_v)
+                max_v = res_v.scalar() or 0
+                new_v = max_v + 1
+                
+                # Create Version
+                version = KnowledgeArticleVersion(
+                    article_id=article.id,
+                    version=new_v,
+                    content_text=item["full_text"],
+                    created_by=uploaded_by
+                )
+                db.add(version)
+                await db.commit() # Commit to get ID? ID is uuid, auto gen.
+                stats["new_versions"] += 1
+                
+                # Create Chunks
+                chunks_text = item["chunks"]
+                for i, c_text in enumerate(chunks_text):
+                    c_hash = self._hash_text(c_text)
+                    chunk = KnowledgeChunk(
+                        article_id=article.id,
+                        version=new_v,
+                        chunk_index=i,
+                        chunk_text=c_text,
+                        chunk_hash=c_hash
+                    )
+                    db.add(chunk)
                 await db.commit()
-                await db.refresh(article)
-                stats["created"] += 1
-                articles_to_embed.append(article)
+                
+                articles_to_embed.append(article.id)
+                
             except Exception as e:
-                logger.error(f"Error creating article: {e}")
+                logger.error(f"Error creating article/version: {e}")
                 stats["errors"] += 1
         
         # Schedule background embedding generation
+        # We pass the list of Article IDs. The BG task will look for chunks without embeddings.
         if background_tasks and articles_to_embed:
             background_tasks.add_task(
                 self._generate_knowledge_embeddings_background,
-                [a.id for a in articles_to_embed],
+                articles_to_embed,
                 upload_session.id
             )
         else:
@@ -236,156 +325,171 @@ class DataImportService:
         }
     
     async def _parse_csv_knowledge(self, content: bytes) -> List[Dict[str, Any]]:
-        """Parse CSV file for knowledge articles."""
         text_content = content.decode("utf-8-sig")
         csv_reader = csv.DictReader(io.StringIO(text_content))
-        
-        articles = []
+        items = []
         for row in csv_reader:
             if row.get("title") and row.get("content"):
-                articles.append({
+                full_text = row["content"].strip()
+                chunks = self._chunk_text(full_text)
+                items.append({
                     "title": row["title"].strip(),
-                    "content": row["content"].strip(),
+                    "full_text": full_text,
+                    "chunks": chunks,
                     "category": row.get("category", "general").strip(),
                     "url": row.get("url", "").strip() or None
                 })
-        
-        return articles
+        return items
     
     async def _parse_pdf_knowledge(self, content: bytes, filename: str) -> List[Dict[str, Any]]:
-        """Parse PDF file for knowledge articles."""
         pdf_file = io.BytesIO(content)
         pdf_reader = PyPDF2.PdfReader(pdf_file)
-        
-        articles = []
         full_text = ""
+        for page in pdf_reader.pages:
+            t = page.extract_text()
+            if t: full_text += t + "\n"
         
-        for page_num, page in enumerate(pdf_reader.pages):
-            page_text = page.extract_text()
-            if page_text:
-                full_text += page_text + "\n"
-        
-        # Chunk the text into manageable pieces
-        chunks = self._chunk_text(full_text, chunk_size=2000, overlap=200)
-        
-        for idx, chunk in enumerate(chunks):
-            if chunk.strip():
-                articles.append({
-                    "title": f"{filename} - Section {idx + 1}",
-                    "content": chunk.strip(),
-                    "category": "pdf_document",
-                    "url": None
-                })
-        
-        return articles
+        chunks = self._chunk_text(full_text)
+        return [{
+            "title": filename,
+            "full_text": full_text,
+            "chunks": chunks,
+            "category": "pdf_document",
+            "url": None
+        }]
     
     async def _parse_docx_knowledge(self, content: bytes, filename: str) -> List[Dict[str, Any]]:
-        """Parse DOCX file for knowledge articles."""
         docx_file = io.BytesIO(content)
         doc = DocxDocument(docx_file)
-        
-        articles = []
         full_text = ""
-        
         for para in doc.paragraphs:
-            if para.text.strip():
-                full_text += para.text + "\n"
-        
-        # Chunk the text into manageable pieces
-        chunks = self._chunk_text(full_text, chunk_size=2000, overlap=200)
-        
-        for idx, chunk in enumerate(chunks):
-            if chunk.strip():
-                articles.append({
-                    "title": f"{filename} - Section {idx + 1}",
-                    "content": chunk.strip(),
-                    "category": "docx_document",
-                    "url": None
-                })
-        
-        return articles
+            if para.text.strip(): full_text += para.text + "\n"
+            
+        chunks = self._chunk_text(full_text)
+        return [{
+            "title": filename,
+            "full_text": full_text,
+            "chunks": chunks,
+            "category": "docx_document",
+            "url": None
+        }]
     
-    def _chunk_text(self, text: str, chunk_size: int = 2000, overlap: int = 200) -> List[str]:
-        """Split text into overlapping chunks."""
+    def _chunk_text(self, text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+        # Reduced chunk size default for granular embeddings
         chunks = []
         start = 0
         text_len = len(text)
-        
         while start < text_len:
-            end = start + chunk_size
+            end = min(start + chunk_size, text_len)
             chunk = text[start:end]
             if chunk.strip():
                 chunks.append(chunk)
             start += chunk_size - overlap
-        
         return chunks
     
+    def _hash_text(self, text: str) -> str:
+        return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
     async def _generate_knowledge_embeddings_background(self, article_ids: List[UUID], upload_session_id: UUID | None = None) -> None:
-        """Background task to generate embeddings for knowledge articles."""
+        """
+        Background task to generate embeddings for knowledge chunks.
+        It finds chunks for the given articles that do NOT have embeddings yet (or specifically for the latest versions).
+        Efficiently reuses embeddings by hash.
+        """
         from app.db.session import AsyncSessionLocal
         
         async with AsyncSessionLocal() as db:
             try:
-                # Create task
+                # Create Task
                 task = await task_service.create_task(
                     db,
                     TaskType.EMBEDDING_GENERATION,
-                    f"Generating embeddings for {len(article_ids)} knowledge articles",
+                    f"Processing chunks for {len(article_ids)} articles",
                     {"article_ids": article_ids}
                 )
-                
                 await task_service.update_task_status(db, task.id, TaskStatus.RUNNING)
+
+                # Find chunks for these articles that need embeddings
+                # We simply select chunks and check their embedding relationship
+                # Or for simplicity, select chunks created recently?
+                # Best way: Select All Chunks for these articles. For each chunk, check if embedding exists.
                 
-                # Get articles
-                stmt = select(KnowledgeArticle).where(KnowledgeArticle.id.in_(article_ids))
+                # Optimized: Select Chunks where not exists(Embedding)
+                # But we just created them, so they likely don't have embeddings.
+                
+                stmt = (
+                    select(KnowledgeChunk)
+                    .join(KnowledgeEmbedding, KnowledgeChunk.id == KnowledgeEmbedding.chunk_id, isouter=True)
+                    .where(
+                        and_(
+                            KnowledgeChunk.article_id.in_(article_ids),
+                            KnowledgeEmbedding.id.is_(None)
+                        )
+                    )
+                )
+                
                 result = await db.execute(stmt)
-                articles = result.scalars().all()
+                chunks_to_process = result.scalars().all()
                 
-                total = len(articles)
-                for idx, article in enumerate(articles):
-                    await self._create_knowledge_embedding(db, article)
-                    progress = int((idx + 1) / total * 100)
-                    await task_service.update_task_status(db, task.id, TaskStatus.RUNNING, progress=progress)
+                total = len(chunks_to_process)
+                processed = 0
                 
+                logger.info(f"Found {total} chunks to process")
+                
+                for chunk in chunks_to_process:
+                    # Check for REUSE
+                    # Find ANY existing embedding with same chunk_hash
+                    # We need to find a Chunk with same hash that DOES have an embedding
+                    
+                    reuse_stmt = (
+                        select(KnowledgeEmbedding)
+                        .join(KnowledgeChunk, KnowledgeEmbedding.chunk_id == KnowledgeChunk.id)
+                        .where(KnowledgeChunk.chunk_hash == chunk.chunk_hash)
+                        .limit(1)
+                    )
+                    reuse_res = await db.execute(reuse_stmt)
+                    existing_emb = reuse_res.scalar_one_or_none()
+                    
+                    if existing_emb:
+                        # Reuse
+                        new_emb = KnowledgeEmbedding(
+                            article_id=chunk.article_id,
+                            chunk_id=chunk.id,
+                            chunk_text=chunk.chunk_text,
+                            embedding=existing_emb.embedding, # Copy vector
+                            model=existing_emb.model,
+                            version=chunk.version
+                        )
+                        db.add(new_emb)
+                    else:
+                        # Generate
+                        vector = await llm_service.generate_embedding(chunk.chunk_text)
+                        new_emb = KnowledgeEmbedding(
+                            article_id=chunk.article_id,
+                            chunk_id=chunk.id,
+                            chunk_text=chunk.chunk_text,
+                            embedding=vector,
+                            model="text-embedding-3-small", 
+                            version=chunk.version
+                        )
+                        db.add(new_emb)
+                    
+                    processed += 1
+                    if processed % 10 == 0:
+                        await db.commit() # Commit periodically
+                        progress = int(processed / total * 100)
+                        await task_service.update_task_status(db, task.id, TaskStatus.RUNNING, progress=progress)
+
+                await db.commit()
                 await task_service.update_task_status(db, task.id, TaskStatus.COMPLETED, progress=100)
-                logger.info(f"Completed embedding generation for {len(articles)} knowledge articles")
+                
                 if upload_session_id:
                     await self._update_upload_status(db, upload_session_id, KnowledgeUploadStatus.COMPLETED)
                 
             except Exception as e:
-                logger.error(f"Error in background embedding generation: {e}")
+                logger.error(f"Error in background chunk embedding: {e}")
                 if upload_session_id:
                     await self._update_upload_status(db, upload_session_id, KnowledgeUploadStatus.FAILED, str(e))
-
-    async def _update_product_embedding(self, db: AsyncSession, product: Product):
-        # Generate text representation
-        text = f"{product.name} {product.description or ''} {product.sku}"
-        embedding_vector = await llm_service.generate_embedding(text)
-        
-        # Check if exists
-        # Simplified: Delete old, add new
-        # In real app: check if exists
-        
-        emb = ProductEmbedding(
-            product_id=product.id,
-            embedding=embedding_vector,
-            price_cache=product.price
-            # category_id ...
-        )
-        db.add(emb)
-        await db.commit()
-
-    async def _create_knowledge_embedding(self, db: AsyncSession, article: KnowledgeArticle):
-        embedding_vector = await llm_service.generate_embedding(article.content) # Full content or chunk?
-        # Assuming simple 1-1 for now, or use chunking service
-        
-        emb = KnowledgeEmbedding(
-            article_id=article.id,
-            embedding=embedding_vector,
-            chunk_text=article.content[:1000] # Store snippet
-        )
-        db.add(emb)
-        await db.commit()
 
     async def _create_upload_session(
         self,
@@ -401,7 +505,7 @@ class DataImportService:
         upload_root.mkdir(parents=True, exist_ok=True)
         upload_dir = upload_root / str(upload_id)
         upload_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = Path(filename).name  # prevent path traversal from filename
+        safe_name = Path(filename).name
         file_path = upload_dir / safe_name
         file_path.write_bytes(content)
 
@@ -448,23 +552,24 @@ class DataImportService:
         content_type: str | None,
         uploaded_by: str | None = None,
     ) -> ProductUpload:
-        """Store a product upload file and create a tracking record."""
         upload_id = uuid4()
-        upload_root = Path(settings.UPLOAD_DIR) / "product_uploads"
-        upload_root.mkdir(parents=True, exist_ok=True)
-        upload_dir = upload_root / str(upload_id)
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = Path(filename).name
-        file_path = upload_dir / safe_name
-        file_path.write_bytes(content)
+        storage_path = self._product_upload_storage_path(upload_id, filename)
+        storage_path.parent.mkdir(parents=True, exist_ok=True)
+        storage_path.write_bytes(content)
+
+        upload_by_uuid = None
+        if uploaded_by:
+            try:
+                upload_by_uuid = UUID(uploaded_by)
+            except ValueError:
+                upload_by_uuid = None
 
         record = ProductUpload(
             id=upload_id,
             filename=filename,
             content_type=content_type,
             file_size=len(content),
-            file_path=str(file_path),
-            uploaded_by=uploaded_by,
+            uploaded_by=upload_by_uuid,
             status=ProductUploadStatus.PENDING,
         )
         db.add(record)
@@ -505,15 +610,15 @@ class DataImportService:
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
 
+    def _product_upload_storage_path(self, upload_id: UUID, filename: str) -> Path:
+        upload_root = Path(settings.UPLOAD_DIR) / "product_uploads"
+        return upload_root / str(upload_id) / Path(filename).name
+
     async def get_product_upload_file_path(self, db: AsyncSession, upload_id: UUID) -> Path:
         upload = await self.get_product_upload(db, upload_id)
         if not upload:
             raise HTTPException(status_code=404, detail="Upload not found")
-        file_path = Path(upload.file_path)
-        upload_root = (Path(settings.UPLOAD_DIR) / "product_uploads").resolve()
-        resolved = file_path.resolve()
-        if upload_root not in resolved.parents:
-            raise HTTPException(status_code=400, detail="Invalid file path")
+        file_path = self._product_upload_storage_path(upload.id, upload.filename)
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="Stored file is missing")
         return file_path
@@ -523,17 +628,18 @@ class DataImportService:
         if not upload:
             raise HTTPException(status_code=404, detail="Upload not found")
 
-        file_path = Path(upload.file_path)
-        upload_root = (Path(settings.UPLOAD_DIR) / "product_uploads").resolve()
-        try:
-            resolved = file_path.resolve()
-        except FileNotFoundError:
-            resolved = file_path
+        stmt = select(Product).where(Product.product_upload_id == upload_id)
+        result = await db.execute(stmt)
+        for product in result.scalars().all():
+            product.product_upload_id = None
 
-        if upload_root in resolved.parents or resolved == upload_root:
-            file_path.unlink(missing_ok=True)
+        storage_path = self._product_upload_storage_path(upload.id, upload.filename)
+        if storage_path.exists():
             try:
-                file_path.parent.rmdir()
+                storage_path.unlink()
+                storage_dir = storage_path.parent
+                if storage_dir.exists():
+                    storage_dir.rmdir()
             except OSError:
                 pass
 
@@ -541,7 +647,6 @@ class DataImportService:
         await db.commit()
 
     async def list_knowledge_uploads(self, db: AsyncSession) -> List[KnowledgeUpload]:
-        """Return recent knowledge uploads with article counts eager loaded."""
         stmt = (
             select(KnowledgeUpload)
             .options(selectinload(KnowledgeUpload.articles))
@@ -560,7 +665,6 @@ class DataImportService:
         return result.scalar_one_or_none()
 
     async def get_upload_file_path(self, db: AsyncSession, upload_id: UUID) -> Path:
-        """Return safe path to stored upload, raising if missing."""
         upload = await self.get_upload(db, upload_id)
         if not upload:
             raise HTTPException(status_code=404, detail="Upload not found")
@@ -574,7 +678,6 @@ class DataImportService:
         return file_path
 
     async def delete_knowledge_upload(self, db: AsyncSession, upload_id: UUID) -> None:
-        """Delete a knowledge upload and all associated data."""
         upload = await self.get_upload(db, upload_id)
         if not upload:
             raise HTTPException(status_code=404, detail="Upload not found")

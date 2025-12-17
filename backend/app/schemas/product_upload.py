@@ -12,7 +12,7 @@ class ProductUploadResponse(BaseModel):
     filename: str
     content_type: Optional[str] = None
     file_size: Optional[int] = None
-    uploaded_by: Optional[str] = None
+    uploaded_by: Optional[UUID] = None
     status: ProductUploadStatus
     error_message: Optional[str] = None
     imported_products: int = 0

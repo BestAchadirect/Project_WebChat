@@ -1,0 +1,8 @@
+Query: 'test doc content'
+
+--- Searching with 0.0 threshold ---
+[0] Score: 0.1883 | Content: How can I contact Acha?
+We’re always here to assist you. If you have any questions or need support y...
+
+--- Searching with default (0.5) threshold ---
+No chunks passed the 0.5 threshold.

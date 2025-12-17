@@ -1,0 +1,2 @@
+Chunks: 1
+Embeddings: 1
