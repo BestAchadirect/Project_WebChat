@@ -8,11 +8,13 @@ interface Message {
 
 interface KnowledgeSource {
     source_id: string;
+    chunk_id?: string | null;
     title: string;
     content_snippet: string;
     category?: string | null;
     relevance: number;
     url?: string | null;
+    distance?: number | null;
 }
 
 interface ChatResponse {

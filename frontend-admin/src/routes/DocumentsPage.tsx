@@ -156,7 +156,7 @@ export const DocumentsPage: React.FC = () => {
                         <div className="flex justify-between items-center bg-gray-50 p-4 rounded-lg">
                             <div>
                                 <h3 className="text-lg font-medium text-gray-900">Knowledge Base Import</h3>
-                                <p className="text-sm text-gray-500">Import structured FAQs and Articles via CSV, PDF, or DOCX files.</p>
+                                <p className="text-sm text-gray-500">Import structured FAQs and Articles via CSV or DOCX files.</p>
                             </div>
                             <Button
                                 variant="outline"
@@ -170,9 +170,9 @@ export const DocumentsPage: React.FC = () => {
                             onUploadSuccess={handleKnowledgeUploadSuccess}
                             uploadFunction={importApi.importKnowledge}
                             title="Import Knowledge Base"
-                            description="Drag and drop CSV, PDF, or DOCX files"
-                            accept=".csv,.pdf,.doc,.docx"
-                            acceptedDescription="CSV, PDF, or DOCX files"
+                            description="Drag and drop CSV or DOCX files"
+                            accept=".csv,.docx"
+                            acceptedDescription="CSV or DOCX files"
                         />
                     </div>
                 )}

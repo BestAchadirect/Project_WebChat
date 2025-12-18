@@ -9,7 +9,6 @@ from fastapi import UploadFile, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 from sqlalchemy.orm import selectinload
-import PyPDF2
 from docx import Document as DocxDocument
 
 from app.models.product import Product, ProductEmbedding
@@ -213,7 +212,7 @@ class DataImportService:
         uploaded_by: str | None = None
     ) -> Dict[str, int]:
         """
-        Import knowledge articles from CSV, PDF, or DOCX files.
+        Import knowledge articles from CSV or DOCX files.
         """
         content = await file.read()
         filename = file.filename
@@ -233,12 +232,10 @@ class DataImportService:
             # Parse file
             if lower_filename.endswith('.csv'):
                 parsed_items = await self._parse_csv_knowledge(content)
-            elif lower_filename.endswith('.pdf'):
-                parsed_items = await self._parse_pdf_knowledge(content, lower_filename)
             elif lower_filename.endswith('.docx'):
                 parsed_items = await self._parse_docx_knowledge(content, lower_filename)
             else:
-                raise HTTPException(status_code=400, detail="Unsupported file type. Use CSV, PDF, or DOCX.")
+                raise HTTPException(status_code=400, detail="Unsupported file type. Use CSV or DOCX.")
         except Exception as e:
             logger.error(f"Error parsing file {lower_filename}: {e}")
             await self._update_upload_status(db, upload_session.id, KnowledgeUploadStatus.FAILED, str(e))
@@ -340,23 +337,6 @@ class DataImportService:
                     "url": row.get("url", "").strip() or None
                 })
         return items
-    
-    async def _parse_pdf_knowledge(self, content: bytes, filename: str) -> List[Dict[str, Any]]:
-        pdf_file = io.BytesIO(content)
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        full_text = ""
-        for page in pdf_reader.pages:
-            t = page.extract_text()
-            if t: full_text += t + "\n"
-        
-        chunks = self._chunk_text(full_text)
-        return [{
-            "title": filename,
-            "full_text": full_text,
-            "chunks": chunks,
-            "category": "pdf_document",
-            "url": None
-        }]
     
     async def _parse_docx_knowledge(self, content: bytes, filename: str) -> List[Dict[str, Any]]:
         docx_file = io.BytesIO(content)

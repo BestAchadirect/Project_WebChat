@@ -26,8 +26,18 @@ TESTS: List[Dict[str, Any]] = [
         "name": "No match should fail-closed",
         "message": "What is the warranty for a spaceship engine?",
         "should_have_sources": False,
-        "expect_fail_closed": True,
-        "fail_closed_phrases": ["don't have enough", "do not have enough", "not enough info"],
+        "expect_intent": "clarify",
+        "expect_question": True,
+        "not_echo": True,
+    },
+    {
+        "name": "Complex multi-topic should be partial + one clarifier",
+        "message": "If I place a USD 2,600 order including custom jewelry and sterilized items, pay by bank transfer, request watermark-free images, and later refuse the delivery due to customs fees — what refunds, discounts, store credits, and shipping costs apply?",
+        "should_have_sources": True,
+        "expect_intent": "clarify",
+        "must_include_any": ["what i found", "one question to confirm"],
+        "expect_question": True,
+        "not_echo": True,
     },
 ]
 
@@ -52,6 +62,7 @@ def run_test(t: Dict[str, Any]) -> Dict[str, Any]:
 
     reply = data.get("reply_text", "")
     sources = data.get("sources", []) or []
+    intent = data.get("intent", "")
     titles = " | ".join([str(s.get("title", "")) for s in sources])
     urls = " | ".join([str(s.get("url", "")) for s in sources])
     combined = f"{reply}\n{titles}\n{urls}"
@@ -62,6 +73,7 @@ def run_test(t: Dict[str, Any]) -> Dict[str, Any]:
         "checks": [],
         "reply_preview": reply[:200],
         "num_sources": len(sources),
+        "intent": intent,
     }
 
     # 1) sources presence
@@ -91,13 +103,26 @@ def run_test(t: Dict[str, Any]) -> Dict[str, Any]:
             results["checks"].append("OK: source title matches")
 
     # 4) fail-closed behavior
-    if t.get("expect_fail_closed"):
-        phrases = t.get("fail_closed_phrases", [])
-        if not contains_any(reply, phrases):
+    if t.get("expect_intent"):
+        if norm(intent) != norm(t["expect_intent"]):
             results["pass"] = False
-            results["checks"].append("FAIL: expected fail-closed reply but got something else")
+            results["checks"].append(f"FAIL: expected intent={t['expect_intent']!r} but got {intent!r}")
         else:
-            results["checks"].append("OK: fail-closed reply")
+            results["checks"].append("OK: intent matches")
+
+    if t.get("expect_question"):
+        if "?" not in reply:
+            results["pass"] = False
+            results["checks"].append("FAIL: expected a clarifying question (missing '?')")
+        else:
+            results["checks"].append("OK: contains a question")
+
+    if t.get("not_echo"):
+        if norm(reply) == norm(t["message"]) or norm(reply).startswith(norm(t["message"])[:80]):
+            results["pass"] = False
+            results["checks"].append("FAIL: reply looks like an echo of the user message")
+        else:
+            results["checks"].append("OK: not an echo")
 
     return results
 

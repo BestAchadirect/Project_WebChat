@@ -18,11 +18,13 @@ class ProductCard(BaseModel):
 
 class KnowledgeSource(BaseModel):
     source_id: str
+    chunk_id: Optional[str] = None
     title: str
     content_snippet: str
     category: Optional[str] = None
     relevance: float
     url: Optional[str] = None
+    distance: Optional[float] = None
 
 
 class ChatRequest(BaseModel):

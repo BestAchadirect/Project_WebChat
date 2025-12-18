@@ -80,11 +80,10 @@ async def import_knowledge(
     db: AsyncSession = Depends(get_db)
 ) -> KnowledgeImportResponse:
     """
-    Import knowledge articles from CSV, PDF, or DOCX files.
+    Import knowledge articles from CSV or DOCX files.
     
     Supported formats:
     - CSV: Must have columns 'title', 'content', and optionally 'category', 'url'
-    - PDF: Text is extracted, chunked, and converted to articles
     - DOCX: Paragraphs are extracted, chunked, and converted to articles
     
     Files are processed in the background with embeddings generated asynchronously.
@@ -92,7 +91,7 @@ async def import_knowledge(
     filename = file.filename.lower()
     
     # Validate file type
-    allowed_extensions = ['.csv', '.pdf', '.docx']
+    allowed_extensions = ['.csv', '.docx']
     if not any(filename.endswith(ext) for ext in allowed_extensions):
         raise HTTPException(
             status_code=400, 

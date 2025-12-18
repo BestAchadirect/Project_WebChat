@@ -1,4 +1,5 @@
-from typing import List, Optional
+import json
+from typing import Any, Dict, List, Optional
 from openai import AsyncOpenAI
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -41,12 +42,13 @@ class LLMService:
         self,
         messages: List[dict],
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
     ) -> str:
         """Generate a chat response using the LLM."""
         try:
             response = await self.client.chat.completions.create(
-                model=self.model,
+                model=model or self.model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens
@@ -55,6 +57,24 @@ class LLMService:
         except Exception as e:
             logger.error(f"Error generating chat response: {e}")
             raise
+
+    async def generate_chat_json(
+        self,
+        messages: List[dict],
+        model: Optional[str] = None,
+        temperature: float = 0.0,
+        max_tokens: Optional[int] = 300,
+    ) -> Dict[str, Any]:
+        """Generate strict JSON output using response_format=json_object."""
+        response = await self.client.chat.completions.create(
+            model=model or self.model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content or "{}"
+        return json.loads(content)
     
     async def classify_intent(self, user_message: str) -> dict:
         """

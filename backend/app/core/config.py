@@ -28,7 +28,21 @@ class Settings(BaseSettings):
     VECTOR_DIMENSIONS: int = 1536  # for text-embedding-3-small
     KNOWLEDGE_DISTANCE_THRESHOLD: float = 0.40
     PRODUCT_DISTANCE_THRESHOLD: float = 0.35
-    
+
+    # RAG pipeline (routing should not depend on distance thresholds)
+    RAG_RETRIEVE_TOPK_KNOWLEDGE: int = 30
+    RAG_RETRIEVE_TOPK_PRODUCT: int = 20
+    RAG_RERANK_TOPN: int = 5
+    RAG_COHERE_RERANK_MODEL: str = "rerank-english-v3.0"
+    COHERE_API_KEY: Optional[str] = None
+    RAG_RERANK_MIN_SCORE: float = 0.05
+    RAG_RERANK_MIN_SCORE_COUNT: int = 2
+    RAG_MAX_DOC_CHARS_FOR_RERANK: int = 700
+    RAG_MAX_CHUNK_CHARS_FOR_CONTEXT: int = 1200
+    RAG_VERIFY_MODEL: str = "gpt-4o-mini"
+    RAG_DECOMPOSE_MODEL: str = "gpt-4o-mini"
+    RAG_DECOMPOSE_MAX_SUBQUESTIONS: int = 8
+
     # Supabase Storage
     SUPABASE_URL: str
     SUPABASE_KEY: str  # Anon key
