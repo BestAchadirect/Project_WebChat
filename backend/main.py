@@ -1,9 +1,17 @@
+from pathlib import Path
+import sys
+
+# Ensure backend directory is on sys.path so `app.*` imports work no matter where main is executed
+BACKEND_ROOT = Path(__file__).resolve().parent
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.db.session import engine
 from app.db.base import Base
 from sqlalchemy import text
-import app.models # Ensure models are registered
+import app.models  # Ensure models are registered
 from app.api.routes.health import router as health_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.data_import import router as data_import_router

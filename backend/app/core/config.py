@@ -1,5 +1,8 @@
-from pydantic_settings import BaseSettings
+from pathlib import Path
 from typing import Optional
+
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "GenAI SaaS Backend"
@@ -8,8 +11,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     
     # Security
-    JWT_SECRET: str
-    JWT_ALGORITHM: str = "HS256"
+    JWT_SECRET: str = Field(validation_alias=AliasChoices("JWT_SECRET", "SECRET_KEY"))
+    JWT_ALGORITHM: str = Field(default="HS256", validation_alias=AliasChoices("JWT_ALGORITHM", "ALGORITHM"))
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
     # CORS
@@ -23,6 +26,8 @@ class Settings(BaseSettings):
     
     # Vector DB
     VECTOR_DIMENSIONS: int = 1536  # for text-embedding-3-small
+    KNOWLEDGE_DISTANCE_THRESHOLD: float = 0.40
+    PRODUCT_DISTANCE_THRESHOLD: float = 0.35
     
     # Supabase Storage
     SUPABASE_URL: str
@@ -36,7 +41,8 @@ class Settings(BaseSettings):
     ALLOWED_EXTENSIONS: str = "pdf,doc,docx,txt,csv"
 
     class Config:
-        env_file = "../.env"
+        # Load backend-local .env regardless of current working directory
+        env_file = str(Path(__file__).resolve().parents[2] / ".env")
         case_sensitive = True
 
 settings = Settings()
