@@ -9,8 +9,10 @@ class ProductCard(BaseModel):
     sku: str
     legacy_sku: List[str] = []
     name: str
+    description: Optional[str] = None
     price: float
     currency: str
+    stock_status: Optional[str] = None
     image_url: Optional[str] = None
     product_url: Optional[str] = None
     attributes: Dict[str, Any] = {}
@@ -25,6 +27,8 @@ class KnowledgeSource(BaseModel):
     relevance: float
     url: Optional[str] = None
     distance: Optional[float] = None
+    rerank_score: Optional[float] = Field(default=None, exclude=True)
+    query_hint: Optional[str] = Field(default=None, exclude=True)
 
 
 class ChatRequest(BaseModel):

@@ -4,6 +4,7 @@ import apiClient from '../../api/client';
 interface Message {
     role: 'user' | 'assistant' | 'system';
     content: string;
+    productCarousel?: ProductCard[];
 }
 
 interface KnowledgeSource {
@@ -20,9 +21,24 @@ interface KnowledgeSource {
 interface ChatResponse {
     conversation_id: number;
     reply_text: string;
-    product_carousel: any[];
+    product_carousel: ProductCard[];
     intent: string;
     sources?: KnowledgeSource[];
+}
+
+interface ProductCard {
+    id: string;
+    object_id?: string | null;
+    sku: string;
+    legacy_sku?: string[];
+    name: string;
+    description?: string | null;
+    price: number;
+    currency: string;
+    stock_status?: string | null;
+    image_url?: string | null;
+    product_url?: string | null;
+    attributes?: Record<string, any>;
 }
 
 interface ChatWidgetProps {
@@ -41,6 +57,8 @@ declare global {
             welcomeMessage?: string;
             faqSuggestions?: string[];
             apiUrl?: string;
+            displayCurrency?: string;
+            thbToUsdRate?: number;
         };
     }
 }
@@ -78,6 +96,69 @@ const customStyles = `
 }
 `;
 
+const ProductCarousel: React.FC<{
+    items: ProductCard[];
+    primaryColor: string;
+    displayCurrency: string;
+    thbToUsdRate?: number;
+}> = ({ items, primaryColor, displayCurrency, thbToUsdRate }) => {
+    if (!items || items.length === 0) return null;
+
+    const formatPrice = (p: ProductCard) => {
+        const currency = (p.currency || '').toUpperCase();
+        const target = (displayCurrency || currency || 'USD').toUpperCase();
+        if (target === 'USD' && currency === 'THB') {
+            const rate = typeof thbToUsdRate === 'number' && thbToUsdRate > 0 ? thbToUsdRate : 1.0;
+            const usd = p.price * rate;
+            return `${usd.toFixed(2)} USD`;
+        }
+        if (target === 'USD' && currency === 'USD') {
+            return `${p.price.toFixed(2)} USD`;
+        }
+        return `${Number.isFinite(p.price) ? p.price.toFixed(2) : p.price} ${currency || 'THB'}`;
+    };
+
+    return (
+        <div className="mt-3">
+            <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-custom">
+                {items.map((p) => (
+                    <a
+                        key={p.id}
+                        href={p.product_url || '#'}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="min-w-[220px] max-w-[220px] bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md transition-shadow"
+                    >
+                        <div className="h-[120px] bg-gray-50 flex items-center justify-center overflow-hidden">
+                            {p.image_url ? (
+                                <img src={p.image_url} alt={p.name} className="h-full w-full object-cover" />
+                            ) : (
+                                <div className="text-xs text-gray-400">No image</div>
+                            )}
+                        </div>
+                        <div className="p-3">
+                            <div className="text-sm font-semibold text-gray-900 line-clamp-2">{p.name}</div>
+                            <div className="mt-1 text-xs text-gray-500">{p.sku}</div>
+                            {p.description && (
+                                <div className="mt-1 text-xs text-gray-500 line-clamp-2">{p.description}</div>
+                            )}
+                            <div className="mt-2 flex items-center justify-between">
+                                <div className="text-sm font-semibold text-gray-900">{formatPrice(p)}</div>
+                                <div
+                                    className="px-2 py-1 rounded-lg text-xs font-medium text-white"
+                                    style={{ backgroundColor: primaryColor }}
+                                >
+                                    View
+                                </div>
+                            </div>
+                        </div>
+                    </a>
+                ))}
+            </div>
+        </div>
+    );
+};
+
 export const ChatWidget: React.FC<ChatWidgetProps> = ({
     isInline = false,
     title,
@@ -102,7 +183,9 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             "What is your minimum order?",
             "Do you offer custom designs?",
             "What materials do you use?"
-        ]
+        ],
+        displayCurrency: window.genaiConfig?.displayCurrency || 'USD',
+        thbToUsdRate: window.genaiConfig?.thbToUsdRate,
     };
 
     const [isOpen, setIsOpen] = useState(false);
@@ -166,23 +249,19 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
             setConversationId(data.conversation_id);
             setMessages(prev => {
-                const updated = [
-                    ...prev,
-                    {
-                        role: 'assistant',
-                        content: data.reply_text
-                    }
-                ];
-
-                if (data.sources && data.sources.length > 0) {
-                    updated.push({
-                        role: 'assistant',
-                        content: formatSources(data.sources)
-                    });
-                }
-
+                const assistantMessage: Message = {
+                    role: 'assistant',
+                    content: data.reply_text,
+                    productCarousel: data.product_carousel || [],
+                };
+                const updated: Message[] = [...prev, assistantMessage];
                 return updated;
             });
+
+            // Intentionally do not render sources in the chat window (kept in API response for debugging/analytics).
+            if (data.sources && data.sources.length > 0) {
+                void formatSources(data.sources);
+            }
 
         } catch (error) {
             console.error('Chat error:', error);
@@ -303,16 +382,26 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
                     {messages.map((msg, idx) => (
                         <div key={idx} className={`flex mb-4 animate-fade-in-up ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div
-                                className={`px-4 py-3 rounded-2xl shadow-sm max-w-[80%] ${msg.role === 'user'
-                                        ? 'text-white rounded-br-sm'
-                                        : msg.role === 'system'
-                                            ? 'bg-red-50 text-red-600'
-                                            : 'bg-[#96D0E6] text-[#0C2038] rounded-bl-sm'
-                                    }`}
-                                style={msg.role === 'user' ? { backgroundColor: config.primaryColor } : {}}
-                            >
-                                {msg.content}
+                            <div className="max-w-[80%]">
+                                <div
+                                    className={`px-4 py-3 rounded-2xl shadow-sm ${msg.role === 'user'
+                                            ? 'text-white rounded-br-sm'
+                                            : msg.role === 'system'
+                                                ? 'bg-red-50 text-red-600'
+                                                : 'bg-[#96D0E6] text-[#0C2038] rounded-bl-sm'
+                                        }`}
+                                    style={msg.role === 'user' ? { backgroundColor: config.primaryColor } : {}}
+                                >
+                                    {msg.content}
+                                </div>
+                                {msg.role === 'assistant' && msg.productCarousel && msg.productCarousel.length > 0 && (
+                                    <ProductCarousel
+                                        items={msg.productCarousel}
+                                        primaryColor={config.primaryColor}
+                                        displayCurrency={config.displayCurrency}
+                                        thbToUsdRate={config.thbToUsdRate}
+                                    />
+                                )}
                             </div>
                         </div>
                     ))}

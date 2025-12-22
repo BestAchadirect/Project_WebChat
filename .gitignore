@@ -21,6 +21,7 @@ build/
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 *~
@@ -33,6 +34,8 @@ desktop.ini
 # Logs
 *.log
 logs/
+backend/logs/
+backend/*_suite_report.json
 
 # Testing
 coverage/
@@ -47,3 +50,6 @@ check_documents.py
 test_upload_fixed.py
 test_doc.txt
 backend/test_doc.txt
+
+# Runtime uploads (generated files)
+backend/uploads/

@@ -1,5 +1,8 @@
 import csv
 import io
+import json
+import html
+import re
 import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
@@ -31,9 +34,60 @@ logger = get_logger(__name__)
 
 class DataImportService:
     @staticmethod
+    def _parse_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            v = value.strip()
+            if not v:
+                return None
+            try:
+                return int(float(v))
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _parse_float(value: Any) -> float:
+        if value is None:
+            return 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            v = value.strip()
+            if not v:
+                return 0.0
+            try:
+                return float(v)
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    @staticmethod
+    def _normalize_search_text(text: str) -> str:
+        if not text:
+            return ""
+        t = html.unescape(text)
+        t = t.lower()
+        t = re.sub(r"\s+", " ", t).strip()
+        return t
+
+    @staticmethod
     def get_product_template() -> str:
         """Returns the CSV header for products."""
-        return "sku,name,price,description,category,image_url,product_url,object_id,attributes_json"
+        # Keep attributes_json for backward compatibility, but also provide explicit attribute columns
+        # so non-technical users can fill them easily.
+        return (
+            "sku,name,price,description,category,image_url,product_url,object_id,attributes_json,"
+            "jewelry_type,material,"
+            "length,size,cz_color,design,crystal_color,color,gauge,size_in_pack,rack,height,"
+            "packing_option,pincher_size,ring_size,quantity_in_bulk,opal_color,threading,"
+            "outer_diameter,pearl_color"
+        )
 
     @staticmethod
     def get_knowledge_template() -> str:
@@ -64,6 +118,7 @@ class DataImportService:
         products_to_embed = []
 
         try:
+            await self._update_product_upload_status(db, upload_record.id, ProductUploadStatus.PROCESSING)
             for row in csv_reader:
                 try:
                     # Basic Validation
@@ -73,9 +128,86 @@ class DataImportService:
                     sku = row["sku"].strip()
                     row_desc = row.get("description", "")
                     row_name = row["name"]
+
+                    object_id_raw = row.get("object_id")
+                    object_id = (object_id_raw.strip() if isinstance(object_id_raw, str) else object_id_raw) or None
                     
+                    # Parse attributes:
+                    # - attributes_json (optional): JSON object string
+                    # - explicit columns (optional): preferred for spreadsheet usage
+                    attributes: Dict[str, Any] = {}
+                    attributes_json_raw = row.get("attributes_json")
+                    if isinstance(attributes_json_raw, str) and attributes_json_raw.strip():
+                        try:
+                            parsed = json.loads(attributes_json_raw)
+                            if isinstance(parsed, dict):
+                                attributes.update(parsed)
+                        except Exception:
+                            # Non-fatal: treat as missing
+                            pass
+
+                    attribute_columns = [
+                        "jewelry_type",
+                        "material",
+                        "length",
+                        "size",
+                        "cz_color",
+                        "design",
+                        "crystal_color",
+                        "color",
+                        "gauge",
+                        "size_in_pack",
+                        "rack",
+                        "height",
+                        "packing_option",
+                        "pincher_size",
+                        "ring_size",
+                        "quantity_in_bulk",
+                        "opal_color",
+                        "threading",
+                        "outer_diameter",
+                        "pearl_color",
+                    ]
+                    for key in attribute_columns:
+                        val = row.get(key)
+                        if val is None:
+                            continue
+                        if isinstance(val, str):
+                            val = val.strip()
+                            if not val:
+                                continue
+                        if key in {"size_in_pack", "quantity_in_bulk"}:
+                            parsed_int = self._parse_int(val)
+                            if parsed_int is not None:
+                                attributes[key] = parsed_int
+                        else:
+                            attributes[key] = val
+
+                    category_raw = row.get("category")
+                    category = category_raw.strip() if isinstance(category_raw, str) else category_raw
+                    if isinstance(category, str) and category.strip():
+                        attributes["category"] = category.strip()
+
                     # Compute search values
-                    search_text = f"{row_name} {row_desc} {sku}"
+                    search_parts = [
+                        str(row_name or ""),
+                        str(row_desc or ""),
+                        str(sku or ""),
+                        str(attributes.get("jewelry_type") or ""),
+                        str(attributes.get("material") or ""),
+                        str(attributes.get("gauge") or ""),
+                        str(attributes.get("color") or ""),
+                        str(attributes.get("threading") or ""),
+                        str(attributes.get("outer_diameter") or ""),
+                        str(attributes.get("length") or ""),
+                        str(attributes.get("size") or ""),
+                        str(attributes.get("design") or ""),
+                        str(attributes.get("crystal_color") or ""),
+                        str(attributes.get("cz_color") or ""),
+                        str(attributes.get("opal_color") or ""),
+                        str(attributes.get("pearl_color") or ""),
+                    ]
+                    search_text = self._normalize_search_text(" ".join([p for p in search_parts if p]))
                     search_hash = self._hash_text(search_text)
 
                     # Check exist
@@ -85,11 +217,21 @@ class DataImportService:
 
                     if existing_product:
                         existing_product.name = row_name
-                        existing_product.price = float(row.get("price", 0))
+                        existing_product.price = self._parse_float(row.get("price", 0))
+                        existing_product.currency = (getattr(settings, "BASE_CURRENCY", "USD") or "USD").upper()
                         existing_product.description = row_desc
                         existing_product.product_upload_id = upload_record.id
                         existing_product.search_text = search_text
                         existing_product.search_hash = search_hash
+                        existing_product.attributes = attributes or (existing_product.attributes or {})
+                        existing_product.object_id = object_id
+
+                        # Mirror common attributes into dedicated columns (if present in DB)
+                        for k in attribute_columns:
+                            if k in {"size_in_pack", "quantity_in_bulk"}:
+                                setattr(existing_product, k, self._parse_int(attributes.get(k)))
+                            else:
+                                setattr(existing_product, k, attributes.get(k))
                         
                         stats["updated"] += 1
                         products_to_embed.append(existing_product)
@@ -97,15 +239,22 @@ class DataImportService:
                         new_product = Product(
                             sku=sku,
                             name=row_name,
-                            price=float(row.get("price", 0)),
+                            price=self._parse_float(row.get("price", 0)),
+                            currency=(getattr(settings, "BASE_CURRENCY", "USD") or "USD").upper(),
                             description=row_desc,
                             image_url=row.get("image_url"),
                             product_url=row.get("product_url"),
-                            object_id=row.get("object_id"),
+                            object_id=object_id,
                             product_upload_id=upload_record.id,
                             search_text=search_text,
-                            search_hash=search_hash
+                            search_hash=search_hash,
+                            attributes=attributes or {},
                         )
+                        for k in attribute_columns:
+                            if k in {"size_in_pack", "quantity_in_bulk"}:
+                                setattr(new_product, k, self._parse_int(attributes.get(k)))
+                            else:
+                                setattr(new_product, k, attributes.get(k))
                         db.add(new_product)
                         stats["created"] += 1
                         products_to_embed.append(new_product)
@@ -137,6 +286,11 @@ class DataImportService:
             }
 
         except Exception as e:
+            # Ensure the session is usable after flush/commit failures.
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             await self._update_product_upload_status(
                 db,
                 upload_record.id,
@@ -182,26 +336,45 @@ class DataImportService:
         # For simplicity, we regenerate if calling this function. 
         # But we can optimize using search_hash in future.
         
+        model = settings.EMBEDDING_MODEL
         text = product.search_text or f"{product.name} {product.description or ''} {product.sku}"
-        embedding_vector = await llm_service.generate_embedding(text)
-        
-        # Clear old embeddings? Or just add new one? 
-        # Assuming 1:1 for product for now, or just append. 
-        # Logic: Delete existing if we want to replace.
-        # Getting existing:
-        stmt = select(ProductEmbedding).where(ProductEmbedding.product_id == product.id)
-        result = await db.execute(stmt)
-        existing = result.scalars().all()
-        for e in existing:
-            await db.delete(e)
-            
-        emb = ProductEmbedding(
-            product_id=product.id,
-            embedding=embedding_vector,
-            price_cache=product.price,
-            model="text-embedding-3-small" # Example, should match LLM service
+        source_hash = product.search_hash or self._hash_text(self._normalize_search_text(text))
+
+        stmt = select(ProductEmbedding).where(
+            and_(
+                ProductEmbedding.product_id == product.id,
+                ProductEmbedding.model == model,
+            )
         )
-        db.add(emb)
+        result = await db.execute(stmt)
+        existing = result.scalar_one_or_none()
+
+        if existing and getattr(existing, "source_hash", None) == source_hash:
+            return
+
+        embedding_vector = await llm_service.generate_embedding(text)
+
+        category_id = None
+        if isinstance(product.attributes, dict):
+            category_id = product.attributes.get("category")
+
+        if existing:
+            existing.embedding = embedding_vector
+            existing.price_cache = product.price
+            existing.category_id = category_id
+            existing.source_hash = source_hash
+            db.add(existing)
+        else:
+            emb = ProductEmbedding(
+                product_id=product.id,
+                embedding=embedding_vector,
+                price_cache=product.price,
+                model=model,
+                category_id=category_id,
+                source_hash=source_hash,
+            )
+            db.add(emb)
+
         await db.commit()
 
     async def import_knowledge(

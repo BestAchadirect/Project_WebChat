@@ -17,6 +17,10 @@ class ProductUploadStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+def _enum_values(enum_cls) -> list[str]:
+    return [e.value for e in enum_cls]
+
+
 class ProductUpload(Base):
     """Tracks CSV uploads for product imports."""
     __tablename__ = "product_uploads"
@@ -26,7 +30,15 @@ class ProductUpload(Base):
     content_type = Column(String, nullable=True)
     file_size = Column(Integer, nullable=True)
     uploaded_by = Column(UUID(as_uuid=True), nullable=True)
-    status = Column(Enum(ProductUploadStatus), default=ProductUploadStatus.PENDING, nullable=False)
+    status = Column(
+        Enum(
+            ProductUploadStatus,
+            name="product_upload_status",
+            values_callable=_enum_values,
+        ),
+        default=ProductUploadStatus.PENDING,
+        nullable=False,
+    )
     error_message = Column(Text, nullable=True)
     imported_products = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

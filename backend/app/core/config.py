@@ -28,6 +28,29 @@ class Settings(BaseSettings):
     VECTOR_DIMENSIONS: int = 1536  # for text-embedding-3-small
     KNOWLEDGE_DISTANCE_THRESHOLD: float = 0.40
     PRODUCT_DISTANCE_THRESHOLD: float = 0.35
+    PRODUCT_SEARCH_TOPK: int = 10
+    PRODUCT_SEARCH_DISTANCE_THRESHOLD: float = 0.35
+    PRODUCT_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    PRODUCT_DISTANCE_STRICT: float = 0.35
+    PRODUCT_DISTANCE_LOOSE: float = 0.45
+    PRICE_DISPLAY_CURRENCY: str = "USD"
+    THB_TO_USD_RATE: float = 1.0
+    BASE_CURRENCY: str = "USD"
+    CURRENCY_RATES_JSON: str = "{}"
+
+    # Routing UX (smalltalk / low-signal)
+    SMALLTALK_ENABLED: bool = True
+    SMALLTALK_MODE: str = "static"  # static | llm
+    SMALLTALK_MODEL: str = "gpt-4o-mini"
+    GENERAL_CHAT_MODEL: str = "gpt-4o-mini"
+    GENERAL_CHAT_MAX_TOKENS: int = 250
+    PRODUCT_WEAK_DISTANCE: float = 0.55
+    KNOWLEDGE_WEAK_DISTANCE: float = 0.60
+
+    # Answer polishing (rewrite-only, optional)
+    ANSWER_POLISHER_ENABLED: bool = False
+    ANSWER_POLISHER_MODEL: str = "gpt-4o-mini"
+    ANSWER_POLISHER_MAX_TOKENS: int = 200
 
     # RAG pipeline (routing should not depend on distance thresholds)
     RAG_RETRIEVE_TOPK_KNOWLEDGE: int = 30
@@ -42,6 +65,13 @@ class Settings(BaseSettings):
     RAG_VERIFY_MODEL: str = "gpt-4o-mini"
     RAG_DECOMPOSE_MODEL: str = "gpt-4o-mini"
     RAG_DECOMPOSE_MAX_SUBQUESTIONS: int = 8
+    RAG_MAX_SUB_QUESTIONS: int = 4
+    RAG_PER_QUERY_KEEP: int = 1
+    RAG_VERIFY_MAX_KNOWLEDGE_CHUNKS: int = 12
+
+    # Logging
+    LOG_DIR: str = "logs"
+    DEBUG_LOG_FILE: str = "debug.log"
 
     # Supabase Storage
     SUPABASE_URL: str
