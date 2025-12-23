@@ -1,0 +1,10 @@
+version: "2"
+
+# NOTE:
+# - Do NOT put your authtoken in this repo file.
+# - Set `NGROK_AUTHTOKEN` in the repo root `.env` and run `infra/ngrok/start-ngrok.ps1`.
+
+tunnels:
+  frontend-admin:
+    proto: http
+    addr: 5173

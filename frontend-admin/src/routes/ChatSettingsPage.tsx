@@ -5,6 +5,9 @@ import { ChatWidget } from '../components/chat/ChatWidget';
 
 export const ChatSettingsPage: React.FC = () => {
     const { showToast } = useToast();
+    const widgetOrigin = (import.meta.env.VITE_WIDGET_ORIGIN || 'http://localhost:8000').replace(/\/+$/, '');
+    const widgetApiBaseUrl = `${widgetOrigin}/api/v1`;
+    const widgetScriptUrl = `${widgetOrigin}/static/widget.js`;
     const [config, setConfig] = useState({
         title: 'Jewelry Assistant',
         primaryColor: '#214166', // Medium Blue
@@ -70,10 +73,10 @@ export const ChatSettingsPage: React.FC = () => {
     primaryColor: "${config.primaryColor}",
     welcomeMessage: "${config.welcomeMessage}",
     faqSuggestions: ${JSON.stringify(config.faqSuggestions)},
-    apiUrl: "http://localhost:8000" 
+    apiBaseUrl: "${widgetApiBaseUrl}"
   };
 </script>
-<script src="http://localhost:8000/static/widget.js" async></script>
+<script src="${widgetScriptUrl}" async></script>
 <!-- End GenAI Chat Widget -->`;
 
         navigator.clipboard.writeText(scriptCode);
@@ -233,10 +236,10 @@ title: "${config.title}",
 primaryColor: "${config.primaryColor}",
 welcomeMessage: "${config.welcomeMessage}",
 faqSuggestions: ${JSON.stringify(config.faqSuggestions)},
-apiUrl: "http://localhost:8000"
+apiBaseUrl: "${widgetApiBaseUrl}"
 };
 </script>
-<script src="http://localhost:8000/static/widget.js" async></script>`}
+<script src="${widgetScriptUrl}" async></script>`}
                                     </div>
                                     <p className="mt-3 text-[10px] text-gray-500">
                                         Paste before <code className="text-indigo-400">&lt;/body&gt;</code>.

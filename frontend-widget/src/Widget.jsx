@@ -7,7 +7,29 @@ export default function Widget({ config = {} }) {
     const [input, setInput] = useState('')
 
     const [isLoading, setIsLoading] = useState(false)
-    const [sessionId, setSessionId] = useState(localStorage.getItem('genai_session_id'))
+    const [conversationId, setConversationId] = useState(() => {
+        const raw = localStorage.getItem('genai_conversation_id')
+        const n = raw ? Number(raw) : undefined
+        return Number.isFinite(n) ? n : undefined
+    })
+
+    const getUserId = () => {
+        let userId = localStorage.getItem('genai_user_id')
+        if (!userId) {
+            userId = `guest_${Math.random().toString(36).slice(2, 11)}`
+            localStorage.setItem('genai_user_id', userId)
+        }
+        return userId
+    }
+
+    const resolveApiBaseUrl = () => {
+        const raw =
+            (config.apiBaseUrl && String(config.apiBaseUrl)) ||
+            (config.apiUrl && `${String(config.apiUrl).replace(/\\/+$/, '')}/api/v1`) ||
+            (import.meta.env.VITE_API_BASE_URL || '/api/v1')
+
+        return String(raw).trim().replace(/\\/+$/, '')
+    }
 
     const sendMessage = async () => {
         if (!input.trim() || isLoading) return
@@ -18,15 +40,19 @@ export default function Widget({ config = {} }) {
         setIsLoading(true)
 
         try {
-            const response = await fetch('http://localhost:8000/api/v1/chat/message', {
+            const apiBaseUrl = resolveApiBaseUrl()
+            const response = await fetch(`${apiBaseUrl}/chat`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
+                    user_id: getUserId(),
                     message: userMessage.content,
-                    session_id: sessionId,
-                    tenant_id: config.merchantId // Pass merchant ID as tenant ID
+                    conversation_id: conversationId,
+                    locale: config.locale || 'en-US',
+                    customer_name: config.customerName,
+                    email: config.email,
                 }),
             })
 
@@ -34,15 +60,14 @@ export default function Widget({ config = {} }) {
 
             const data = await response.json()
 
-            // Save session ID if new
-            if (data.session_id && data.session_id !== sessionId) {
-                setSessionId(data.session_id)
-                localStorage.setItem('genai_session_id', data.session_id)
+            if (typeof data.conversation_id === 'number' && data.conversation_id !== conversationId) {
+                setConversationId(data.conversation_id)
+                localStorage.setItem('genai_conversation_id', String(data.conversation_id))
             }
 
             setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: data.response
+                content: data.reply_text ?? '...'
             }])
         } catch (error) {
             console.error('Error:', error)

@@ -1,3 +1,6 @@
 # Activate virtual environment and start backend
-.\venv\Scripts\Activate.ps1
-python -m uvicorn main:app --reload
+if (Test-Path ".\\venv\\Scripts\\python.exe") {
+    .\\venv\\Scripts\\python.exe -m uvicorn main:app --reload
+} else {
+    python -m uvicorn main:app --reload
+}

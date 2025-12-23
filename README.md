@@ -20,6 +20,20 @@ Project_WebChat/
 
 ## Quick start
 
+### One-command dev (PowerShell)
+
+From the repo root:
+
+```powershell
+.\dev.ps1
+```
+
+With a public ngrok URL (admin UI + API proxy):
+
+```powershell
+.\dev.ps1 -Ngrok
+```
+
 ### Backend
 
 ```bash
@@ -70,3 +84,25 @@ Admin: `http://localhost:5173`
 - `backend/backend.log` (app logger)
 - `backend/logs/debug.log` (NDJSON debug events used by RAG/product routing)
 
+## ngrok (tunnel backend + frontend)
+
+This repo uses a single public ngrok URL pointing at the Vite dev server (port `5173`).
+Vite proxies `/api/*` to the local FastAPI backend (port `8000`).
+
+1) Ensure the repo root `.env` contains `NGROK_AUTHTOKEN=...` (do not commit it).
+
+2) Start everything:
+
+```powershell
+.\dev.ps1 -Ngrok
+```
+
+3) Print the public URL(s):
+
+```powershell
+.\infra\ngrok\check-ngrok.ps1
+```
+
+Notes:
+- `infra/ngrok/start-ngrok.ps1` generates `infra/ngrok/ngrok.local.yml` at runtime (gitignored) to avoid committing the authtoken.
+- If `ngrok` is not on your PATH, set `NGROK_EXE` in the repo root `.env` (example: `NGROK_EXE=C:\Tools\ngrok\ngrok.exe`).

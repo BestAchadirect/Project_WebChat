@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Optional
 
 from pydantic import AliasChoices, Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "GenAI SaaS Backend"
@@ -84,9 +84,12 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB max file size
     ALLOWED_EXTENSIONS: str = "pdf,doc,docx,txt,csv"
 
-    class Config:
-        # Load backend-local .env regardless of current working directory
-        env_file = str(Path(__file__).resolve().parents[2] / ".env")
-        case_sensitive = True
+    # Load backend-local .env regardless of current working directory.
+    # Ignore unrelated env vars (e.g. VITE_*) so frontend settings don't crash the backend.
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).resolve().parents[2] / ".env"),
+        case_sensitive=True,
+        extra="ignore",
+    )
 
 settings = Settings()
