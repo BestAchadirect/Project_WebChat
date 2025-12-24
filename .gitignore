@@ -37,6 +37,9 @@ logs/
 backend/logs/
 backend/*_suite_report.json
 
+# Codex local artifacts
+codex_*.patch
+
 # Testing
 coverage/
 .pytest_cache/

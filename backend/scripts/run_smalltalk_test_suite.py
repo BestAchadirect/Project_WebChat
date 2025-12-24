@@ -37,6 +37,7 @@ def _run_one(
     carousel = data.get("product_carousel") or []
     sources = data.get("sources") or []
     reply_text = data.get("reply_text") or ""
+    debug = data.get("debug") or {}
 
     checks: List[str] = []
     ok = True
@@ -59,6 +60,12 @@ def _run_one(
             ok = False
             checks.append(f"product_carousel len={len(carousel)} > {pc_max}")
 
+    pc_min = expected.get("product_carousel_min")
+    if pc_min is not None:
+        if len(carousel) < int(pc_min):
+            ok = False
+            checks.append(f"product_carousel len={len(carousel)} < {pc_min}")
+
     src_max = expected.get("sources_max")
     if src_max is not None:
         if len(sources) > int(src_max):
@@ -79,6 +86,13 @@ def _run_one(
                 if token.lower() not in lowered:
                     ok = False
                     checks.append(f"reply missing token: {token}")
+
+    expected_debug = expected.get("debug") or {}
+    if isinstance(expected_debug, dict) and expected_debug:
+        for key, val in expected_debug.items():
+            if debug.get(key) != val:
+                ok = False
+                checks.append(f"debug {key} expected={val!r} got={debug.get(key)!r}")
 
     if not checks:
         checks.append("OK")

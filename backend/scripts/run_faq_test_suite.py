@@ -41,20 +41,40 @@ def _load_suite(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _call_chat(api_url: str, *, user_id: str, message: str, conversation_id: int) -> Dict[str, Any]:
+def _call_chat(
+    api_url: str,
+    *,
+    user_id: str,
+    message: str,
+    conversation_id: int,
+    timeout_seconds: float,
+) -> Dict[str, Any]:
     payload = {"user_id": user_id, "message": message, "conversation_id": conversation_id}
-    r = requests.post(api_url, json=payload, timeout=15)
+    r = requests.post(api_url, json=payload, timeout=timeout_seconds)
     r.raise_for_status()
     return r.json()
 
 
-def _run_one(api_url: str, *, user_id: str, conversation_id: int, test: Dict[str, Any]) -> Dict[str, Any]:
+def _run_one(
+    api_url: str,
+    *,
+    user_id: str,
+    conversation_id: int,
+    timeout_seconds: float,
+    test: Dict[str, Any],
+) -> Dict[str, Any]:
     query = test.get("query", "")
     reply = ""
     intent = ""
     sources: List[Dict[str, Any]] = []
 
-    data = _call_chat(api_url, user_id=user_id, message=query, conversation_id=conversation_id)
+    data = _call_chat(
+        api_url,
+        user_id=user_id,
+        message=query,
+        conversation_id=conversation_id,
+        timeout_seconds=timeout_seconds,
+    )
     reply = data.get("reply_text", "") or ""
     intent = data.get("intent", "") or ""
     sources = data.get("sources", []) or []
@@ -111,6 +131,7 @@ def main() -> None:
     parser.add_argument("--api-url", default="http://localhost:8000/api/v1/chat", help="Chat API URL")
     parser.add_argument("--user-id", default="eval_suite_bot", help="user_id to send")
     parser.add_argument("--conversation-id", type=int, default=0, help="conversation_id to send")
+    parser.add_argument("--timeout", type=float, default=30.0, help="Per-request timeout seconds")
     parser.add_argument("--report", default="faq_suite_report.json", help="Output report JSON filename")
     args = parser.parse_args()
 
@@ -129,7 +150,13 @@ def main() -> None:
     for t in tests:
         print(f"Running id={t.get('id')}...", flush=True)
         try:
-            res = _run_one(args.api_url, user_id=args.user_id, conversation_id=args.conversation_id, test=t)
+            res = _run_one(
+                args.api_url,
+                user_id=args.user_id,
+                conversation_id=args.conversation_id,
+                timeout_seconds=float(args.timeout),
+                test=t,
+            )
         except requests.RequestException as e:
             print(f"[ERROR] Request failed for id={t.get('id')}: {e}")
             print("Make sure the backend server is running: `cd backend; uvicorn app.main:app --reload --port 8000`")

@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
     OPENAI_MODEL: str = "gpt-4-turbo-preview"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_CACHE_MAX_ITEMS: int = 512
+    EMBEDDING_CACHE_TTL_SECONDS: int = 3600
     
     # Vector DB
     VECTOR_DIMENSIONS: int = 1536  # for text-embedding-3-small
@@ -44,6 +46,15 @@ class Settings(BaseSettings):
     SMALLTALK_MODEL: str = "gpt-4o-mini"
     GENERAL_CHAT_MODEL: str = "gpt-4o-mini"
     GENERAL_CHAT_MAX_TOKENS: int = 250
+    CONTEXTUAL_REPLY_ENABLED: bool = True
+    CONTEXTUAL_REPLY_MODEL: str = "gpt-4o-mini"
+    CONTEXTUAL_REPLY_MAX_TOKENS: int = 120
+    CONTEXTUAL_REPLY_TEMPERATURE: float = 0.3
+    CHAT_LANGUAGE_MODE: str = "auto"  # auto | locale | fixed
+    DEFAULT_LOCALE: str = "en-US"
+    FIXED_REPLY_LANGUAGE: str = "en-US"
+    LANGUAGE_DETECT_MODEL: str = "gpt-4o-mini"
+    LANGUAGE_DETECT_MAX_TOKENS: int = 40
     PRODUCT_WEAK_DISTANCE: float = 0.55
     KNOWLEDGE_WEAK_DISTANCE: float = 0.60
 
@@ -61,13 +72,24 @@ class Settings(BaseSettings):
     RAG_RERANK_MIN_SCORE: float = 0.05
     RAG_RERANK_MIN_SCORE_COUNT: int = 2
     RAG_MAX_DOC_CHARS_FOR_RERANK: int = 700
+    RERANK_MIN_CANDIDATES: int = 12
+    RERANK_GAP_THRESHOLD: float = 0.06
+    RERANK_WEAK_D1_THRESHOLD: float = 0.45
     RAG_MAX_CHUNK_CHARS_FOR_CONTEXT: int = 1200
     RAG_VERIFY_MODEL: str = "gpt-4o-mini"
     RAG_DECOMPOSE_MODEL: str = "gpt-4o-mini"
     RAG_DECOMPOSE_MAX_SUBQUESTIONS: int = 8
+    RAG_DECOMPOSE_WEAK_DISTANCE: float = 0.55
+    RAG_DECOMPOSE_GAP_THRESHOLD: float = 0.06
     RAG_MAX_SUB_QUESTIONS: int = 4
     RAG_PER_QUERY_KEEP: int = 1
     RAG_VERIFY_MAX_KNOWLEDGE_CHUNKS: int = 12
+
+    # Retrieval planner (LLM, almost-always)
+    PLANNER_ENABLED: bool = True
+    PLANNER_MODEL: str = "gpt-4o-mini"
+    PLANNER_MAX_TOKENS: int = 200
+    PLANNER_MIN_CONFIDENCE: float = 0.6
 
     # Logging
     LOG_DIR: str = "logs"

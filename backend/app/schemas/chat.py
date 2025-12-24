@@ -40,6 +40,46 @@ class ChatRequest(BaseModel):
     locale: Optional[str] = "en-US"
 
 
+class ChatContext(BaseModel):
+    text: str
+    is_question_like: bool
+    looks_like_product: bool
+    has_store_intent: bool
+    is_policy_intent: bool
+    policy_topic_count: int
+    sku_token: Optional[str] = None
+    requested_currency: Optional[str] = None
+
+    @classmethod
+    def from_request(
+        cls,
+        *,
+        text: str,
+        is_question_like: bool,
+        looks_like_product: bool,
+        has_store_intent: bool,
+        is_policy_intent: bool,
+        policy_topic_count: int,
+        sku_token: Optional[str],
+        requested_currency: Optional[str],
+    ) -> "ChatContext":
+        return cls(
+            text=text,
+            is_question_like=is_question_like,
+            looks_like_product=looks_like_product,
+            has_store_intent=has_store_intent,
+            is_policy_intent=is_policy_intent,
+            policy_topic_count=policy_topic_count,
+            sku_token=sku_token,
+            requested_currency=requested_currency,
+        )
+
+
+class RouteDecision(BaseModel):
+    route: Literal["smalltalk", "general_chat", "product", "knowledge", "mixed", "clarify", "fallback_general"]
+    reason: str
+
+
 class ParsedQuery(BaseModel):
     intent: Literal["search_products", "ask_info", "mixed", "smalltalk", "other"]
     query_text: str
@@ -56,3 +96,4 @@ class ChatResponse(BaseModel):
     follow_up_questions: List[str] = []
     intent: str = "retrieval_router"
     sources: List[KnowledgeSource] = []
+    debug: Dict[str, Any] = Field(default_factory=dict)

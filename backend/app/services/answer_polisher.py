@@ -43,6 +43,7 @@ class AnswerPolisher:
         route: str,
         user_text: str,
         has_product_carousel: bool,
+        reply_language: Optional[str] = None,
     ) -> str:
         enabled = bool(getattr(settings, "ANSWER_POLISHER_ENABLED", False))
         if not enabled:
@@ -67,6 +68,8 @@ class AnswerPolisher:
             "- Do NOT include a 'Sources' or 'References' section.\n"
             "- Keep it concise.\n"
         )
+        if reply_language:
+            system += f"- Reply in {reply_language}.\n"
         if has_product_carousel:
             system += (
                 "- A product carousel will be shown separately; do NOT list products. "

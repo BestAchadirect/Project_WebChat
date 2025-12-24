@@ -1,43 +1,34 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import re
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.config import settings
 from app.models.chat import AppUser, Conversation, Message, MessageRole
-from app.models.knowledge import KnowledgeArticle, KnowledgeChunk, KnowledgeChunkTag, KnowledgeEmbedding
 from app.models.product import Product, ProductEmbedding
-from app.schemas.chat import ChatRequest, ChatResponse, KnowledgeSource, ProductCard
+from app.prompts.system_prompts import (
+    contextual_reply_prompt,
+    general_chat_prompt,
+    language_detect_prompt,
+    rag_answer_prompt,
+    rag_partial_prompt,
+    smalltalk_prompt,
+)
+from app.schemas.chat import ChatContext, ChatRequest, ChatResponse, KnowledgeSource, ProductCard, RouteDecision
 from app.services.llm_service import llm_service
-from app.services.rerank_service import rerank_service
+from app.services.product_pipeline import ProductPipeline
+from app.services.knowledge_pipeline import KnowledgePipeline
+from app.services.verifier_service import VerifierService
 from app.services.currency_service import currency_service
-from app.services.answer_polisher import answer_polisher
+from app.services.response_renderer import ResponseRenderer
+from app.utils.debug_log import debug_log as _debug_log
 
 logger = get_logger(__name__)
-
-# Debug-mode NDJSON logging configuration
-# Logs go to backend/<LOG_DIR>/<DEBUG_LOG_FILE> by default (configurable via env).
-BACKEND_ROOT = Path(__file__).resolve().parents[2]
-DEBUG_LOG_PATH = BACKEND_ROOT / settings.LOG_DIR / settings.DEBUG_LOG_FILE
-
-
-def _debug_log(payload: Dict[str, Any]) -> None:
-    """Append a single NDJSON line to the debug log. Never raises."""
-    try:
-        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        # Never let debug logging break the request
-        pass
 
 
 class ChatService:
@@ -45,18 +36,52 @@ class ChatService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+        self._product_pipeline = ProductPipeline(
+            search_products=self.search_products,
+            search_products_by_exact_sku=self._search_products_by_exact_sku,
+            infer_jewelry_type_filter=self._infer_jewelry_type_filter,
+            log_event=self._log_event,
+        )
+        self._knowledge_pipeline = KnowledgePipeline(db=self.db, log_event=self._log_event)
+        self._verifier_service = VerifierService(log_event=self._log_event)
+        self._response_renderer = ResponseRenderer()
+
+    def _policy_topic_count(self, text: str) -> int:
+        if not text:
+            return 0
+        lowered = text.strip().lower()
+        if not lowered:
+            return 0
+        topics = [
+            "refund",
+            "return",
+            "shipping",
+            "policy",
+            "minimum order",
+            "moq",
+            "customs",
+            "bank transfer",
+            "watermark",
+            "payment",
+            "discount",
+            "credit",
+            "store credit",
+        ]
+        return sum(1 for t in topics if t in lowered)
 
     def _is_complex_query(self, text: str) -> bool:
         if not text:
             return False
-        if len(text) > 180:
+        t = text.strip()
+        if not t:
+            return False
+        if len(t) > 220:
             return True
-        markers = [" and ", ",", "—", ";"]
-        if sum(text.count(m) for m in markers) >= 2:
+        if t.count("?") >= 2:
             return True
-        topics = ["refund", "shipping", "customs", "payment", "discount", "credit"]
-        lowered = text.lower()
-        if sum(1 for t in topics if t in lowered) >= 2:
+        if "\n" in t or re.search(r"(^|\n)\s*[-*]\s+\w+", t):
+            return True
+        if self._policy_topic_count(t) >= 2:
             return True
         return False
 
@@ -85,8 +110,6 @@ class ChatService:
             "cool",
             "great",
             "nice",
-            "👍",
-            "🙏",
         }
         if t in smalltalk_phrases:
             return True
@@ -177,42 +200,352 @@ class ChatService:
         return False
 
     def _is_policy_intent(self, text: str) -> bool:
+        return self._policy_topic_count(text) > 0
+
+    def _is_catalog_browse(self, text: str) -> bool:
         if not text:
             return False
         t = text.strip().lower()
-        policy_keywords = [
-            "refund",
-            "return",
-            "shipping",
-            "policy",
-            "minimum order",
-            "moq",
-            "customs",
-            "bank transfer",
-            "watermark",
-            "payment",
-            "discount",
-            "store credit",
+        patterns = [
+            r"\bwhat products do you have\b",
+            r"\bwhat do you sell\b",
+            r"\bwhat do you carry\b",
+            r"\bproduct catalog\b",
+            r"\bbrowse (the )?catalog\b",
+            r"\bshow me (the )?products\b",
+            r"\bproduct categories\b",
+            r"\bwhat categories\b",
         ]
-        return any(k in t for k in policy_keywords)
+        return any(re.search(p, t) for p in patterns)
+
+    def _build_product_clarifier(self, text: str) -> str:
+        t = (text or "").lower()
+        if not re.search(
+            r"\b(barbell|labret|belly|nose|ring|stud|tunnel|plug|nipple|jewelry|earring|septum|industrial)\b",
+            t,
+        ):
+            return "Which category are you interested in (barbells, labrets, belly, or nose)?"
+        if not re.search(r"\b\d{1,2}g\b", t):
+            return "What gauge are you looking for (14g or 16g)?"
+        if not re.search(r"\b(titanium|steel|gold|silver|niobium)\b", t):
+            return "Any material preference (titanium or steel)?"
+        return "Do you have a size or style in mind?"
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        if not text:
+            return ""
+        lowered = text.lower()
+        lowered = re.sub(r"[^a-z0-9]+", " ", lowered)
+        lowered = re.sub(r"\s+", " ", lowered).strip()
+        return lowered
+
+    def _is_echo_clarifier(self, *, user_text: str, clarifier: str) -> bool:
+        if not user_text or not clarifier:
+            return False
+        u = self._normalize_text(user_text)
+        c = self._normalize_text(clarifier)
+        if not u or not c:
+            return False
+        if c in u or u in c:
+            return True
+        return False
+
+
+    @staticmethod
+    def _count_sentences(text: str) -> int:
+        if not text:
+            return 0
+        parts = re.split(r"[.!?]+", text)
+        return len([p for p in parts if p.strip()])
+
+    def _format_clarifier_fallback(self, text: str) -> str:
+        t = (text or "").strip()
+        if not t:
+            t = "Could you share a bit more detail so I can help?"
+        t = re.sub(r"\s+", " ", t)
+        if "?" not in t:
+            t = t.rstrip(".")
+            t = f"{t}?"
+        if not re.match(r"^(hello|thanks)\b", t, re.I):
+            if t and len(t) > 1 and t[0].isupper() and t[1].islower():
+                t = t[0].lower() + t[1:]
+            t = f"Hello, {t}"
+        return t
+
+    async def _generate_contextual_reply(
+        self,
+        *,
+        user_text: str,
+        reply_language: str,
+        suggested_question: str,
+        focus: str,
+        run_id: str,
+        required_terms: Optional[List[str]] = None,
+        telemetry: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        fallback = self._format_clarifier_fallback(suggested_question)
+
+        def _set_telemetry(used: bool, reason: str) -> None:
+            if telemetry is None:
+                return
+            telemetry["contextual_reply_used"] = used
+            telemetry["contextual_reply_reason"] = reason
+            telemetry["contextual_reply_focus"] = focus
+
+        if not bool(getattr(settings, "CONTEXTUAL_REPLY_ENABLED", True)):
+            _set_telemetry(False, "disabled")
+            return fallback
+        system_prompt = contextual_reply_prompt(reply_language)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"User message: {user_text}\n"
+                    f"Focus: {focus}\n"
+                    f"Suggested question: {suggested_question}"
+                ),
+            },
+        ]
+        model = getattr(settings, "CONTEXTUAL_REPLY_MODEL", None) or settings.OPENAI_MODEL
+        max_tokens = int(getattr(settings, "CONTEXTUAL_REPLY_MAX_TOKENS", 120))
+        temperature = float(getattr(settings, "CONTEXTUAL_REPLY_TEMPERATURE", 0.3))
+        try:
+            reply = await llm_service.generate_chat_response(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                model=model,
+            )
+        except Exception as e:
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.reply.contextual",
+                data={"used": False, "reason": "llm_error", "error": str(e), "focus": focus},
+            )
+            _set_telemetry(False, "llm_error")
+            return fallback
+
+        reply = re.sub(r"\s+", " ", (reply or "").strip())
+        if not reply:
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.reply.contextual",
+                data={"used": False, "reason": "empty_response", "focus": focus},
+            )
+            _set_telemetry(False, "empty_response")
+            return fallback
+        if not re.match(r"^(hello|thanks)\b", reply, re.I):
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.reply.contextual",
+                data={"used": False, "reason": "missing_greeting", "focus": focus},
+            )
+            _set_telemetry(False, "missing_greeting")
+            return fallback
+        if "?" not in reply:
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.reply.contextual",
+                data={"used": False, "reason": "missing_question", "focus": focus},
+            )
+            _set_telemetry(False, "missing_question")
+            return fallback
+        if self._count_sentences(reply) > 2:
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.reply.contextual",
+                data={"used": False, "reason": "too_long", "focus": focus},
+            )
+            _set_telemetry(False, "too_long")
+            return fallback
+        if required_terms:
+            lower_reply = reply.lower()
+            missing_terms = [t for t in required_terms if t.lower() not in lower_reply]
+            if missing_terms:
+                self._log_event(
+                    run_id=run_id,
+                    location="chat_service.reply.contextual",
+                    data={
+                        "used": False,
+                        "reason": "missing_terms",
+                        "focus": focus,
+                        "missing_terms": missing_terms,
+                    },
+                )
+                _set_telemetry(False, "missing_terms")
+                return fallback
+
+        self._log_event(
+            run_id=run_id,
+            location="chat_service.reply.contextual",
+            data={"used": True, "reason": "accepted", "focus": focus},
+        )
+        _set_telemetry(True, "accepted")
+        return reply
+
+    def _format_language_instruction(self, *, language: Optional[str], locale: Optional[str]) -> str:
+        default_locale = str(getattr(settings, "DEFAULT_LOCALE", "en-US") or "en-US")
+        language = (language or "").strip()
+        locale = (locale or "").strip()
+        if language and locale:
+            if locale.lower() in language.lower():
+                return language
+            return f"{language} ({locale})"
+        if language:
+            return language
+        if locale:
+            return locale
+        return default_locale
+
+    async def _detect_language(self, *, user_text: str, run_id: str) -> Dict[str, str]:
+        if not user_text or len(user_text.strip()) < 3:
+            return {}
+        system = language_detect_prompt()
+        model = getattr(settings, "LANGUAGE_DETECT_MODEL", None) or settings.OPENAI_MODEL
+        max_tokens = int(getattr(settings, "LANGUAGE_DETECT_MAX_TOKENS", 40))
+        try:
+            data = await llm_service.generate_chat_json(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_text},
+                ],
+                model=model,
+                temperature=0.0,
+                max_tokens=max_tokens,
+            )
+        except Exception as e:
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.language.detect",
+                data={"error": str(e)},
+            )
+            return {}
+
+        language = str(data.get("language") or "").strip()
+        locale = str(data.get("locale") or "").strip()
+        if language.lower() in {"unknown", "none"}:
+            language = ""
+        if locale.lower() in {"unknown", "none"}:
+            locale = ""
+
+        self._log_event(
+            run_id=run_id,
+            location="chat_service.language.detect",
+            data={"language": language, "locale": locale},
+        )
+        return {"language": language, "locale": locale}
+
+    async def _resolve_reply_language(self, *, user_text: str, locale: Optional[str], run_id: str) -> str:
+        mode = str(getattr(settings, "CHAT_LANGUAGE_MODE", "auto") or "auto").lower()
+        default_locale = str(getattr(settings, "DEFAULT_LOCALE", "en-US") or "en-US")
+        if mode == "fixed":
+            fixed = str(getattr(settings, "FIXED_REPLY_LANGUAGE", "") or "").strip()
+            reply_language = fixed or default_locale
+            reason = "fixed"
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.language.resolve",
+                data={"mode": mode, "reply_language": reply_language, "reason": reason},
+            )
+            return reply_language
+        if mode == "locale":
+            reply_language = locale or default_locale
+            reason = "locale"
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.language.resolve",
+                data={"mode": mode, "reply_language": reply_language, "reason": reason},
+            )
+            return reply_language
+
+        if locale:
+            reply_language = locale
+            reason = "locale_provided"
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.language.resolve",
+                data={"mode": mode, "reply_language": reply_language, "reason": reason},
+            )
+            return reply_language
+
+        detected = await self._detect_language(user_text=user_text, run_id=run_id)
+        reply_language = self._format_language_instruction(
+            language=detected.get("language"),
+            locale=detected.get("locale"),
+        )
+        reason = "detected" if detected else "default"
+        if not detected:
+            reply_language = default_locale
+        self._log_event(
+            run_id=run_id,
+            location="chat_service.language.resolve",
+            data={"mode": mode, "reply_language": reply_language, "reason": reason},
+        )
+        return reply_language
+
+    async def _plan_retrieval(self, *, user_text: str, locale: Optional[str], run_id: str) -> Dict[str, Any]:
+        if not bool(getattr(settings, "PLANNER_ENABLED", True)):
+            return {"used": False, "reason": "disabled"}
+
+        try:
+            data = await llm_service.plan_retrieval(
+                user_message=user_text,
+                locale=locale,
+                model=getattr(settings, "PLANNER_MODEL", None),
+                max_tokens=int(getattr(settings, "PLANNER_MAX_TOKENS", 200)),
+            )
+        except Exception as e:
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.planner",
+                data={"used": True, "error": str(e)},
+            )
+            return {"used": True, "error": str(e), "task": "general", "confidence": 0.0}
+
+        task = str(data.get("task") or "").strip().lower()
+        allowed_tasks = {"product_search", "shipping_region", "policy", "contact", "general", "mixed"}
+        if task not in allowed_tasks:
+            task = "general"
+
+        def _safe_str(value: Any) -> str:
+            if not isinstance(value, str):
+                return ""
+            return value.strip()
+
+        try:
+            confidence = float(data.get("confidence") or 0.0)
+        except Exception:
+            confidence = 0.0
+
+        result = {
+            "used": True,
+            "task": task,
+            "kb_query": _safe_str(data.get("kb_query")),
+            "product_query": _safe_str(data.get("product_query")),
+            "entities": data.get("entities") if isinstance(data.get("entities"), dict) else {},
+            "needs_clarification": bool(data.get("needs_clarification")),
+            "clarifying_question": _safe_str(data.get("clarifying_question")),
+            "confidence": confidence,
+        }
+        self._log_event(
+            run_id=run_id,
+            location="chat_service.planner",
+            data=result,
+        )
+        return result
 
     async def _general_chat_response(
         self,
         *,
         user_text: str,
+        reply_language: str,
         history: List[Dict[str, str]],
     ) -> str:
         model = getattr(settings, "GENERAL_CHAT_MODEL", None) or settings.OPENAI_MODEL
         max_tokens = int(getattr(settings, "GENERAL_CHAT_MAX_TOKENS", 250))
-        system = (
-            "You are AchaDirect's AI assistant.\n"
-            "Have a natural, friendly conversation.\n"
-            "STRICT RULES:\n"
-            "- Do NOT invent store policies, prices, refunds, shipping rules, or product availability.\n"
-            "- If the user asks for products, prices, or store policies, ask a short question to pivot:\n"
-            "  'Are you looking for a product recommendation, a SKU price, or a store policy?'\n"
-            "- Keep replies concise (1-4 short sentences).\n"
-        )
+        system = general_chat_prompt(reply_language)
         messages: List[Dict[str, str]] = [{"role": "system", "content": system}]
         for m in history[-6:]:
             role = m.get("role")
@@ -222,18 +555,13 @@ class ChatService:
         messages.append({"role": "user", "content": user_text})
         return await llm_service.generate_chat_response(messages, temperature=0.5, max_tokens=max_tokens, model=model)
 
-    async def _smalltalk_response(self, *, user_text: str) -> str:
+    async def _smalltalk_response(self, *, user_text: str, reply_language: str) -> str:
         mode = str(getattr(settings, "SMALLTALK_MODE", "static") or "static").lower()
         if mode != "llm":
-            return "Hi! How can I help you today — products, prices, or store policies?"
+            return "Hello, thank you for reaching out. How may I assist you today?"
 
         model = getattr(settings, "SMALLTALK_MODEL", None) or settings.OPENAI_MODEL
-        system = (
-            "You are AchaDirect's AI assistant.\n"
-            "Reply naturally to a greeting/thanks in 1-2 sentences.\n"
-            "Ask what they want to do next: products, SKU price, or store policies.\n"
-            "Do NOT mention random policies.\n"
-        )
+        system = smalltalk_prompt(reply_language)
         return await llm_service.generate_chat_response(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user_text}],
             temperature=0.6,
@@ -327,6 +655,23 @@ class ChatService:
         if "barbell" in lowered or "industrial" in lowered:
             return "Barbells"
         return None
+
+    async def _get_product_category_overview(self, limit: int = 6) -> List[str]:
+        stmt = (
+            select(Product.jewelry_type, func.count(Product.id))
+            .where(Product.is_active.is_(True))
+            .where(Product.jewelry_type.isnot(None))
+            .group_by(Product.jewelry_type)
+            .order_by(func.count(Product.id).desc())
+            .limit(limit)
+        )
+        result = await self.db.execute(stmt)
+        rows = result.all()
+        categories: List[str] = []
+        for name, _count in rows:
+            if name:
+                categories.append(str(name).strip())
+        return categories
 
     async def _search_products_by_exact_sku(
         self,
@@ -429,6 +774,17 @@ class ChatService:
         self.db.add(msg)
         await self.db.commit()
 
+    async def _finalize_response(
+        self,
+        *,
+        conversation_id: int,
+        user_text: str,
+        response: ChatResponse,
+    ) -> ChatResponse:
+        await self.save_message(conversation_id, MessageRole.USER, user_text)
+        await self.save_message(conversation_id, MessageRole.ASSISTANT, response.reply_text)
+        return response
+
     async def get_history(self, conversation_id: int, limit: int = 5) -> List[Dict[str, str]]:
         stmt = (
             select(Message)
@@ -439,139 +795,6 @@ class ChatService:
         result = await self.db.execute(stmt)
         msgs = result.scalars().all()
         return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
-
-    async def search_knowledge(
-        self,
-        query_text: str,
-        query_embedding: List[float],
-        limit: int = 10,
-        must_tags: Optional[List[str]] = None,
-        boost_tags: Optional[List[str]] = None,
-        run_id: Optional[str] = None,
-    ) -> Tuple[List[KnowledgeSource], Optional[float]]:
-        """
-        Vector search over knowledge base with optional tag constraints.
-        Returns sources and the best (lowest) cosine distance.
-        """
-        tag_join_needed = bool(must_tags or boost_tags)
-
-        distance_col = KnowledgeEmbedding.embedding.cosine_distance(query_embedding).label("distance")
-
-        stmt = (
-            select(
-                KnowledgeEmbedding.id,
-                KnowledgeEmbedding.chunk_text,
-                KnowledgeEmbedding.article_id,
-                KnowledgeEmbedding.chunk_id,
-                KnowledgeArticle.title,
-                KnowledgeArticle.category,
-                KnowledgeArticle.url,
-                distance_col,
-            )
-            .join(KnowledgeArticle, KnowledgeEmbedding.article_id == KnowledgeArticle.id)
-        )
-
-        if tag_join_needed:
-            stmt = stmt.join(KnowledgeChunk, KnowledgeChunk.id == KnowledgeEmbedding.chunk_id)
-            stmt = stmt.outerjoin(KnowledgeChunkTag, KnowledgeChunkTag.chunk_id == KnowledgeChunk.id)
-
-        if must_tags or tag_join_needed:
-            stmt = stmt.group_by(
-                KnowledgeEmbedding.id,
-                KnowledgeEmbedding.chunk_text,
-                KnowledgeEmbedding.article_id,
-                KnowledgeEmbedding.chunk_id,
-                KnowledgeArticle.title,
-                KnowledgeArticle.category,
-                KnowledgeArticle.url,
-                distance_col,
-            )
-
-        if must_tags:
-            required_count = len(set(must_tags))
-            stmt = stmt.having(
-                func.count(func.distinct(KnowledgeChunkTag.tag)).filter(KnowledgeChunkTag.tag.in_(must_tags))
-                == required_count
-            )
-
-        if boost_tags:
-            boost_case = func.max(case((KnowledgeChunkTag.tag.in_(boost_tags), 1), else_=0)).label("boost_match")
-            stmt = stmt.add_columns(boost_case).order_by(distance_col, boost_case.desc())
-        else:
-            stmt = stmt.order_by(distance_col)
-
-        stmt = stmt.limit(limit)
-
-        result = await self.db.execute(stmt)
-        rows: Sequence[Any] = result.all()
-
-        logger.info(
-            f"[RAG] knowledge retrieval: threshold={settings.KNOWLEDGE_DISTANCE_THRESHOLD} limit={limit} run_id={run_id}"
-        )
-
-        sources: List[KnowledgeSource] = []
-        best_distance: Optional[float] = None
-
-        for idx, row in enumerate(rows):
-            (
-                emb_id,
-                chunk_text,
-                article_id,
-                chunk_id,
-                title,
-                category,
-                url,
-                distance,
-                *maybe_boost,
-            ) = row
-            if best_distance is None:
-                best_distance = float(distance)
-
-            similarity = 1 - float(distance)
-
-            if idx < 3:
-                preview = (chunk_text or "")[:200].replace("\n", " ")
-                logger.info(f"[RAG] top{idx+1} title={title!r} distance={float(distance):.4f} preview={preview!r}")
-
-            sources.append(
-                KnowledgeSource(
-                    source_id=str(emb_id),
-                    chunk_id=str(chunk_id) if chunk_id else None,
-                    title=title,
-                    content_snippet=(chunk_text or "")[: settings.RAG_MAX_CHUNK_CHARS_FOR_CONTEXT],
-                    category=category,
-                    relevance=similarity,
-                    url=url,
-                    distance=float(distance),
-                )
-            )
-
-            # #region agent log
-            if run_id and idx < 3:
-                try:
-                    _debug_log(
-                        {
-                            "sessionId": "debug-session",
-                            "runId": run_id,
-                            "hypothesisId": "HK",
-                            "location": "chat_service.search_knowledge:top_result",
-                            "message": "top knowledge chunk",
-                            "data": {
-                                "rank": idx + 1,
-                                "article_id": str(article_id),
-                                "title": title,
-                                "distance": float(distance),
-                                "threshold": settings.KNOWLEDGE_DISTANCE_THRESHOLD,
-                                "snippet": (chunk_text or "")[:200],
-                            },
-                            "timestamp": int(time.time() * 1000),
-                        }
-                    )
-                except Exception:
-                    pass
-            # #endregion
-
-        return sources, best_distance
 
     async def search_products(
         self,
@@ -658,488 +881,7 @@ class ChatService:
 
         return product_cards, distances[:5], best_distance, distance_by_id
 
-    async def _rerank_knowledge_with_cohere(
-        self,
-        *,
-        query: str,
-        candidates: List[KnowledgeSource],
-        run_id: str,
-    ) -> List[KnowledgeSource]:
-        if not candidates:
-            return []
-
-        max_chars = settings.RAG_MAX_DOC_CHARS_FOR_RERANK
-        documents: List[str] = []
-        for c in candidates[: settings.RAG_RETRIEVE_TOPK_KNOWLEDGE]:
-            doc = f"{c.title}\n{c.category or ''}\n{(c.content_snippet or '')[:max_chars]}"
-            documents.append(doc[:max_chars])
-
-        rerank_results = await rerank_service.rerank(
-            query=query,
-            documents=documents,
-            top_n=settings.RAG_RERANK_TOPN,
-            model=settings.RAG_COHERE_RERANK_MODEL,
-        )
-
-        if not rerank_results:
-            # Skip or failure => keep original ordering
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.rag.rerank.cohere",
-                data={
-                    "skipped_or_failed": True,
-                    "reason": "no_results",
-                    "selected_ids": [c.source_id for c in candidates[: settings.RAG_RERANK_TOPN]],
-                },
-            )
-            selected = candidates[: settings.RAG_RERANK_TOPN]
-            for c in selected:
-                c.query_hint = query
-            return selected
-
-        # Rerank quality gate: if Cohere scores are near-zero, prefer distance ordering.
-        top_scores = [float(r.relevance_score) for r in rerank_results[: settings.RAG_RERANK_TOPN]]
-        above_count = sum(1 for s in top_scores if s >= settings.RAG_RERANK_MIN_SCORE)
-        gate_fallback = above_count < settings.RAG_RERANK_MIN_SCORE_COUNT
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.rag.rerank.gate",
-            data={
-                "min_score": settings.RAG_RERANK_MIN_SCORE,
-                "min_score_count": settings.RAG_RERANK_MIN_SCORE_COUNT,
-                "above_count": above_count,
-                "top_scores": top_scores,
-                "decision": "fallback_to_distance" if gate_fallback else "accept_rerank",
-            },
-        )
-        if gate_fallback:
-            selected = candidates[: settings.RAG_RERANK_TOPN]
-            for c in selected:
-                c.query_hint = query
-            return selected
-
-        # Hybrid selection: keep strong rerank hits (precision) + fill by distance (coverage).
-        selected: List[KnowledgeSource] = []
-        used_keys: set[str] = set()
-
-        def _key(c: KnowledgeSource) -> str:
-            return c.chunk_id or c.source_id
-
-        strong_hits = [r for r in rerank_results if float(r.relevance_score) >= settings.RAG_RERANK_MIN_SCORE]
-        if not strong_hits:
-            strong_hits = rerank_results[:1]
-
-        for r in strong_hits[: settings.RAG_RERANK_TOPN]:
-            if 0 <= r.index < len(candidates):
-                c = candidates[r.index]
-                c.rerank_score = float(r.relevance_score)
-                c.query_hint = query
-                k = _key(c)
-                if k in used_keys:
-                    continue
-                selected.append(c)
-                used_keys.add(k)
-
-        for c in candidates:
-            if len(selected) >= settings.RAG_RERANK_TOPN:
-                break
-            k = _key(c)
-            if k in used_keys:
-                continue
-            c.query_hint = query
-            selected.append(c)
-            used_keys.add(k)
-
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.rag.rerank.cohere",
-            data={
-                "accepted": True,
-                "top": [
-                    {"source_id": s.source_id, "rerank_score": s.rerank_score}
-                    for s in selected[: settings.RAG_RERANK_TOPN]
-                ],
-            },
-        )
-        return selected
-
-    async def _decompose_query(self, *, question: str, run_id: str) -> List[str]:
-        """
-        Decompose a complex user question into 4-8 focused sub-questions (strict JSON).
-        Falls back to an empty list if decomposition fails.
-        """
-        system_prompt = (
-            "You decompose a complex customer question into short, focused sub-questions that can be answered from a FAQ.\n"
-            "Return STRICT JSON: {\"sub_questions\": [\"...\", ...]}.\n"
-            "Rules:\n"
-            "- 4 to 8 sub_questions\n"
-            "- Each sub_question must be a standalone question\n"
-            "- Avoid duplicates, keep them specific\n"
-            "- Do NOT include any extra keys\n"
-        )
-
-        try:
-            data = await llm_service.generate_chat_json(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": question},
-                ],
-                model=settings.RAG_DECOMPOSE_MODEL or settings.OPENAI_MODEL,
-                temperature=0.0,
-                max_tokens=300,
-            )
-            raw = data.get("sub_questions", [])
-            if not isinstance(raw, list):
-                raw = []
-            sub_questions: List[str] = []
-            seen: set[str] = set()
-            for item in raw:
-                if not isinstance(item, str):
-                    continue
-                q = item.strip()
-                if not q:
-                    continue
-                key = q.lower()
-                if key in seen:
-                    continue
-                seen.add(key)
-                sub_questions.append(q)
-                if len(sub_questions) >= settings.RAG_DECOMPOSE_MAX_SUBQUESTIONS:
-                    break
-        except Exception as e:
-            sub_questions = []
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.rag.decompose",
-                data={"error": str(e), "sub_questions": []},
-            )
-            return []
-
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.rag.decompose",
-            data={"sub_questions": sub_questions},
-        )
-        return sub_questions
-
-    async def _retrieve_knowledge_for_query(
-        self, *, query_text: str, run_id: str
-    ) -> Tuple[List[KnowledgeSource], Optional[float]]:
-        query_embedding = await llm_service.generate_embedding(query_text)
-        sources, best = await self.search_knowledge(
-            query_text=query_text,
-            query_embedding=query_embedding,
-            limit=settings.RAG_RETRIEVE_TOPK_KNOWLEDGE,
-            must_tags=None,
-            boost_tags=None,
-            run_id=run_id,
-        )
-        if not sources:
-            sources = await self.keyword_fallback(query_text, limit=settings.RAG_RETRIEVE_TOPK_KNOWLEDGE)
-            best = None
-        return sources, best
-
-    async def _verify_answerable(
-        self,
-        *,
-        question: str,
-        knowledge_sources: List[KnowledgeSource],
-        product_cards: List[ProductCard],
-        run_id: str,
-    ) -> Dict[str, Any]:
-        verifier_model = settings.RAG_VERIFY_MODEL or settings.OPENAI_MODEL
-
-        max_verify_chunks = max(1, int(getattr(settings, "RAG_VERIFY_MAX_KNOWLEDGE_CHUNKS", settings.RAG_RERANK_TOPN)))
-        provided_chunk_ids = {str(s.source_id) for s in knowledge_sources[:max_verify_chunks]}
-
-        chunks_text = "\n\n".join(
-            [
-                (
-                    f"ID: {s.source_id}\n"
-                    f"TITLE: {s.title}\n"
-                    f"CATEGORY: {s.category or ''}\n"
-                    f"URL: {s.url or ''}\n"
-                    f"TEXT: {(s.content_snippet or '')[: settings.RAG_MAX_CHUNK_CHARS_FOR_CONTEXT]}"
-                )
-                for s in knowledge_sources[:max_verify_chunks]
-            ]
-        )
-
-        products_text = "\n".join(
-            [
-                f"- {p.name} (sku={p.sku}, price={p.price} {p.currency})"
-                for p in product_cards[: min(5, len(product_cards))]
-            ]
-        )
-
-        system_prompt = (
-            "You are a STRICT VERIFIER for a RAG-based chatbot.\n\n"
-            "Your job is NOT to simply decide yes/no.\n"
-            "Your PRIMARY responsibility is to analyze a user question, decompose it into distinct topics,\n"
-            "and determine which topics are answerable from the provided context and which are not.\n\n"
-            "You must ALWAYS reason at the topic level.\n\n"
-            "========================\n"
-            "PROCESS (MANDATORY)\n"
-            "========================\n\n"
-            "STEP 1 — Decompose the question\n"
-            "- Identify ALL distinct topics or requirements implied by the question.\n"
-            "- Treat each topic independently.\n"
-            "- Examples of topics: refunds, discounts, shipping costs, customs fees, payment methods, images, custom items, sterilized items.\n\n"
-            "STEP 2 — Evaluate each topic against the context\n"
-            "For EACH topic:\n"
-            "- If the context EXPLICITLY contains sufficient information to answer it:\n"
-            "  - Mark it as answerable\n"
-            "  - List the supporting_chunk_ids that prove it\n"
-            "- If the context does NOT contain sufficient information:\n"
-            "  - Mark it as missing\n"
-            "  - Write ONE clear clarification question for that topic\n\n"
-            "STEP 3 — Populate structured results\n"
-            "- Populate answerable_parts for EVERY topic that is supported\n"
-            "- Populate missing_parts for EVERY topic that is not supported\n"
-            "- missing_parts MUST be ordered by importance to the user:\n"
-            "  1) refunds / returns / refused delivery\n"
-            "  2) shipping costs / liabilities\n"
-            "  3) payment fees or obligations\n"
-            "  4) product availability or customization\n"
-            "  5) images / marketing / low-risk items\n\n"
-            "STEP 4 — Set global flags\n"
-            "- answerable = true ONLY if there are NO missing_parts\n"
-            "- answerable = false if ANY missing_parts exist\n"
-            "- answer_type should reflect the dominant source of information:\n"
-            "  - \"knowledge\", \"product\", or \"mixed\"\n\n"
-            "========================\n"
-            "STRICT RULES\n"
-            "========================\n\n"
-            "- supporting_chunk_ids MUST be a subset of the provided chunk IDs\n"
-            "- NEVER invent policies or facts not present in the context\n"
-            "- NEVER answer from general knowledge\n"
-            "- NEVER merge topics together — keep them explicit\n"
-            "- NEVER return BOTH answerable_parts AND missing_parts empty\n"
-            "- If at least ONE topic is supported, answerable_parts MUST NOT be empty\n"
-            "- If NO topics are supported, ALL topics must appear in missing_parts\n"
-            "- If the question is multi-topic, partial answers are REQUIRED\n"
-            "- The verifier must be strict but USEFUL\n\n"
-            "========================\n"
-            "OUTPUT FORMAT (STRICT)\n"
-            "========================\n\n"
-            "Return ONLY valid JSON with EXACTLY these keys:\n\n"
-            "{\n"
-            "  \"answerable\": boolean,\n"
-            "  \"answer_type\": \"knowledge\" | \"product\" | \"mixed\",\n"
-            "  \"supporting_chunk_ids\": string[],\n"
-            "  \"missing_info_question\": string | null,\n"
-            "  \"answerable_parts\": [\n"
-            "    {\n"
-            "      \"topic\": string,\n"
-            "      \"supporting_chunk_ids\": string[]\n"
-            "    }\n"
-            "  ],\n"
-            "  \"missing_parts\": [\n"
-            "    {\n"
-            "      \"topic\": string,\n"
-            "      \"missing_info_question\": string\n"
-            "    }\n"
-            "  ]\n"
-            "}\n\n"
-            "Notes:\n"
-            "- supporting_chunk_ids (top-level) should be the UNION of all answerable_parts chunk IDs\n"
-            "- missing_info_question (top-level) should be ONE high-priority clarification question\n"
-            "  derived from the FIRST item in missing_parts, or null if fully answerable\n"
-        )
-
-        user_prompt = (
-            f"Question: {question}\n\n"
-            f"Knowledge Chunks:\n{chunks_text or '[none]'}\n\n"
-            f"Product Candidates:\n{products_text or '[none]'}\n"
-        )
-
-        def _normalize_decision(raw: Any) -> Dict[str, Any]:
-            decision: Dict[str, Any] = raw if isinstance(raw, dict) else {}
-
-            answer_type = (decision.get("answer_type") or "knowledge").lower()
-            if answer_type not in {"knowledge", "product", "mixed"}:
-                answer_type = "knowledge"
-
-            answerable_parts = decision.get("answerable_parts")
-            missing_parts = decision.get("missing_parts")
-            if not isinstance(answerable_parts, list):
-                answerable_parts = []
-            if not isinstance(missing_parts, list):
-                missing_parts = []
-
-            normalized_answerable_parts: List[Dict[str, Any]] = []
-            for p in answerable_parts:
-                if not isinstance(p, dict):
-                    continue
-                topic = p.get("topic")
-                ids = p.get("supporting_chunk_ids")
-                if not isinstance(topic, str) or not topic.strip():
-                    continue
-                if not isinstance(ids, list):
-                    ids = []
-                filtered_ids = [str(x) for x in ids if str(x) in provided_chunk_ids]
-                if not filtered_ids:
-                    continue
-                normalized_answerable_parts.append({"topic": topic.strip(), "supporting_chunk_ids": filtered_ids})
-
-            normalized_missing_parts: List[Dict[str, Any]] = []
-            for p in missing_parts:
-                if not isinstance(p, dict):
-                    continue
-                topic = p.get("topic")
-                mq = p.get("missing_info_question")
-                if not isinstance(topic, str) or not topic.strip():
-                    continue
-                if not isinstance(mq, str) or not mq.strip():
-                    continue
-                normalized_missing_parts.append({"topic": topic.strip(), "missing_info_question": mq.strip()})
-
-            supporting_union: List[str] = []
-            seen_ids: set[str] = set()
-            for p in normalized_answerable_parts:
-                for cid in p.get("supporting_chunk_ids", []):
-                    if cid not in seen_ids:
-                        seen_ids.add(cid)
-                        supporting_union.append(cid)
-
-            # Ensure we never return both lists empty.
-            if not normalized_answerable_parts and not normalized_missing_parts:
-                normalized_missing_parts = [
-                    {
-                        "topic": "general",
-                        "missing_info_question": "Which specific part should I answer first (refunds, shipping costs, payment fees, or discounts)?",
-                    }
-                ]
-
-            normalized_answerable = len(normalized_missing_parts) == 0
-            top_missing_question = normalized_missing_parts[0]["missing_info_question"] if normalized_missing_parts else None
-
-            return {
-                "answerable": bool(normalized_answerable),
-                "answer_type": answer_type,
-                "supporting_chunk_ids": supporting_union,
-                "missing_info_question": top_missing_question,
-                "answerable_parts": normalized_answerable_parts,
-                "missing_parts": normalized_missing_parts,
-            }
-
-        try:
-            decision_raw = await llm_service.generate_chat_json(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                model=verifier_model,
-                temperature=0.0,
-                max_tokens=600,
-            )
-            decision = _normalize_decision(decision_raw)
-        except Exception as e:
-            logger.error(f"Verifier failed: {e}")
-            decision = _normalize_decision(
-                {
-                    "answerable": False,
-                    "answer_type": "knowledge",
-                    "supporting_chunk_ids": [],
-                    "missing_info_question": None,
-                    "answerable_parts": [],
-                    "missing_parts": [
-                        {
-                            "topic": "general",
-                            "missing_info_question": "Which specific part should I answer first (refunds, shipping costs, payment fees, or discounts)?",
-                        }
-                    ],
-                }
-            )
-
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.rag.verify",
-            data={"decision": decision},
-        )
-        return decision
-
-    async def keyword_fallback(self, query_text: str, limit: int = 5) -> List[KnowledgeSource]:
-        """
-        Keyword OR search over knowledge chunks when vector search is weak.
-        Scores chunks by how many query keywords they contain.
-        """
-        # Very small stopword list for English
-        stopwords = {
-            "the",
-            "a",
-            "an",
-            "and",
-            "or",
-            "to",
-            "for",
-            "of",
-            "in",
-            "on",
-            "at",
-            "by",
-            "with",
-            "is",
-            "are",
-            "was",
-            "were",
-        }
-        tokens = [t.lower() for t in query_text.replace(",", " ").replace(".", " ").split()]
-        keywords = [t for t in tokens if len(t) >= 3 and t not in stopwords][:6]
-
-        if not keywords:
-            return []
-
-        conditions = [KnowledgeChunk.chunk_text.ilike(f"%{kw}%") for kw in keywords]
-
-        # Build a per-row match count expression without using SQL aggregate functions
-        score_expr = None
-        for cond in conditions:
-            term = case((cond, 1), else_=0)
-            score_expr = term if score_expr is None else score_expr + term
-
-        match_count = score_expr.label("match_count") if score_expr is not None else None
-
-        stmt = (
-            select(
-                KnowledgeChunk.id,
-                KnowledgeChunk.chunk_text,
-                KnowledgeArticle.id.label("article_id"),
-                KnowledgeArticle.title,
-                KnowledgeArticle.category,
-                KnowledgeArticle.url,
-                match_count,
-            )
-            .join(KnowledgeArticle, KnowledgeChunk.article_id == KnowledgeArticle.id)
-            .where(or_(*conditions))
-        )
-
-        if match_count is not None:
-            stmt = stmt.order_by(match_count.desc(), KnowledgeChunk.id)
-
-        stmt = stmt.limit(limit)
-
-        result = await self.db.execute(stmt)
-        rows = result.all()
-
-        sources: List[KnowledgeSource] = []
-        for chunk_id, chunk_text, article_id, title, category, url, match_value in rows:
-            relevance = float(match_value or 0) / max(len(keywords), 1)
-            sources.append(
-                KnowledgeSource(
-                    source_id=str(chunk_id),
-                    chunk_id=str(chunk_id),
-                    title=title,
-                    content_snippet=(chunk_text or "")[: settings.RAG_MAX_CHUNK_CHARS_FOR_CONTEXT],
-                    category=category,
-                    relevance=relevance,
-                    url=url,
-                    distance=None,
-                )
-            )
-        return sources
-
-    async def synthesize_answer(self, question: str, sources: List[KnowledgeSource]) -> str:
+    async def synthesize_answer(self, question: str, sources: List[KnowledgeSource], reply_language: str) -> str:
         if not sources:
             return (
                 "I don't have enough information in my knowledge base to answer that yet. "
@@ -1155,12 +897,7 @@ class ChatService:
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You are a customer support assistant for AchaDirect. Answer using ONLY the provided knowledge context. "
-                    "If the answer is not in the context, say you don't have enough information. "
-                    "Do not echo or restate the user's question. "
-                    "Do not include a Sources/References section in your reply."
-                ),
+                "content": rag_answer_prompt(reply_language),
             },
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
         ]
@@ -1177,6 +914,7 @@ class ChatService:
         sources: List[KnowledgeSource],
         answerable_topics: List[str],
         missing_question: str,
+        reply_language: str,
     ) -> str:
         if not sources:
             return missing_question
@@ -1192,14 +930,7 @@ class ChatService:
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You are a careful RAG assistant. Write ONLY what is explicitly supported by the context.\n"
-                    "If a detail is not in the context, say it is not specified.\n"
-                    "Do not invent policies.\n"
-                    "Do not echo the user's question.\n"
-                    "Do not include a Sources/References section in your reply.\n"
-                    "Output a short section titled 'What I found' with 2-6 bullet points."
-                ),
+                "content": rag_partial_prompt(reply_language),
             },
             {
                 "role": "user",
@@ -1219,24 +950,25 @@ class ChatService:
 
         return f"{found}\n\nOne question to confirm:\n{missing_question}"
 
-    def _strip_sources_block(self, text: str) -> str:
-        """Remove any model- or server-appended Sources/References section from reply_text."""
-        if not text:
-            return text
-        lowered = text.lower()
-        markers = ["\n\nsources:\n", "\nsources:\n", "\n\nreferences:\n", "\nreferences:\n"]
-        for marker in markers:
-            idx = lowered.find(marker.strip("\n"))
-            if idx != -1:
-                return text[:idx].rstrip()
-        return text
-
     async def process_chat(self, req: ChatRequest) -> ChatResponse:
         user = await self.get_or_create_user(req.user_id, req.customer_name, req.email)
         conversation = await self.get_or_create_conversation(user, req.conversation_id)
         history = await self.get_history(conversation.id)
 
         run_id = f"chat-{int(time.time() * 1000)}"
+        debug_meta: Dict[str, Any] = {
+            "run_id": run_id,
+            "decomposition_used": False,
+            "decomposition_reason": "not_evaluated",
+            "rerank_used": False,
+            "rerank_reason": "not_evaluated",
+            "rerank_duration_ms": 0,
+            "rerank_timed_out": False,
+            "reply_language": None,
+            "contextual_reply_used": None,
+            "contextual_reply_reason": None,
+            "contextual_reply_focus": None,
+        }
 
         _debug_log(
             {
@@ -1251,49 +983,7 @@ class ChatService:
         )
 
         text = req.message or ""
-        if bool(getattr(settings, "SMALLTALK_ENABLED", True)) and self._is_smalltalk(text):
-            reply_text = await self._smalltalk_response(user_text=text)
-            follow_ups = ["Browse products", "Check a SKU price", "Shipping & policies"]
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.route_selected",
-                data={"route": "smalltalk", "smalltalk_detected": True},
-            )
-            await self.save_message(conversation.id, MessageRole.USER, req.message)
-            await self.save_message(conversation.id, MessageRole.ASSISTANT, reply_text)
-            return ChatResponse(
-                conversation_id=conversation.id,
-                reply_text=reply_text,
-                product_carousel=[],
-                follow_up_questions=follow_ups,
-                intent="smalltalk",
-                sources=[],
-            )
-
-        # Meta / general chat (LLM-only, no retrieval/verifier).
-        if self._is_meta_question(text) or self._is_general_chat(text):
-            try:
-                reply_text = await self._general_chat_response(user_text=text, history=history)
-            except Exception as e:
-                logger.error(f"general_chat generation failed: {e}")
-                reply_text = "I'm an AI assistant. Are you looking for a product recommendation, a SKU price, or a store policy?"
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.route_selected",
-                data={"route": "general_chat", "meta_detected": self._is_meta_question(text)},
-            )
-            await self.save_message(conversation.id, MessageRole.USER, req.message)
-            await self.save_message(conversation.id, MessageRole.ASSISTANT, reply_text)
-            return ChatResponse(
-                conversation_id=conversation.id,
-                reply_text=self._strip_sources_block(reply_text),
-                product_carousel=[],
-                follow_up_questions=["Browse products", "Check a SKU price", "Shipping & policies"],
-                intent="general_chat",
-                sources=[],
-            )
-
-        requested_currency = currency_service.extract_requested_currency(req.message or "")
+        requested_currency = currency_service.extract_requested_currency(text)
         default_display_currency = (
             getattr(settings, "PRICE_DISPLAY_CURRENCY", None)
             or getattr(settings, "BASE_CURRENCY", None)
@@ -1302,67 +992,248 @@ class ChatService:
         default_display_currency = str(default_display_currency).upper()
         if requested_currency and not currency_service.supports(requested_currency):
             requested_currency = None
-        target_currency = (requested_currency or default_display_currency).upper()
 
-        looks_like_product = self._looks_like_product_query(text)
-        sku_token = self._extract_sku(text)
+        ctx = ChatContext.from_request(
+            text=text,
+            is_question_like=self._is_question_like(text),
+            looks_like_product=self._looks_like_product_query(text),
+            has_store_intent=self._has_store_intent(text),
+            is_policy_intent=self._is_policy_intent(text),
+            policy_topic_count=self._policy_topic_count(text),
+            sku_token=self._extract_sku(text),
+            requested_currency=requested_currency,
+        )
+        target_currency = (ctx.requested_currency or default_display_currency).upper()
+        reply_language = await self._resolve_reply_language(user_text=ctx.text, locale=req.locale, run_id=run_id)
+        debug_meta["reply_language"] = reply_language
+        response_renderer = self._response_renderer
+        if bool(getattr(settings, "SMALLTALK_ENABLED", True)) and self._is_smalltalk(ctx.text):
+            decision = RouteDecision(route="smalltalk", reason="smalltalk_detected")
+            reply_text = await self._smalltalk_response(user_text=ctx.text, reply_language=reply_language)
+            follow_ups = ["Browse products", "Check a SKU price", "Shipping & policies"]
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.route_selected",
+                data={"route": "smalltalk", "smalltalk_detected": True},
+            )
+            debug_meta["route"] = decision.route
+            response = await response_renderer.render(
+                conversation_id=conversation.id,
+                route=decision.route,
+                reply_text=reply_text,
+                product_carousel=[],
+                follow_up_questions=follow_ups,
+                sources=[],
+                debug=debug_meta,
+                reply_language=reply_language,
+                target_currency=target_currency,
+                user_text=ctx.text,
+                apply_polish=False,
+            )
+            return await self._finalize_response(
+                conversation_id=conversation.id,
+                user_text=ctx.text,
+                response=response,
+            )
+
+        # Meta / general chat (LLM-only, no retrieval/verifier).
+        if self._is_meta_question(ctx.text) or self._is_general_chat(ctx.text):
+            decision = RouteDecision(route="general_chat", reason="meta_or_general")
+            try:
+                reply_text = await self._general_chat_response(user_text=ctx.text, reply_language=reply_language, history=history)
+            except Exception as e:
+                logger.error(f"general_chat generation failed: {e}")
+                reply_text = "Hello, I am here to help. How may I assist you today?"
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.route_selected",
+                data={"route": decision.route, "meta_detected": self._is_meta_question(ctx.text)},
+            )
+            debug_meta["route"] = decision.route
+            response = await response_renderer.render(
+                conversation_id=conversation.id,
+                route=decision.route,
+                reply_text=reply_text,
+                product_carousel=[],
+                follow_up_questions=["Browse products", "Check a SKU price", "Shipping & policies"],
+                sources=[],
+                debug=debug_meta,
+                reply_language=reply_language,
+                target_currency=target_currency,
+                user_text=ctx.text,
+                apply_polish=False,
+            )
+            return await self._finalize_response(
+                conversation_id=conversation.id,
+                user_text=ctx.text,
+                response=response,
+            )
+
+        looks_like_product = ctx.looks_like_product
+        sku_token = ctx.sku_token
         product_topk = int(getattr(settings, "PRODUCT_SEARCH_TOPK", settings.RAG_RETRIEVE_TOPK_PRODUCT))
-        is_question_like = self._is_question_like(req.message or "")
-        has_store_intent = self._has_store_intent(text)
-        is_policy_intent = self._is_policy_intent(text)
+        is_question_like = ctx.is_question_like
+        has_store_intent = ctx.has_store_intent
+        is_policy_intent = ctx.is_policy_intent
+        policy_topic_count = ctx.policy_topic_count
+        product_pipeline = self._product_pipeline
+        knowledge_pipeline = self._knowledge_pipeline
+        verifier_service = self._verifier_service
 
-        is_complex = self._is_complex_query(req.message)
+        planner = {"used": False}
+        planner_used = False
+        planner_task = "general"
+        planner_confidence = 0.0
+        planner_min_conf = float(getattr(settings, "PLANNER_MIN_CONFIDENCE", 0.6))
+        kb_query_text = ""
+        product_query_text = ""
+
+        if not sku_token:
+            planner = await self._plan_retrieval(user_text=ctx.text, locale=req.locale, run_id=run_id)
+            planner_used = bool(planner.get("used")) and not planner.get("error")
+            planner_task = str(planner.get("task") or "general").strip().lower()
+            try:
+                planner_confidence = float(planner.get("confidence") or 0.0)
+            except Exception:
+                planner_confidence = 0.0
+
+        planner_applied = planner_used and planner_confidence >= planner_min_conf
+        if planner_used:
+            debug_meta["planner_used"] = True
+            debug_meta["planner_task"] = planner_task
+            debug_meta["planner_confidence"] = planner_confidence
+            debug_meta["planner_kb_query"] = planner.get("kb_query") or ""
+            debug_meta["planner_product_query"] = planner.get("product_query") or ""
+            debug_meta["planner_needs_clarification"] = bool(planner.get("needs_clarification"))
+            debug_meta["planner_applied"] = planner_applied
+        else:
+            debug_meta["planner_used"] = False
+
+        if planner_applied and planner_task == "general":
+            decision = RouteDecision(route="general_chat", reason="planner_general")
+            try:
+                reply_text = await self._general_chat_response(user_text=ctx.text, reply_language=reply_language, history=history)
+            except Exception as e:
+                logger.error(f"general_chat generation failed: {e}")
+                reply_text = "Hello, I am here to help. How may I assist you today?"
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.route_selected",
+                data={"route": decision.route, "planner_task": planner_task},
+            )
+            debug_meta["route"] = decision.route
+            response = await response_renderer.render(
+                conversation_id=conversation.id,
+                route=decision.route,
+                reply_text=reply_text,
+                product_carousel=[],
+                follow_up_questions=["Browse products", "Check a SKU price", "Shipping & policies"],
+                sources=[],
+                debug=debug_meta,
+                reply_language=reply_language,
+                target_currency=target_currency,
+                user_text=ctx.text,
+                apply_polish=False,
+            )
+            return await self._finalize_response(
+                conversation_id=conversation.id,
+                user_text=ctx.text,
+                response=response,
+            )
+
+        if planner_applied and bool(planner.get("needs_clarification")):
+            decision = RouteDecision(route="clarify", reason="planner_clarify")
+            clarifier = str(planner.get("clarifying_question") or "").strip()
+            default_clarifier = "What would you like to know about our products or policies?"
+            if planner_task in {"product_search", "mixed"}:
+                default_clarifier = self._build_product_clarifier(ctx.text)
+            elif planner_task in {"policy", "shipping_region"}:
+                default_clarifier = "Are you asking about shipping availability, shipping cost, or delivery time?"
+            elif planner_task == "contact":
+                default_clarifier = "Do you want a phone number, email, or WhatsApp contact?"
+
+            if not clarifier or self._is_echo_clarifier(user_text=ctx.text, clarifier=clarifier):
+                clarifier = default_clarifier
+
+            reply_text = await self._generate_contextual_reply(
+                user_text=ctx.text,
+                reply_language=reply_language,
+                suggested_question=clarifier,
+                focus=f"planner:{planner_task}",
+                telemetry=debug_meta,
+                run_id=run_id,
+            )
+
+            debug_meta["route"] = decision.route
+            response = await response_renderer.render(
+                conversation_id=conversation.id,
+                route=decision.route,
+                reply_text=reply_text,
+                product_carousel=[],
+                follow_up_questions=[],
+                sources=[],
+                debug=debug_meta,
+                reply_language=reply_language,
+                target_currency=target_currency,
+                user_text=ctx.text,
+                apply_polish=False,
+            )
+            return await self._finalize_response(
+                conversation_id=conversation.id,
+                user_text=ctx.text,
+                response=response,
+            )
+
+        if planner_applied and planner_task in {"product_search", "policy", "shipping_region", "contact", "mixed"}:
+            is_question_like = True
+
+        use_products = looks_like_product
+        use_knowledge = True
+        if planner_applied:
+            use_products = planner_task in {"product_search", "mixed"}
+            use_knowledge = planner_task in {"policy", "shipping_region", "contact", "mixed"}
+            looks_like_product = looks_like_product or use_products
+            is_policy_intent = is_policy_intent or planner_task in {"policy", "shipping_region", "mixed"}
+            has_store_intent = has_store_intent or planner_task in {"product_search", "policy", "shipping_region", "contact", "mixed"}
+            if planner_task in {"policy", "shipping_region"} and policy_topic_count == 0:
+                policy_topic_count = 1
+
+        if planner_applied:
+            kb_query_text = str(planner.get("kb_query") or "").strip()
+            product_query_text = str(planner.get("product_query") or "").strip()
+        if not kb_query_text:
+            kb_query_text = ctx.text
+        if not product_query_text:
+            product_query_text = ctx.text
+
+        is_complex = is_question_like and self._is_complex_query(kb_query_text)
         max_sub_questions = int(getattr(settings, "RAG_MAX_SUB_QUESTIONS", 4))
         self._log_event(
             run_id=run_id,
             location="chat_service.rag.complexity_check",
             data={
                 "is_complex": is_complex,
-                "len": len(req.message or ""),
+                "is_question_like": is_question_like,
+                "policy_topic_count": policy_topic_count,
+                "len": len(ctx.text),
                 "max_sub_questions": max_sub_questions,
+                "planner_used": planner_used,
+                "planner_task": planner_task,
             },
         )
 
-        # Low-signal freeform text should not trigger random KB clarifications.
-        if not is_question_like and not looks_like_product and not sku_token:
-            if has_store_intent:
-                reply_text = "I can help you find products or answer store questions — what are you looking for?"
-                route = "fallback_general"
-            else:
-                try:
-                    reply_text = await self._general_chat_response(user_text=text, history=history)
-                except Exception:
-                    reply_text = "Sure — what would you like to chat about?"
-                route = "general_chat"
-
-            follow_ups = ["Browse products", "Check a SKU price", "Shipping & policies"]
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.route_selected",
-                data={"route": route, "reason": "low_signal_non_question"},
-            )
-            await self.save_message(conversation.id, MessageRole.USER, req.message)
-            await self.save_message(conversation.id, MessageRole.ASSISTANT, reply_text)
-            return ChatResponse(
-                conversation_id=conversation.id,
-                reply_text=self._strip_sources_block(reply_text),
-                product_carousel=[],
-                follow_up_questions=follow_ups,
-                intent=route,
-                sources=[],
-            )
-
         # SKU shortcut (must-have): direct DB lookup without embeddings.
         if sku_token:
-            sku_cards = await self._search_products_by_exact_sku(sku=sku_token, limit=product_topk)
+            sku_cards = await product_pipeline.sku_shortcut(sku=sku_token, limit=product_topk)
             if sku_cards:
+                decision = RouteDecision(route="product", reason="sku_shortcut")
                 self._log_event(
                     run_id=run_id,
                     location="chat_service.product.sku_shortcut",
                     data={"matched_sku": sku_token, "count": len(sku_cards)},
                 )
 
-                price_intent = bool(re.search(r"\b(price|cost)\b", (req.message or "").lower()))
+                price_intent = bool(re.search(r"\b(price|cost)\b", ctx.text.lower()))
                 if price_intent:
                     p0 = sku_cards[0]
                     converted = currency_service.convert(
@@ -1374,202 +1245,147 @@ class ChatService:
                 else:
                     reply_text = "Here are some products that might help:"
 
-                reply_text = self._strip_sources_block(reply_text)
-                sku_cards = currency_service.convert_product_cards(sku_cards, to_currency=target_currency)
-                await self.save_message(conversation.id, MessageRole.USER, req.message)
-                await self.save_message(conversation.id, MessageRole.ASSISTANT, reply_text)
-                return ChatResponse(
+                debug_meta["route"] = decision.route
+                response = await response_renderer.render(
                     conversation_id=conversation.id,
+                    route=decision.route,
                     reply_text=reply_text,
                     product_carousel=sku_cards,
                     follow_up_questions=[],
-                    intent="product",
                     sources=[],
+                    debug=debug_meta,
+                    target_currency=target_currency,
+                    user_text=ctx.text,
+                    apply_polish=False,
+                )
+                return await self._finalize_response(
+                    conversation_id=conversation.id,
+                    user_text=ctx.text,
+                    response=response,
                 )
 
         sub_questions: List[str] = []
-        original_embedding = await llm_service.generate_embedding(req.message)
+        knowledge_query_text = kb_query_text
+        knowledge_embedding = None
+        product_embedding = None
 
-        product_cards_all: List[ProductCard] = []
-        product_top_distances: List[float] = []
-        product_best: Optional[float] = None
-        product_distance_by_id: Dict[str, float] = {}
-
-        # Policy keywords: allow skipping product search to avoid irrelevant work.
-        if not (is_policy_intent and not looks_like_product):
-            # Product retrieval once, before verifier (and can short-circuit routing).
-            product_retrieve_k = max(product_topk * 5, product_topk)
-            product_cards_all, product_top_distances, product_best, product_distance_by_id = await self.search_products(
-                query_embedding=original_embedding,
-                limit=product_retrieve_k,
-                run_id=run_id,
-            )
-
-        jewelry_type_filter = self._infer_jewelry_type_filter(req.message)
-        if jewelry_type_filter:
-            filtered: List[ProductCard] = []
-            for p in product_cards_all:
-                jt = None
-                if isinstance(p.attributes, dict):
-                    jt = p.attributes.get("jewelry_type")
-                if jt is not None and str(jt).strip().lower() == jewelry_type_filter.lower():
-                    filtered.append(p)
-            product_cards_filtered = filtered
+        if use_products and use_knowledge and product_query_text == knowledge_query_text:
+            shared_embedding = await llm_service.generate_embedding(product_query_text)
+            product_embedding = shared_embedding
+            knowledge_embedding = shared_embedding
         else:
-            product_cards_filtered = product_cards_all
+            if use_products:
+                product_embedding = await llm_service.generate_embedding(product_query_text)
+            if use_knowledge:
+                knowledge_embedding = await llm_service.generate_embedding(knowledge_query_text)
 
-        product_cards = product_cards_filtered[:product_topk]
-        product_best_for_gate: Optional[float] = None
-        if product_cards:
-            bests = []
-            for p in product_cards:
-                d = product_distance_by_id.get(str(p.id))
-                if d is not None:
-                    bests.append(float(d))
-            product_best_for_gate = min(bests) if bests else product_best
-
-        strict = float(getattr(settings, "PRODUCT_DISTANCE_STRICT", 0.35))
-        loose = float(getattr(settings, "PRODUCT_DISTANCE_LOOSE", 0.45))
-        product_gate_decision = "none"
-        if looks_like_product and product_best_for_gate is not None:
-            if product_best_for_gate <= strict:
-                product_gate_decision = "strict"
-            elif product_best_for_gate <= loose:
-                product_gate_decision = "loose"
-
-        self._log_event(
+        product_result = await product_pipeline.run(
+            ctx=ctx,
+            product_embedding=product_embedding,
+            product_topk=product_topk,
+            use_products=use_products,
+            is_policy_intent=is_policy_intent,
+            looks_like_product=looks_like_product,
             run_id=run_id,
-            location="chat_service.product.route_gate",
-            data={
-                "looks_like_product": looks_like_product,
-                "jewelry_type_filter": jewelry_type_filter,
-                "product_best": product_best,
-                "product_best_for_gate": product_best_for_gate,
-                "strict": strict,
-                "loose": loose,
-                "decision": product_gate_decision,
-                "count": len(product_cards),
-            },
         )
+        product_cards = product_result.product_cards
+        product_top_distances = product_result.product_top_distances
+        product_best = product_result.product_best
+        product_gate_decision = product_result.product_gate_decision
 
         if product_gate_decision in {"strict", "loose"} and product_cards:
+            decision = RouteDecision(route="product", reason="product_gate")
             reply_text = "Here are some products that might help:"
-            reply_text = self._strip_sources_block(reply_text)
-            product_cards = currency_service.convert_product_cards(product_cards, to_currency=target_currency)
-            await self.save_message(conversation.id, MessageRole.USER, req.message)
-            await self.save_message(conversation.id, MessageRole.ASSISTANT, reply_text)
-            return ChatResponse(
+            debug_meta["route"] = decision.route
+            response = await response_renderer.render(
                 conversation_id=conversation.id,
+                route=decision.route,
                 reply_text=reply_text,
                 product_carousel=product_cards,
                 follow_up_questions=[],
-                intent="product",
                 sources=[],
+                debug=debug_meta,
+                reply_language=reply_language,
+                target_currency=target_currency,
+                user_text=ctx.text,
+                apply_polish=False,
+            )
+            return await self._finalize_response(
+                conversation_id=conversation.id,
+                user_text=ctx.text,
+                response=response,
             )
 
-        # Only decompose for the knowledge pipeline (after product gating).
-        if is_complex:
-            sub_questions = await self._decompose_query(question=req.message, run_id=run_id)
-            sub_questions = sub_questions[:max_sub_questions]
-        queries = [req.message] + sub_questions
-        # De-dup while preserving order
-        seen_q: set[str] = set()
-        queries = [q for q in queries if not (q.lower() in seen_q or seen_q.add(q.lower()))]
-
-        def _choose_better(existing: Optional[KnowledgeSource], new: KnowledgeSource) -> KnowledgeSource:
-            if existing is None:
-                return new
-            if existing.distance is None and new.distance is None:
-                chosen = existing
-            if existing.distance is None and new.distance is not None:
-                chosen = new
-            if existing.distance is not None and new.distance is None:
-                chosen = existing
+        if not use_knowledge:
+            categories: List[str] = []
+            if self._is_catalog_browse(ctx.text):
+                categories = await self._get_product_category_overview()
+                if categories:
+                    preview = ", ".join(categories[:6])
+                    reply_text = f"I can show categories like {preview}. Which category should I show?"
+                else:
+                    reply_text = self._build_product_clarifier(ctx.text)
+                route = "product"
             else:
-                chosen = (
-                    new
-                    if (new.distance is not None and existing.distance is not None and new.distance < existing.distance)
-                    else existing
-                )
+                reply_text = self._build_product_clarifier(ctx.text)
+                route = "clarify"
 
-            # Preserve rerank metadata if it exists on either candidate.
-            other = new if chosen is existing else existing
-            if getattr(chosen, "rerank_score", None) is None and getattr(other, "rerank_score", None) is not None:
-                chosen.rerank_score = other.rerank_score
-            if getattr(chosen, "query_hint", None) is None and getattr(other, "query_hint", None) is not None:
-                chosen.query_hint = other.query_hint
-            return chosen
+            reply_text = await self._generate_contextual_reply(
+                user_text=ctx.text,
+                reply_language=reply_language,
+                suggested_question=reply_text,
+                focus="catalog_browse" if categories else "product_clarifier",
+                telemetry=debug_meta,
+                run_id=run_id,
+                required_terms=categories[:6] if categories else None,
+            )
 
-        per_query_keep = max(1, int(getattr(settings, "RAG_PER_QUERY_KEEP", 1)))
-        coverage_by_key: Dict[str, KnowledgeSource] = {}
-        coverage_keys_in_order: List[str] = []
-        pool_by_key: Dict[str, KnowledgeSource] = {}
-        kept_per_query: List[Dict[str, Any]] = []
-        per_query_best: List[Optional[float]] = []
+            decision = RouteDecision(route=route, reason="planner_no_knowledge")
+            debug_meta["route"] = decision.route
+            response = await response_renderer.render(
+                conversation_id=conversation.id,
+                route=decision.route,
+                reply_text=reply_text,
+                product_carousel=[],
+                follow_up_questions=[],
+                sources=[],
+                debug=debug_meta,
+                reply_language=reply_language,
+                target_currency=target_currency,
+                user_text=ctx.text,
+                apply_polish=False,
+            )
+            return await self._finalize_response(
+                conversation_id=conversation.id,
+                user_text=ctx.text,
+                response=response,
+            )
 
-        for q in queries:
-            if q == req.message:
-                sources_q, best_q = await self.search_knowledge(
-                    query_text=req.message,
-                    query_embedding=original_embedding,
-                    limit=settings.RAG_RETRIEVE_TOPK_KNOWLEDGE,
-                    must_tags=None,
-                    boost_tags=None,
-                    run_id=run_id,
-                )
-                if not sources_q:
-                    sources_q = await self.keyword_fallback(req.message, limit=settings.RAG_RETRIEVE_TOPK_KNOWLEDGE)
-                    best_q = None
-            else:
-                sources_q, best_q = await self._retrieve_knowledge_for_query(query_text=q, run_id=run_id)
-            per_query_best.append(best_q)
-            # Coverage-first merge uses distance ordering per query (no per-subquestion rerank).
-            kept_ids: List[str] = []
-            for s in sources_q[:per_query_keep]:
-                s.query_hint = q
-                key = s.chunk_id or s.source_id
-                if key not in coverage_by_key:
-                    coverage_keys_in_order.append(key)
-                coverage_by_key[key] = _choose_better(coverage_by_key.get(key), s)
-                kept_ids.append(str(s.source_id))
-
-            kept_per_query.append({"query": q, "kept_source_ids": kept_ids})
-
-            for s in sources_q[per_query_keep:]:
-                s.query_hint = q
-                key = s.chunk_id or s.source_id
-                if key in coverage_by_key:
-                    continue
-                pool_by_key[key] = _choose_better(pool_by_key.get(key), s)
-
-        coverage_sources: List[KnowledgeSource] = [coverage_by_key[k] for k in coverage_keys_in_order if k in coverage_by_key]
-        pool_sources = sorted(
-            pool_by_key.values(),
-            key=lambda s: (s.distance is None, s.distance if s.distance is not None else 9999.0),
+        knowledge_result = await knowledge_pipeline.run(
+            ctx=ctx,
+            knowledge_query_text=knowledge_query_text,
+            knowledge_embedding=knowledge_embedding,
+            is_complex=is_complex,
+            is_question_like=is_question_like,
+            is_policy_intent=is_policy_intent,
+            policy_topic_count=policy_topic_count,
+            max_sub_questions=max_sub_questions,
+            run_id=run_id,
         )
 
-        merged: List[KnowledgeSource] = []
-        merged_keys: set[str] = set()
-        for s in coverage_sources:
-            key = s.chunk_id or s.source_id
-            if key in merged_keys:
-                continue
-            merged.append(s)
-            merged_keys.add(key)
+        retrieval = knowledge_result.retrieval
+        rerank_result = knowledge_result.rerank
 
-        for s in pool_sources:
-            if len(merged) >= settings.RAG_RETRIEVE_TOPK_KNOWLEDGE:
-                break
-            key = s.chunk_id or s.source_id
-            if key in merged_keys:
-                continue
-            merged.append(s)
-            merged_keys.add(key)
+        debug_meta["decomposition_used"] = retrieval.decomposition_used
+        debug_meta["decomposition_reason"] = retrieval.decomposition_reason
+        debug_meta["decomposition_knowledge_best"] = retrieval.decomposition_knowledge_best
+        debug_meta["decomposition_gap"] = retrieval.decomposition_gap
 
-        knowledge_sources = merged
-        knowledge_best = min([d for d in per_query_best if d is not None], default=None)
-
-        knowledge_top_distances = [s.distance for s in knowledge_sources[:5] if s.distance is not None]
+        knowledge_sources = retrieval.knowledge_sources
+        knowledge_best = retrieval.knowledge_best
+        knowledge_top_distances = retrieval.knowledge_top_distances
+        sub_questions = retrieval.sub_questions
+        per_query_keep = retrieval.per_query_keep
 
         self._log_event(
             run_id=run_id,
@@ -1587,38 +1403,55 @@ class ChatService:
                 "per_query_keep": per_query_keep,
             },
         )
-
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.rag.merge.coverage",
-            data={"kept_per_query": kept_per_query, "coverage_count": len(coverage_sources)},
-        )
-
+        
         # Low-confidence retrieval gate: avoid verifier producing unrelated clarifications.
         product_weak_thr = float(getattr(settings, "PRODUCT_WEAK_DISTANCE", 0.55))
         knowledge_weak_thr = float(getattr(settings, "KNOWLEDGE_WEAK_DISTANCE", 0.60))
         product_weak = (product_best is None) or (float(product_best) >= product_weak_thr)
         knowledge_weak = (knowledge_best is None) or (float(knowledge_best) >= knowledge_weak_thr)
         if product_weak and knowledge_weak:
-            has_store_intent = self._has_store_intent(req.message or "")
+            has_store_intent = ctx.has_store_intent
             if has_store_intent:
-                route = "fallback_general"
-                reply_text = "I can help you browse products or answer store questions — what would you like to do?"
-                follow_ups = ["Browse products", "Check a SKU price", "Shipping & policies"]
+                categories: List[str] = []
+                if self._is_catalog_browse(ctx.text):
+                    categories = await self._get_product_category_overview()
+                    if categories:
+                        preview = ", ".join(categories[:6])
+                        reply_text = f"I can show categories like {preview}. Which category should I show?"
+                    else:
+                        reply_text = self._build_product_clarifier(ctx.text)
+                    route = "product"
+                    weak_retrieval_action = "catalog_overview"
+                else:
+                    reply_text = self._build_product_clarifier(ctx.text)
+                    route = "clarify"
+                    weak_retrieval_action = "targeted_clarifier"
+                reply_text = await self._generate_contextual_reply(
+                    user_text=ctx.text,
+                    reply_language=reply_language,
+                    suggested_question=reply_text,
+                    focus=weak_retrieval_action,
+                    telemetry=debug_meta,
+                    run_id=run_id,
+                    required_terms=categories[:6] if categories else None,
+                )
+                follow_ups = []
             else:
                 route = "general_chat"
                 try:
-                    reply_text = await self._general_chat_response(user_text=req.message or "", history=history)
+                    reply_text = await self._general_chat_response(user_text=ctx.text, reply_language=reply_language, history=history)
                 except Exception as e:
                     logger.error(f"general_chat generation failed: {e}")
-                    reply_text = "Sure — what would you like to chat about?"
+                    reply_text = "Hello, what would you like to discuss today?"
                 follow_ups = ["Browse products", "Check a SKU price", "Shipping & policies"]
+                weak_retrieval_action = "general_chat"
 
+            decision = RouteDecision(route=route, reason="weak_retrieval")
             self._log_event(
                 run_id=run_id,
                 location="chat_service.route_selected",
                 data={
-                    "route": route,
+                    "route": decision.route,
                     "fallback_general_triggered": route == "fallback_general",
                     "reason": "weak_retrieval",
                     "product_best": product_best,
@@ -1627,25 +1460,39 @@ class ChatService:
                     "knowledge_weak_thr": knowledge_weak_thr,
                     "verifier_skipped_reason": "weak_retrieval",
                     "store_intent": has_store_intent,
+                    "weak_retrieval_action": weak_retrieval_action,
                 },
             )
-            await self.save_message(conversation.id, MessageRole.USER, req.message)
-            await self.save_message(conversation.id, MessageRole.ASSISTANT, reply_text)
-            return ChatResponse(
+            debug_meta["weak_retrieval_action"] = weak_retrieval_action
+            debug_meta["route"] = decision.route
+            response = await response_renderer.render(
                 conversation_id=conversation.id,
-                reply_text=self._strip_sources_block(reply_text),
+                route=decision.route,
+                reply_text=reply_text,
                 product_carousel=[],
                 follow_up_questions=follow_ups,
-                intent=route,
                 sources=[],
+                debug=debug_meta,
+                reply_language=reply_language,
+                target_currency=target_currency,
+                user_text=ctx.text,
+                apply_polish=False,
+            )
+            return await self._finalize_response(
+                conversation_id=conversation.id,
+                user_text=ctx.text,
+                response=response,
             )
 
-        # Global rerank ONCE (original user question), after coverage-first merge.
-        reranked_top = await self._rerank_knowledge_with_cohere(
-            query=req.message,
-            candidates=knowledge_sources,
-            run_id=run_id,
-        )
+        reranked_top = rerank_result.reranked_top
+        debug_meta["rerank_used"] = rerank_result.rerank_used
+        debug_meta["rerank_reason"] = rerank_result.rerank_reason
+        debug_meta["rerank_duration_ms"] = rerank_result.rerank_duration_ms
+        debug_meta["rerank_timed_out"] = rerank_result.rerank_timed_out
+        debug_meta["rerank_candidates"] = rerank_result.candidates_count
+        debug_meta["rerank_d1"] = rerank_result.d1
+        debug_meta["rerank_d10"] = rerank_result.d10
+        debug_meta["rerank_gap"] = rerank_result.gap
 
         max_verify_chunks = max(
             1, int(getattr(settings, "RAG_VERIFY_MAX_KNOWLEDGE_CHUNKS", settings.RAG_RERANK_TOPN))
@@ -1669,8 +1516,8 @@ class ChatService:
             reranked_knowledge.append(s)
             used_keys.add(key)
 
-        decision = await self._verify_answerable(
-            question=req.message,
+        decision = await verifier_service.verify(
+            question=ctx.text,
             knowledge_sources=reranked_knowledge,
             product_cards=product_cards,
             run_id=run_id,
@@ -1724,13 +1571,13 @@ class ChatService:
                 follow_up_questions = []
             elif answer_type == "mixed":
                 route = "mixed"
-                reply_text = await self.synthesize_answer(req.message, selected_sources)
+                reply_text = await self.synthesize_answer(ctx.text, selected_sources, reply_language)
                 product_carousel = []
                 sources = selected_sources
                 follow_up_questions = []
             else:
                 route = "knowledge"
-                reply_text = await self.synthesize_answer(req.message, selected_sources)
+                reply_text = await self.synthesize_answer(ctx.text, selected_sources, reply_language)
                 product_carousel = []
                 sources = selected_sources
                 follow_up_questions = []
@@ -1740,50 +1587,62 @@ class ChatService:
             product_weak = (product_best is None) or (float(product_best) >= product_weak_thr)
             knowledge_weak = (knowledge_best is None) or (float(knowledge_best) >= knowledge_weak_thr)
 
-            if self._is_question_like(req.message) and not (product_weak and knowledge_weak):
+            if self._is_question_like(ctx.text) and not (product_weak and knowledge_weak):
                 route = "clarify"
                 clarifier = missing_parts_q or (missing_q.strip() if isinstance(missing_q, str) else "")
                 if selected_sources and effective_supporting_ids and clarifier:
                     reply_text = await self.synthesize_partial_answer(
-                        original_question=req.message,
+                        original_question=ctx.text,
                         sources=selected_sources,
                         answerable_topics=answerable_topics,
                         missing_question=clarifier,
+                        reply_language=reply_language,
                     )
                     sources = selected_sources
                 elif clarifier:
-                    reply_text = clarifier
+                    reply_text = await self._generate_contextual_reply(
+                        user_text=ctx.text,
+                        reply_language=reply_language,
+                        suggested_question=clarifier,
+                        focus="clarify",
+                        telemetry=debug_meta,
+                        run_id=run_id,
+                    )
                     sources = []
                 else:
-                    reply_text = "Could you clarify what exactly you want to know (one detail)?"
+                    reply_text = await self._generate_contextual_reply(
+                        user_text=ctx.text,
+                        reply_language=reply_language,
+                        suggested_question="Could you clarify what exactly you want to know (one detail)?",
+                        focus="clarify",
+                        telemetry=debug_meta,
+                        run_id=run_id,
+                    )
                     sources = []
                 product_carousel = []
                 follow_up_questions = []
             else:
                 route = "fallback_general"
-                reply_text = "I can help you browse products or answer store questions — what would you like to do?"
+                reply_text = await self._generate_contextual_reply(
+                    user_text=ctx.text,
+                    reply_language=reply_language,
+                    suggested_question=(
+                        "I can help you browse products or answer store questions. What would you like to do?"
+                    ),
+                    focus="fallback_general",
+                    telemetry=debug_meta,
+                    run_id=run_id,
+                )
                 product_carousel = []
                 sources = []
                 follow_up_questions = ["Browse products", "Check a SKU price", "Shipping & policies"]
 
-        reply_text = self._strip_sources_block(reply_text)
-        if product_carousel:
-            product_carousel = currency_service.convert_product_cards(product_carousel, to_currency=target_currency)
-
-        if route not in {"smalltalk", "product"}:
-            reply_text = await answer_polisher.polish(
-                draft_text=reply_text,
-                route=route,
-                user_text=req.message,
-                has_product_carousel=bool(product_carousel),
-            )
-            reply_text = self._strip_sources_block(reply_text)
-
+        decision = RouteDecision(route=route, reason="verifier")
         self._log_event(
             run_id=run_id,
             location="chat_service.rag.route_decision",
             data={
-                "route": route,
+                "route": decision.route,
                 "answerable": answerable,
                 "answer_type": answer_type,
                 "knowledge_best": knowledge_best,
@@ -1800,19 +1659,26 @@ class ChatService:
             extra={
                 "knowledge_best_distance": knowledge_best,
                 "product_best_distance": product_best,
-                "route": route,
+                "route": decision.route,
             },
         )
 
-        # persist messages
-        await self.save_message(conversation.id, MessageRole.USER, req.message)
-        await self.save_message(conversation.id, MessageRole.ASSISTANT, reply_text)
+        debug_meta["route"] = decision.route
 
-        return ChatResponse(
+        response = await response_renderer.render(
             conversation_id=conversation.id,
+            route=decision.route,
             reply_text=reply_text,
             product_carousel=product_carousel,
             follow_up_questions=follow_up_questions,
-            intent=route,
             sources=sources,
+            debug=debug_meta,
+            target_currency=target_currency,
+            user_text=ctx.text,
+            apply_polish=True,
+        )
+        return await self._finalize_response(
+            conversation_id=conversation.id,
+            user_text=ctx.text,
+            response=response,
         )
