@@ -83,6 +83,23 @@ class DocumentService:
         await db.delete(doc)
         await db.commit()
 
+
+    async def get_document(self, db: AsyncSession, document_id: UUID) -> Document | None:
+        return await db.get(Document, document_id)
+
+    async def update_document(self, db: AsyncSession, document_id: UUID, doc_in) -> Document:
+        doc = await self.get_document(db, document_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        update_data = doc_in.model_dump(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(doc, field, value)
+            
+        await db.commit()
+        await db.refresh(doc)
+        return doc
+
     def _ensure_within_root(self, path: Path) -> Path:
         """Validate the stored path stays under uploads root."""
         root_resolved = self.root_dir.resolve()

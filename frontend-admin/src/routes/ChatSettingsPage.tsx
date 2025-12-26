@@ -8,6 +8,7 @@ export const ChatSettingsPage: React.FC = () => {
     const widgetOrigin = (import.meta.env.VITE_WIDGET_ORIGIN || 'http://localhost:8000').replace(/\/+$/, '');
     const widgetApiBaseUrl = `${widgetOrigin}/api/v1`;
     const widgetScriptUrl = `${widgetOrigin}/static/widget.js`;
+    const widgetCssUrl = `${widgetOrigin}/static/widget.css`;
     const [config, setConfig] = useState({
         title: 'Jewelry Assistant',
         primaryColor: '#214166', // Medium Blue
@@ -67,6 +68,7 @@ export const ChatSettingsPage: React.FC = () => {
     const handleCopyCode = () => {
         const scriptCode = `
 <!-- GenAI Chat Widget -->
+<link rel="stylesheet" href="${widgetCssUrl}">
 <script>
   window.genaiConfig = {
     title: "${config.title}",
@@ -230,6 +232,7 @@ export const ChatSettingsPage: React.FC = () => {
                                     </div>
                                     <div className="bg-gray-800/50 backdrop-blur rounded-lg p-3 font-mono text-[10px] text-indigo-200 overflow-x-auto whitespace-pre border border-white/5">
                                         {`<!-- GenAI Chat Widget -->
+<link rel="stylesheet" href="${widgetCssUrl}">
 <script>
 window.genaiConfig = {
 title: "${config.title}",

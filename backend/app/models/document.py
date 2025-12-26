@@ -2,8 +2,8 @@ from datetime import datetime
 import enum
 import uuid
 
-from sqlalchemy import Column, DateTime, Enum, Integer, String
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, DateTime, Enum, Integer, String, Boolean
+from sqlalchemy.dialects.postgresql import UUID, ARRAY
 
 from app.db.base import Base
 
@@ -29,3 +29,9 @@ class Document(Base):
     error_message = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Document Control
+    title = Column(String, nullable=True)
+    tags = Column(ARRAY(String), default=list)
+    category = Column(String, nullable=True)
+    is_enabled = Column(Boolean, default=True)

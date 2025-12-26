@@ -1,0 +1,11 @@
+@tailwind components;
+@tailwind utilities;
+
+#genai-widget-root {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+#genai-widget-root,
+#genai-widget-root * {
+    box-sizing: border-box;
+}

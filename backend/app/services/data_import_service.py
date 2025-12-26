@@ -12,7 +12,6 @@ from fastapi import UploadFile, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 from sqlalchemy.orm import selectinload
-from docx import Document as DocxDocument
 
 from app.models.product import Product, ProductEmbedding
 from app.models.knowledge import (
@@ -79,10 +78,9 @@ class DataImportService:
     @staticmethod
     def get_product_template() -> str:
         """Returns the CSV header for products."""
-        # Keep attributes_json for backward compatibility, but also provide explicit attribute columns
-        # so non-technical users can fill them easily.
+        # master_code allows grouping multiple SKUs. stock_status can be 'in_stock' or 'out_of_stock'.
         return (
-            "sku,name,price,description,category,image_url,product_url,object_id,attributes_json,"
+            "sku,master_code,name,price,stock_status,description,category,image_url,product_url,object_id,attributes_json,"
             "jewelry_type,material,"
             "length,size,cz_color,design,crystal_color,color,gauge,size_in_pack,rack,height,"
             "packing_option,pincher_size,ring_size,quantity_in_bulk,opal_color,threading,"
@@ -131,6 +129,12 @@ class DataImportService:
 
                     object_id_raw = row.get("object_id")
                     object_id = (object_id_raw.strip() if isinstance(object_id_raw, str) else object_id_raw) or None
+                    
+                    master_code_raw = row.get("master_code")
+                    master_code = (master_code_raw.strip() if isinstance(master_code_raw, str) else master_code_raw) or None
+
+                    stock_status_raw = row.get("stock_status", "in_stock").lower().strip()
+                    stock_status = "in_stock" if stock_status_raw in ["in_stock", "1", "true", "yes"] else "out_of_stock"
                     
                     # Parse attributes:
                     # - attributes_json (optional): JSON object string
@@ -225,6 +229,8 @@ class DataImportService:
                         existing_product.search_hash = search_hash
                         existing_product.attributes = attributes or (existing_product.attributes or {})
                         existing_product.object_id = object_id
+                        existing_product.master_code = master_code
+                        existing_product.stock_status = stock_status
 
                         # Mirror common attributes into dedicated columns (if present in DB)
                         for k in attribute_columns:
@@ -248,6 +254,8 @@ class DataImportService:
                             product_upload_id=upload_record.id,
                             search_text=search_text,
                             search_hash=search_hash,
+                            master_code=master_code,
+                            stock_status=stock_status,
                             attributes=attributes or {},
                         )
                         for k in attribute_columns:
@@ -385,7 +393,7 @@ class DataImportService:
         uploaded_by: str | None = None
     ) -> Dict[str, int]:
         """
-        Import knowledge articles from CSV or DOCX files.
+        Import knowledge articles from CSV files.
         """
         content = await file.read()
         filename = file.filename
@@ -405,10 +413,8 @@ class DataImportService:
             # Parse file
             if lower_filename.endswith('.csv'):
                 parsed_items = await self._parse_csv_knowledge(content)
-            elif lower_filename.endswith('.docx'):
-                parsed_items = await self._parse_docx_knowledge(content, lower_filename)
             else:
-                raise HTTPException(status_code=400, detail="Unsupported file type. Use CSV or DOCX.")
+                raise HTTPException(status_code=400, detail="Unsupported file type. Use CSV.")
         except Exception as e:
             logger.error(f"Error parsing file {lower_filename}: {e}")
             await self._update_upload_status(db, upload_session.id, KnowledgeUploadStatus.FAILED, str(e))
@@ -510,22 +516,6 @@ class DataImportService:
                     "url": row.get("url", "").strip() or None
                 })
         return items
-    
-    async def _parse_docx_knowledge(self, content: bytes, filename: str) -> List[Dict[str, Any]]:
-        docx_file = io.BytesIO(content)
-        doc = DocxDocument(docx_file)
-        full_text = ""
-        for para in doc.paragraphs:
-            if para.text.strip(): full_text += para.text + "\n"
-            
-        chunks = self._chunk_text(full_text)
-        return [{
-            "title": filename,
-            "full_text": full_text,
-            "chunks": chunks,
-            "category": "docx_document",
-            "url": None
-        }]
     
     def _chunk_text(self, text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
         # Reduced chunk size default for granular embeddings

@@ -273,6 +273,89 @@ class ChatService:
             t = f"Hello, {t}"
         return t
 
+    @staticmethod
+    def _is_english_language(reply_language: str) -> bool:
+        lang = (reply_language or "").strip().lower()
+        return lang.startswith("en") or "english" in lang
+
+    async def _localize_ui_texts(
+        self,
+        *,
+        reply_language: str,
+        items: Dict[str, str],
+        run_id: str,
+    ) -> Dict[str, str]:
+        if not items:
+            return {}
+        if self._is_english_language(reply_language):
+            return items
+        if not bool(getattr(settings, "UI_LOCALIZATION_ENABLED", True)):
+            return items
+
+        localized = await llm_service.localize_ui_strings(
+            items=items,
+            reply_language=reply_language,
+            model=getattr(settings, "UI_LOCALIZATION_MODEL", None),
+            max_tokens=int(getattr(settings, "UI_LOCALIZATION_MAX_TOKENS", 220)),
+            temperature=float(getattr(settings, "UI_LOCALIZATION_TEMPERATURE", 0.1)),
+        )
+        self._log_event(
+            run_id=run_id,
+            location="chat_service.ui_localization",
+            data={"reply_language": reply_language, "keys": list(items.keys())},
+        )
+        return localized
+
+    async def _localize_ui_text(
+        self,
+        *,
+        reply_language: str,
+        text: str,
+        run_id: str,
+    ) -> str:
+        localized = await self._localize_ui_texts(
+            reply_language=reply_language,
+            items={"text": text},
+            run_id=run_id,
+        )
+        return localized.get("text", text)
+
+    async def _get_follow_up_questions(self, *, reply_language: str, run_id: str) -> List[str]:
+        base = {
+            "browse_products": "Browse products",
+            "check_sku_price": "Check a SKU price",
+            "shipping_policies": "Shipping & policies",
+        }
+        localized = await self._localize_ui_texts(
+            reply_language=reply_language,
+            items=base,
+            run_id=run_id,
+        )
+        return [
+            localized.get("browse_products", base["browse_products"]),
+            localized.get("check_sku_price", base["check_sku_price"]),
+            localized.get("shipping_policies", base["shipping_policies"]),
+        ]
+
+    async def _localize_price_sentence(
+        self,
+        *,
+        sku: str,
+        amount: str,
+        currency: str,
+        reply_language: str,
+        run_id: str,
+    ) -> str:
+        base = f"The price of {sku} is {amount} {currency}."
+        localized = await self._localize_ui_text(
+            reply_language=reply_language,
+            text=base,
+            run_id=run_id,
+        )
+        if sku not in localized or amount not in localized or currency not in localized:
+            return base
+        return localized
+
     async def _generate_contextual_reply(
         self,
         *,
@@ -285,6 +368,11 @@ class ChatService:
         telemetry: Optional[Dict[str, Any]] = None,
     ) -> str:
         fallback = self._format_clarifier_fallback(suggested_question)
+        fallback = await self._localize_ui_text(
+            reply_language=reply_language,
+            text=fallback,
+            run_id=run_id,
+        )
 
         def _set_telemetry(used: bool, reason: str) -> None:
             if telemetry is None:
@@ -440,6 +528,7 @@ class ChatService:
     async def _resolve_reply_language(self, *, user_text: str, locale: Optional[str], run_id: str) -> str:
         mode = str(getattr(settings, "CHAT_LANGUAGE_MODE", "auto") or "auto").lower()
         default_locale = str(getattr(settings, "DEFAULT_LOCALE", "en-US") or "en-US")
+        locale = str(locale or "").strip() or None
         if mode == "fixed":
             fixed = str(getattr(settings, "FIXED_REPLY_LANGUAGE", "") or "").strip()
             reply_language = fixed or default_locale
@@ -460,9 +549,11 @@ class ChatService:
             )
             return reply_language
 
-        if locale:
+        # auto: treat locale as a hint, not a hard override.
+        # Many clients always send a default like "en-US", which would otherwise prevent detection.
+        if locale and locale.lower() != default_locale.lower():
             reply_language = locale
-            reason = "locale_provided"
+            reason = "locale_override"
             self._log_event(
                 run_id=run_id,
                 location="chat_service.language.resolve",
@@ -475,15 +566,90 @@ class ChatService:
             language=detected.get("language"),
             locale=detected.get("locale"),
         )
-        reason = "detected" if detected else "default"
-        if not detected:
-            reply_language = default_locale
+        if detected:
+            reason = "detected"
+        else:
+            reply_language = locale or default_locale
+            reason = "fallback_default"
         self._log_event(
             run_id=run_id,
             location="chat_service.language.resolve",
             data={"mode": mode, "reply_language": reply_language, "reason": reason},
         )
         return reply_language
+
+    async def _detect_requested_currency(
+        self,
+        *,
+        text: str,
+        locale: Optional[str],
+        run_id: str,
+    ) -> tuple[Optional[str], Dict[str, Any]]:
+        meta = {
+            "currency_intent_used": False,
+            "currency_intent_source": "heuristic",
+            "currency_intent_intent": None,
+            "currency_intent_currency": None,
+        }
+
+        if not (text or "").strip():
+            meta["currency_intent_source"] = "empty"
+            return None, meta
+
+        use_llm = bool(getattr(settings, "CURRENCY_INTENT_ENABLED", True))
+        if use_llm:
+            meta["currency_intent_used"] = True
+            meta["currency_intent_source"] = "llm"
+            supported = currency_service.supported_currencies()
+            try:
+                data = await llm_service.detect_currency_intent(
+                    user_message=text,
+                    locale=locale,
+                    supported_currencies=supported,
+                    model=getattr(settings, "CURRENCY_INTENT_MODEL", None),
+                    max_tokens=int(getattr(settings, "CURRENCY_INTENT_MAX_TOKENS", 80)),
+                )
+            except Exception as e:
+                self._log_event(
+                    run_id=run_id,
+                    location="chat_service.currency.intent",
+                    data={"used": True, "error": str(e)},
+                )
+                data = {}
+
+            if data:
+                intent_value = data.get("intent")
+                if isinstance(intent_value, bool):
+                    meta["currency_intent_intent"] = intent_value
+                currency_value = str(data.get("currency") or "").strip().upper()
+                if currency_value:
+                    meta["currency_intent_currency"] = currency_value
+                self._log_event(
+                    run_id=run_id,
+                    location="chat_service.currency.intent",
+                    data={"used": True, "intent": meta["currency_intent_intent"], "currency": currency_value},
+                )
+
+                if meta["currency_intent_intent"] is False:
+                    return None, meta
+
+                if currency_value:
+                    if currency_service.supports(currency_value):
+                        return currency_value, meta
+                    self._log_event(
+                        run_id=run_id,
+                        location="chat_service.currency.intent",
+                        data={"used": True, "unsupported_currency": currency_value},
+                    )
+
+            meta["currency_intent_source"] = "heuristic_fallback"
+
+        heuristic = currency_service.extract_requested_currency(text)
+        if heuristic and currency_service.supports(heuristic):
+            meta["currency_intent_currency"] = heuristic
+            return heuristic, meta
+
+        return None, meta
 
     async def _plan_retrieval(self, *, user_text: str, locale: Optional[str], run_id: str) -> Dict[str, Any]:
         if not bool(getattr(settings, "PLANNER_ENABLED", True)):
@@ -522,6 +688,9 @@ class ChatService:
         result = {
             "used": True,
             "task": task,
+            "is_smalltalk": bool(data.get("is_smalltalk")),
+            "is_meta_question": bool(data.get("is_meta_question")),
+            "is_catalog_browse": bool(data.get("is_catalog_browse")),
             "kb_query": _safe_str(data.get("kb_query")),
             "product_query": _safe_str(data.get("product_query")),
             "entities": data.get("entities") if isinstance(data.get("entities"), dict) else {},
@@ -557,7 +726,9 @@ class ChatService:
 
     async def _smalltalk_response(self, *, user_text: str, reply_language: str) -> str:
         mode = str(getattr(settings, "SMALLTALK_MODE", "static") or "static").lower()
-        if mode != "llm":
+        lang = (reply_language or "").strip().lower()
+        is_english = lang.startswith("en") or "english" in lang
+        if mode != "llm" and is_english:
             return "Hello, thank you for reaching out. How may I assist you today?"
 
         model = getattr(settings, "SMALLTALK_MODEL", None) or settings.OPENAI_MODEL
@@ -881,11 +1052,21 @@ class ChatService:
 
         return product_cards, distances[:5], best_distance, distance_by_id
 
-    async def synthesize_answer(self, question: str, sources: List[KnowledgeSource], reply_language: str) -> str:
+    async def synthesize_answer(
+        self,
+        question: str,
+        sources: List[KnowledgeSource],
+        reply_language: str,
+        run_id: Optional[str] = None,
+    ) -> str:
         if not sources:
-            return (
-                "I don't have enough information in my knowledge base to answer that yet. "
-                "Try asking another question or rephrasing."
+            return await self._localize_ui_text(
+                reply_language=reply_language,
+                text=(
+                    "I don't have enough information in my knowledge base to answer that yet. "
+                    "Try asking another question or rephrasing."
+                ),
+                run_id=run_id or "synthesize_answer",
             )
 
         context = "\n\n".join(
@@ -905,7 +1086,11 @@ class ChatService:
             return await llm_service.generate_chat_response(messages, temperature=0.2)
         except Exception as e:
             logger.error(f"LLM response generation failed: {e}")
-            return "I'm having trouble generating an answer right now. Please try again."
+            return await self._localize_ui_text(
+                reply_language=reply_language,
+                text="I'm having trouble generating an answer right now. Please try again.",
+                run_id=run_id or "synthesize_answer",
+            )
 
     async def synthesize_partial_answer(
         self,
@@ -915,6 +1100,7 @@ class ChatService:
         answerable_topics: List[str],
         missing_question: str,
         reply_language: str,
+        run_id: Optional[str] = None,
     ) -> str:
         if not sources:
             return missing_question
@@ -946,9 +1132,18 @@ class ChatService:
             found = await llm_service.generate_chat_response(messages, temperature=0.2)
         except Exception as e:
             logger.error(f"Partial answer generation failed: {e}")
-            found = "What I found:\n- I couldn't generate a summary from the retrieved context."
+            found = await self._localize_ui_text(
+                reply_language=reply_language,
+                text="What I found:\n- I couldn't generate a summary from the retrieved context.",
+                run_id=run_id or "synthesize_partial_answer",
+            )
 
-        return f"{found}\n\nOne question to confirm:\n{missing_question}"
+        confirm_label = await self._localize_ui_text(
+            reply_language=reply_language,
+            text="One question to confirm:",
+            run_id=run_id or "synthesize_partial_answer",
+        )
+        return f"{found}\n\n{confirm_label}\n{missing_question}"
 
     async def process_chat(self, req: ChatRequest) -> ChatResponse:
         user = await self.get_or_create_user(req.user_id, req.customer_name, req.email)
@@ -968,6 +1163,10 @@ class ChatService:
             "contextual_reply_used": None,
             "contextual_reply_reason": None,
             "contextual_reply_focus": None,
+            "currency_intent_used": None,
+            "currency_intent_source": None,
+            "currency_intent_intent": None,
+            "currency_intent_currency": None,
         }
 
         _debug_log(
@@ -983,7 +1182,12 @@ class ChatService:
         )
 
         text = req.message or ""
-        requested_currency = currency_service.extract_requested_currency(text)
+        requested_currency, currency_meta = await self._detect_requested_currency(
+            text=text,
+            locale=req.locale,
+            run_id=run_id,
+        )
+        debug_meta.update(currency_meta)
         default_display_currency = (
             getattr(settings, "PRICE_DISPLAY_CURRENCY", None)
             or getattr(settings, "BASE_CURRENCY", None)
@@ -1006,15 +1210,68 @@ class ChatService:
         target_currency = (ctx.requested_currency or default_display_currency).upper()
         reply_language = await self._resolve_reply_language(user_text=ctx.text, locale=req.locale, run_id=run_id)
         debug_meta["reply_language"] = reply_language
+        follow_up_options = await self._get_follow_up_questions(
+            reply_language=reply_language,
+            run_id=run_id,
+        )
         response_renderer = self._response_renderer
-        if bool(getattr(settings, "SMALLTALK_ENABLED", True)) and self._is_smalltalk(ctx.text):
-            decision = RouteDecision(route="smalltalk", reason="smalltalk_detected")
+        looks_like_product = ctx.looks_like_product
+        sku_token = ctx.sku_token
+        product_topk = int(getattr(settings, "PRODUCT_SEARCH_TOPK", settings.RAG_RETRIEVE_TOPK_PRODUCT))
+        is_question_like = ctx.is_question_like
+        has_store_intent = ctx.has_store_intent
+        is_policy_intent = ctx.is_policy_intent
+        policy_topic_count = ctx.policy_topic_count
+        product_pipeline = self._product_pipeline
+        knowledge_pipeline = self._knowledge_pipeline
+        verifier_service = self._verifier_service
+
+        planner: Dict[str, Any] = {"used": False}
+        planner_used = False
+        planner_task = "general"
+        planner_confidence = 0.0
+        planner_min_conf = float(getattr(settings, "PLANNER_MIN_CONFIDENCE", 0.6))
+        planner_is_smalltalk = False
+        planner_is_meta = False
+        planner_is_catalog_browse = False
+        kb_query_text = ""
+        product_query_text = ""
+
+        if not sku_token:
+            planner = await self._plan_retrieval(user_text=ctx.text, locale=req.locale, run_id=run_id)
+            planner_used = bool(planner.get("used")) and not planner.get("error")
+            planner_task = str(planner.get("task") or "general").strip().lower()
+            planner_is_smalltalk = bool(planner.get("is_smalltalk"))
+            planner_is_meta = bool(planner.get("is_meta_question"))
+            planner_is_catalog_browse = bool(planner.get("is_catalog_browse"))
+            try:
+                planner_confidence = float(planner.get("confidence") or 0.0)
+            except Exception:
+                planner_confidence = 0.0
+
+        planner_applied = planner_used and planner_confidence >= planner_min_conf
+        if planner_used:
+            debug_meta["planner_used"] = True
+            debug_meta["planner_task"] = planner_task
+            debug_meta["planner_confidence"] = planner_confidence
+            debug_meta["planner_kb_query"] = planner.get("kb_query") or ""
+            debug_meta["planner_product_query"] = planner.get("product_query") or ""
+            debug_meta["planner_needs_clarification"] = bool(planner.get("needs_clarification"))
+            debug_meta["planner_applied"] = planner_applied
+            debug_meta["planner_is_smalltalk"] = planner_is_smalltalk
+            debug_meta["planner_is_meta_question"] = planner_is_meta
+            debug_meta["planner_is_catalog_browse"] = planner_is_catalog_browse
+        else:
+            debug_meta["planner_used"] = False
+
+        if planner_used and planner_is_smalltalk and bool(getattr(settings, "SMALLTALK_ENABLED", True)):
+            decision = RouteDecision(route="smalltalk", reason="planner_smalltalk")
             reply_text = await self._smalltalk_response(user_text=ctx.text, reply_language=reply_language)
-            follow_ups = ["Browse products", "Check a SKU price", "Shipping & policies"]
+            follow_ups = follow_up_options
             self._log_event(
                 run_id=run_id,
                 location="chat_service.route_selected",
-                data={"route": "smalltalk", "smalltalk_detected": True},
+                data={"route": "smalltalk", "reason": decision.reason, "planner_task": planner_task},
             )
             debug_meta["route"] = decision.route
             response = await response_renderer.render(
@@ -1037,17 +1294,23 @@ class ChatService:
             )
 
         # Meta / general chat (LLM-only, no retrieval/verifier).
-        if self._is_meta_question(ctx.text) or self._is_general_chat(ctx.text):
-            decision = RouteDecision(route="general_chat", reason="meta_or_general")
+        if planner_used and planner_is_meta:
+            decision = RouteDecision(route="general_chat", reason="planner_meta")
             try:
-                reply_text = await self._general_chat_response(user_text=ctx.text, reply_language=reply_language, history=history)
+                reply_text = await self._general_chat_response(
+                    user_text=ctx.text, reply_language=reply_language, history=history
+                )
             except Exception as e:
                 logger.error(f"general_chat generation failed: {e}")
-                reply_text = "Hello, I am here to help. How may I assist you today?"
+                reply_text = await self._localize_ui_text(
+                    reply_language=reply_language,
+                    text="Hello, I am here to help. How may I assist you today?",
+                    run_id=run_id,
+                )
             self._log_event(
                 run_id=run_id,
                 location="chat_service.route_selected",
-                data={"route": decision.route, "meta_detected": self._is_meta_question(ctx.text)},
+                data={"route": decision.route, "reason": decision.reason, "planner_task": planner_task},
             )
             debug_meta["route"] = decision.route
             response = await response_renderer.render(
@@ -1055,7 +1318,7 @@ class ChatService:
                 route=decision.route,
                 reply_text=reply_text,
                 product_carousel=[],
-                follow_up_questions=["Browse products", "Check a SKU price", "Shipping & policies"],
+                follow_up_questions=follow_up_options,
                 sources=[],
                 debug=debug_meta,
                 reply_language=reply_language,
@@ -1069,45 +1332,116 @@ class ChatService:
                 response=response,
             )
 
-        looks_like_product = ctx.looks_like_product
-        sku_token = ctx.sku_token
-        product_topk = int(getattr(settings, "PRODUCT_SEARCH_TOPK", settings.RAG_RETRIEVE_TOPK_PRODUCT))
-        is_question_like = ctx.is_question_like
-        has_store_intent = ctx.has_store_intent
-        is_policy_intent = ctx.is_policy_intent
-        policy_topic_count = ctx.policy_topic_count
-        product_pipeline = self._product_pipeline
-        knowledge_pipeline = self._knowledge_pipeline
-        verifier_service = self._verifier_service
+        if planner_used and planner_is_catalog_browse:
+            categories = await self._get_product_category_overview()
+            if categories:
+                preview = ", ".join(categories[:6])
+                suggested = f"I can show categories like {preview}. Which category should I show?"
+            else:
+                suggested = "Which product category are you looking for?"
+            reply_text = await self._generate_contextual_reply(
+                user_text=ctx.text,
+                reply_language=reply_language,
+                suggested_question=suggested,
+                focus="catalog_overview",
+                telemetry=debug_meta,
+                run_id=run_id,
+                required_terms=categories[:6] if categories else None,
+            )
+            decision = RouteDecision(route="product", reason="planner_catalog_browse")
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.route_selected",
+                data={"route": decision.route, "reason": decision.reason, "planner_task": planner_task},
+            )
+            debug_meta["route"] = decision.route
+            response = await response_renderer.render(
+                conversation_id=conversation.id,
+                route=decision.route,
+                reply_text=reply_text,
+                product_carousel=[],
+                follow_up_questions=[],
+                sources=[],
+                debug=debug_meta,
+                reply_language=reply_language,
+                target_currency=target_currency,
+                user_text=ctx.text,
+                apply_polish=False,
+            )
+            return await self._finalize_response(
+                conversation_id=conversation.id,
+                user_text=ctx.text,
+                response=response,
+            )
 
-        planner = {"used": False}
-        planner_used = False
-        planner_task = "general"
-        planner_confidence = 0.0
-        planner_min_conf = float(getattr(settings, "PLANNER_MIN_CONFIDENCE", 0.6))
-        kb_query_text = ""
-        product_query_text = ""
+        # Fallback heuristic routes if planner is disabled or fails.
+        if not planner_used:
+            if bool(getattr(settings, "SMALLTALK_ENABLED", True)) and self._is_smalltalk(ctx.text):
+                decision = RouteDecision(route="smalltalk", reason="heuristic_smalltalk")
+                reply_text = await self._smalltalk_response(user_text=ctx.text, reply_language=reply_language)
+                follow_ups = follow_up_options
+                self._log_event(
+                    run_id=run_id,
+                    location="chat_service.route_selected",
+                    data={"route": "smalltalk", "reason": decision.reason},
+                )
+                debug_meta["route"] = decision.route
+                response = await response_renderer.render(
+                    conversation_id=conversation.id,
+                    route=decision.route,
+                    reply_text=reply_text,
+                    product_carousel=[],
+                    follow_up_questions=follow_ups,
+                    sources=[],
+                    debug=debug_meta,
+                    reply_language=reply_language,
+                    target_currency=target_currency,
+                    user_text=ctx.text,
+                    apply_polish=False,
+                )
+                return await self._finalize_response(
+                    conversation_id=conversation.id,
+                    user_text=ctx.text,
+                    response=response,
+                )
 
-        if not sku_token:
-            planner = await self._plan_retrieval(user_text=ctx.text, locale=req.locale, run_id=run_id)
-            planner_used = bool(planner.get("used")) and not planner.get("error")
-            planner_task = str(planner.get("task") or "general").strip().lower()
-            try:
-                planner_confidence = float(planner.get("confidence") or 0.0)
-            except Exception:
-                planner_confidence = 0.0
-
-        planner_applied = planner_used and planner_confidence >= planner_min_conf
-        if planner_used:
-            debug_meta["planner_used"] = True
-            debug_meta["planner_task"] = planner_task
-            debug_meta["planner_confidence"] = planner_confidence
-            debug_meta["planner_kb_query"] = planner.get("kb_query") or ""
-            debug_meta["planner_product_query"] = planner.get("product_query") or ""
-            debug_meta["planner_needs_clarification"] = bool(planner.get("needs_clarification"))
-            debug_meta["planner_applied"] = planner_applied
-        else:
-            debug_meta["planner_used"] = False
+            if self._is_meta_question(ctx.text) or self._is_general_chat(ctx.text):
+                decision = RouteDecision(route="general_chat", reason="heuristic_meta_or_general")
+                try:
+                    reply_text = await self._general_chat_response(
+                        user_text=ctx.text, reply_language=reply_language, history=history
+                    )
+                except Exception as e:
+                    logger.error(f"general_chat generation failed: {e}")
+                    reply_text = await self._localize_ui_text(
+                        reply_language=reply_language,
+                        text="Hello, I am here to help. How may I assist you today?",
+                        run_id=run_id,
+                    )
+                self._log_event(
+                    run_id=run_id,
+                    location="chat_service.route_selected",
+                    data={"route": decision.route, "reason": decision.reason},
+                )
+                debug_meta["route"] = decision.route
+                response = await response_renderer.render(
+                    conversation_id=conversation.id,
+                    route=decision.route,
+                    reply_text=reply_text,
+                    product_carousel=[],
+                    follow_up_questions=follow_up_options,
+                    sources=[],
+                    debug=debug_meta,
+                    reply_language=reply_language,
+                    target_currency=target_currency,
+                    user_text=ctx.text,
+                    apply_polish=False,
+                )
+                return await self._finalize_response(
+                    conversation_id=conversation.id,
+                    user_text=ctx.text,
+                    response=response,
+                )
 
         if planner_applied and planner_task == "general":
             decision = RouteDecision(route="general_chat", reason="planner_general")
@@ -1115,7 +1449,11 @@ class ChatService:
                 reply_text = await self._general_chat_response(user_text=ctx.text, reply_language=reply_language, history=history)
             except Exception as e:
                 logger.error(f"general_chat generation failed: {e}")
-                reply_text = "Hello, I am here to help. How may I assist you today?"
+                reply_text = await self._localize_ui_text(
+                    reply_language=reply_language,
+                    text="Hello, I am here to help. How may I assist you today?",
+                    run_id=run_id,
+                )
             self._log_event(
                 run_id=run_id,
                 location="chat_service.route_selected",
@@ -1127,7 +1465,7 @@ class ChatService:
                 route=decision.route,
                 reply_text=reply_text,
                 product_carousel=[],
-                follow_up_questions=["Browse products", "Check a SKU price", "Shipping & policies"],
+                follow_up_questions=follow_up_options,
                 sources=[],
                 debug=debug_meta,
                 reply_language=reply_language,
@@ -1146,7 +1484,7 @@ class ChatService:
             clarifier = str(planner.get("clarifying_question") or "").strip()
             default_clarifier = "What would you like to know about our products or policies?"
             if planner_task in {"product_search", "mixed"}:
-                default_clarifier = self._build_product_clarifier(ctx.text)
+                default_clarifier = "Which product category or SKU are you interested in?"
             elif planner_task in {"policy", "shipping_region"}:
                 default_clarifier = "Are you asking about shipping availability, shipping cost, or delivery time?"
             elif planner_task == "contact":
@@ -1241,9 +1579,20 @@ class ChatService:
                         from_currency=str(p0.currency or settings.BASE_CURRENCY),
                         to_currency=target_currency,
                     )
-                    reply_text = f"The price of {p0.sku} is {round(float(converted.amount), 2)} {converted.currency}."
+                    amount_str = str(round(float(converted.amount), 2))
+                    reply_text = await self._localize_price_sentence(
+                        sku=p0.sku,
+                        amount=amount_str,
+                        currency=str(converted.currency),
+                        reply_language=reply_language,
+                        run_id=run_id,
+                    )
                 else:
-                    reply_text = "Here are some products that might help:"
+                    reply_text = await self._localize_ui_text(
+                        reply_language=reply_language,
+                        text="Here are some products that might help:",
+                        run_id=run_id,
+                    )
 
                 debug_meta["route"] = decision.route
                 response = await response_renderer.render(
@@ -1295,7 +1644,11 @@ class ChatService:
 
         if product_gate_decision in {"strict", "loose"} and product_cards:
             decision = RouteDecision(route="product", reason="product_gate")
-            reply_text = "Here are some products that might help:"
+            reply_text = await self._localize_ui_text(
+                reply_language=reply_language,
+                text="Here are some products that might help:",
+                run_id=run_id,
+            )
             debug_meta["route"] = decision.route
             response = await response_renderer.render(
                 conversation_id=conversation.id,
@@ -1318,16 +1671,19 @@ class ChatService:
 
         if not use_knowledge:
             categories: List[str] = []
-            if self._is_catalog_browse(ctx.text):
+            catalog_browse = bool(planner_used and planner_is_catalog_browse) or (
+                not planner_used and self._is_catalog_browse(ctx.text)
+            )
+            if catalog_browse:
                 categories = await self._get_product_category_overview()
                 if categories:
                     preview = ", ".join(categories[:6])
                     reply_text = f"I can show categories like {preview}. Which category should I show?"
                 else:
-                    reply_text = self._build_product_clarifier(ctx.text)
+                    reply_text = "Which product category should I show?"
                 route = "product"
             else:
-                reply_text = self._build_product_clarifier(ctx.text)
+                reply_text = "Which product category or SKU are you interested in?"
                 route = "clarify"
 
             reply_text = await self._generate_contextual_reply(
@@ -1413,17 +1769,20 @@ class ChatService:
             has_store_intent = ctx.has_store_intent
             if has_store_intent:
                 categories: List[str] = []
-                if self._is_catalog_browse(ctx.text):
+                catalog_browse = bool(planner_used and planner_is_catalog_browse) or (
+                    not planner_used and self._is_catalog_browse(ctx.text)
+                )
+                if catalog_browse:
                     categories = await self._get_product_category_overview()
                     if categories:
                         preview = ", ".join(categories[:6])
                         reply_text = f"I can show categories like {preview}. Which category should I show?"
                     else:
-                        reply_text = self._build_product_clarifier(ctx.text)
+                        reply_text = "Which product category should I show?"
                     route = "product"
                     weak_retrieval_action = "catalog_overview"
                 else:
-                    reply_text = self._build_product_clarifier(ctx.text)
+                    reply_text = "Which product category or SKU are you interested in?"
                     route = "clarify"
                     weak_retrieval_action = "targeted_clarifier"
                 reply_text = await self._generate_contextual_reply(
@@ -1442,8 +1801,12 @@ class ChatService:
                     reply_text = await self._general_chat_response(user_text=ctx.text, reply_language=reply_language, history=history)
                 except Exception as e:
                     logger.error(f"general_chat generation failed: {e}")
-                    reply_text = "Hello, what would you like to discuss today?"
-                follow_ups = ["Browse products", "Check a SKU price", "Shipping & policies"]
+                    reply_text = await self._localize_ui_text(
+                        reply_language=reply_language,
+                        text="Hello, what would you like to discuss today?",
+                        run_id=run_id,
+                    )
+                follow_ups = follow_up_options
                 weak_retrieval_action = "general_chat"
 
             decision = RouteDecision(route=route, reason="weak_retrieval")
@@ -1565,19 +1928,33 @@ class ChatService:
         if answerable:
             if answer_type == "product" and looks_like_product and product_cards:
                 route = "product"
-                reply_text = "Here are some products that might help:"
+                reply_text = await self._localize_ui_text(
+                    reply_language=reply_language,
+                    text="Here are some products that might help:",
+                    run_id=run_id,
+                )
                 product_carousel = product_cards
                 sources = []
                 follow_up_questions = []
             elif answer_type == "mixed":
                 route = "mixed"
-                reply_text = await self.synthesize_answer(ctx.text, selected_sources, reply_language)
+                reply_text = await self.synthesize_answer(
+                    ctx.text,
+                    selected_sources,
+                    reply_language,
+                    run_id=run_id,
+                )
                 product_carousel = []
                 sources = selected_sources
                 follow_up_questions = []
             else:
                 route = "knowledge"
-                reply_text = await self.synthesize_answer(ctx.text, selected_sources, reply_language)
+                reply_text = await self.synthesize_answer(
+                    ctx.text,
+                    selected_sources,
+                    reply_language,
+                    run_id=run_id,
+                )
                 product_carousel = []
                 sources = selected_sources
                 follow_up_questions = []
@@ -1597,6 +1974,7 @@ class ChatService:
                         answerable_topics=answerable_topics,
                         missing_question=clarifier,
                         reply_language=reply_language,
+                        run_id=run_id,
                     )
                     sources = selected_sources
                 elif clarifier:
@@ -1635,7 +2013,10 @@ class ChatService:
                 )
                 product_carousel = []
                 sources = []
-                follow_up_questions = ["Browse products", "Check a SKU price", "Shipping & policies"]
+                follow_up_questions = await self._get_follow_up_questions(
+                    reply_language=reply_language,
+                    run_id=run_id,
+                )
 
         decision = RouteDecision(route=route, reason="verifier")
         self._log_event(

@@ -4,11 +4,13 @@ import { DocumentsPage } from './DocumentsPage';
 import { MagentoSettingsPage } from './MagentoSettingsPage';
 import { AnalyticsPage } from './AnalyticsPage';
 import { ChatSettingsPage } from './ChatSettingsPage';
+import { DocumentControlPage, ProductTuningPage } from './Knowledge';
+import { QAMonitoringPage } from './QA';
 
 export const router = createBrowserRouter([
     {
         path: '/',
-        element: <Navigate to="/dashboard/documents" replace />,
+        element: <Navigate to="/dashboard/knowledge/upload-documents" replace />,
     },
     {
         path: '/dashboard',
@@ -16,10 +18,10 @@ export const router = createBrowserRouter([
         children: [
             {
                 index: true,
-                element: <Navigate to="/dashboard/documents" replace />,
+                element: <Navigate to="/dashboard/knowledge/upload-documents" replace />,
             },
             {
-                path: 'documents',
+                path: 'knowledge/upload-documents',
                 element: <DocumentsPage />,
             },
             {
@@ -33,6 +35,19 @@ export const router = createBrowserRouter([
             {
                 path: 'chat',
                 element: <ChatSettingsPage />,
+            },
+            // Knowledge Dashboard Routes
+            {
+                path: 'knowledge/documents-control',
+                element: <DocumentControlPage />,
+            },
+            {
+                path: 'knowledge/products-tuning',
+                element: <ProductTuningPage />,
+            },
+            {
+                path: 'qa',
+                element: <QAMonitoringPage />,
             },
         ],
     },

@@ -1,13 +1,17 @@
-from sqlalchemy import Column, String, Float, Boolean, Integer, ForeignKey, DateTime
-from sqlalchemy.dialects.postgresql import UUID, ARRAY
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Column, String, Float, Boolean, Integer, ForeignKey, DateTime, Enum
+from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
 from datetime import datetime
 import uuid
+import enum
 
 from app.db.base import Base
 from app.core.config import settings
+
+class StockStatus(str, enum.Enum):
+    in_stock = "in_stock"
+    out_of_stock = "out_of_stock"
 
 class Product(Base):
     __tablename__ = "products"
@@ -20,20 +24,27 @@ class Product(Base):
     description = Column(String, nullable=True)
     price = Column(Float, nullable=False)
     currency = Column(String, default=lambda: (getattr(settings, "BASE_CURRENCY", "USD") or "USD").upper(), nullable=False)
-    stock_status = Column(String, default="in_stock")  # in_stock, out_of_stock
+    stock_status = Column(Enum(StockStatus), default=StockStatus.in_stock)
     image_url = Column(String, nullable=True)
     product_url = Column(String, nullable=True)
     attributes = Column(JSONB, default=dict)  # Key-value pairs for filters
     is_active = Column(Boolean, default=True)
     product_upload_id = Column(UUID(as_uuid=True), ForeignKey("product_uploads.id"), nullable=True)
     
+    
+    # Control fields
+    visibility = Column(Boolean, default=True)
+    is_featured = Column(Boolean, default=False)
+    priority = Column(Integer, default=0)
+    master_code = Column(String, index=True, nullable=True)
+
     # New fields
     search_text = Column(String, nullable=True)
     search_hash = Column(String, nullable=True)
 
     # Common product attribute columns (optional; also mirrored in attributes JSONB)
-    jewelry_type = Column(String, nullable=True)
-    material = Column(String, nullable=True)
+    jewelry_type = Column(String, nullable=True, index=True)
+    material = Column(String, nullable=True, index=True)
     length = Column(String, nullable=True)
     size = Column(String, nullable=True)
     cz_color = Column(String, nullable=True)

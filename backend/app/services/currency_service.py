@@ -84,6 +84,9 @@ class CurrencyService:
     def supports(self, currency: str) -> bool:
         return currency.upper() in self.rates
 
+    def supported_currencies(self) -> List[str]:
+        return sorted(self.rates.keys())
+
     def convert(self, amount: float, *, from_currency: str, to_currency: str) -> ConversionResult:
         from_cur = (from_currency or self.base_currency).upper()
         to_cur = (to_currency or self.base_currency).upper()
@@ -149,4 +152,3 @@ class CurrencyService:
 
 
 currency_service = CurrencyService()
-

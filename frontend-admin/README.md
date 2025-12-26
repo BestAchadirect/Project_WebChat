@@ -30,12 +30,21 @@ npm run dev
 npm run build
 ```
 
+### Chat Widget Build
+
+```bash
+npm run build:widget
+```
+
+Builds `widget.js` and `widget.css` into `backend/app/static` for the embedded chat widget.
+
 ### Environment Variables
 
 Create a `.env` file based on `.env.example`:
 
 ```
 VITE_API_BASE_URL=http://localhost:8000/api/v1
+VITE_WIDGET_ORIGIN=http://localhost:8000
 ```
 
 ## Tech Stack

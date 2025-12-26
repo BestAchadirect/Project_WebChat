@@ -9,23 +9,21 @@ if str(BACKEND_ROOT) not in sys.path:
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.db.session import engine
-from app.db.base import Base
 from sqlalchemy import text
-import app.models  # Ensure models are registered
 from app.api.routes.health import router as health_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.data_import import router as data_import_router
 from app.api.routes.tasks import router as tasks_router
 from app.api.routes.documents import router as documents_router
+from app.api.routes.training import router as knowledge_router, qa_router
+from app.api.routes.products import router as products_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Create tables
+    # Startup: ensure required extensions exist
     async with engine.begin() as conn:
         # Enable vector extension
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        # Create tables
-        await conn.run_sync(Base.metadata.create_all)
     yield
     # Shutdown
 
@@ -70,6 +68,9 @@ app.include_router(chat_router, prefix=f"{settings.API_V1_STR}/chat", tags=["Cha
 app.include_router(data_import_router, prefix=f"{settings.API_V1_STR}/import", tags=["Import"])
 app.include_router(tasks_router, prefix=f"{settings.API_V1_STR}/tasks", tags=["Tasks"])
 app.include_router(documents_router, prefix=f"{settings.API_V1_STR}/documents", tags=["Documents"])
+app.include_router(knowledge_router, prefix=f"{settings.API_V1_STR}/dashboard/knowledge", tags=["Knowledge"])
+app.include_router(qa_router, prefix=f"{settings.API_V1_STR}/dashboard/qa", tags=["QA"])
+app.include_router(products_router, prefix=f"{settings.API_V1_STR}/products", tags=["Products"])
 
 @app.get("/health")
 async def health_check():

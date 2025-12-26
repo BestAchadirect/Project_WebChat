@@ -32,7 +32,7 @@ export const LoginPage: React.FC = () => {
         try {
             await login(data);
             showToast('Login successful!', 'success');
-            navigate('/dashboard/documents');
+            navigate('/dashboard/knowledge/upload-documents');
         } catch (error: any) {
             showToast(error.response?.data?.message || 'Login failed', 'error');
         }

@@ -6,7 +6,7 @@ Multi-tenant SaaS backend for GenAI chatbot with RAG and Magento integration.
 
 - 🔐 JWT-based authentication
 - 🏢 Multi-tenant architecture
-- 📄 Document upload and processing (PDF, DOCX, CSV, TXT)
+- 📄 Document upload and processing (CSV, TXT)
 - 🔍 Vector similarity search with pgvector
 - 🛒 Magento 2 product search integration
 - 🤖 OpenAI LLM integration
@@ -41,13 +41,24 @@ SECRET_KEY=your-secret-key-here
 
 4. Run database migrations:
 ```bash
+cd backend
 alembic upgrade head
 ```
+If you're connecting to an existing database that already matches the models, you can baseline it with:
+```bash
+cd backend
+alembic stamp head
+```
+Note: Alembic imports the SQLAlchemy models. Ensure Python dependencies are installed
+(including `pgvector`) before running Alembic commands.
+Schema changes should go through Alembic; legacy schema scripts are kept in
+`backend/scripts/legacy` for reference only.
 
 ### Running the Server
 
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+cd backend
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 API documentation will be available at: http://localhost:8000/docs
@@ -77,24 +88,25 @@ API documentation will be available at: http://localhost:8000/docs
 ## Architecture
 
 ```
+main.py                        # FastAPI app entrypoint
+alembic/                       # Alembic migrations
 app/
-├── main.py              # FastAPI app
-├── config.py            # Settings
-├── dependencies.py      # DI dependencies
-├── models/              # SQLAlchemy models
-├── schemas/             # Pydantic schemas
-├── api/
-│   ├── deps.py          # Auth dependencies
-│   └── routes/          # API routes
-├── services/            # Business logic
-│   ├── llm_service.py
-│   ├── rag_service.py
-│   ├── magento_service.py
-│   ├── chat_service.py
-│   ├── document_service.py
-│   └── tenant_service.py
-├── core/                # Security, logging, exceptions
-└── utils/               # Utilities
+  config.py                    # Settings
+  dependencies.py              # DI dependencies
+  models/                      # SQLAlchemy models
+  schemas/                     # Pydantic schemas
+  api/
+    deps.py                    # Auth dependencies
+    routes/                    # API routes
+  services/                    # Business logic
+    llm_service.py
+    rag_service.py
+    magento_service.py
+    chat_service.py
+    document_service.py
+    tenant_service.py
+  core/                        # Security, logging, exceptions
+  utils/                       # Utilities
 ```
 
 ## License

@@ -12,7 +12,7 @@ class FileParser:
         
         Args:
             file_path: Path to the file
-            file_type: File extension (pdf, doc, docx, txt, csv)
+            file_type: File extension (txt, csv)
         
         Returns:
             Extracted text content
@@ -21,10 +21,6 @@ class FileParser:
         
         if file_type == "txt":
             return await FileParser._parse_txt(file_path)
-        elif file_type == "pdf":
-            return await FileParser._parse_pdf(file_path)
-        elif file_type in ["doc", "docx"]:
-            return await FileParser._parse_docx(file_path)
         elif file_type == "csv":
             return await FileParser._parse_csv(file_path)
         else:
@@ -37,55 +33,6 @@ class FileParser:
             return f.read()
     
     @staticmethod
-    async def _parse_pdf(file_path: str) -> str:
-        """
-        Parse PDF file.
-        Requires: pip install pypdf2 or pdfplumber
-        """
-        try:
-            import pdfplumber
-            
-            text_parts = []
-            with pdfplumber.open(file_path) as pdf:
-                for page in pdf.pages:
-                    text = page.extract_text()
-                    if text:
-                        text_parts.append(text)
-            
-            return "\n\n".join(text_parts)
-        except ImportError:
-            # Fallback to PyPDF2
-            try:
-                from PyPDF2 import PdfReader
-                
-                reader = PdfReader(file_path)
-                text_parts = []
-                
-                for page in reader.pages:
-                    text = page.extract_text()
-                    if text:
-                        text_parts.append(text)
-                
-                return "\n\n".join(text_parts)
-            except ImportError:
-                raise ImportError("Please install pdfplumber or PyPDF2 to parse PDF files")
-    
-    @staticmethod
-    async def _parse_docx(file_path: str) -> str:
-        """
-        Parse DOCX file.
-        Requires: pip install python-docx
-        """
-        try:
-            from docx import Document
-            
-            doc = Document(file_path)
-            text_parts = [paragraph.text for paragraph in doc.paragraphs if paragraph.text]
-            
-            return "\n\n".join(text_parts)
-        except ImportError:
-            raise ImportError("Please install python-docx to parse DOCX files")
-    
     @staticmethod
     async def _parse_csv(file_path: str) -> str:
         """Parse CSV file."""

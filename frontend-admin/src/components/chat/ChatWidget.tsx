@@ -47,6 +47,10 @@ interface ChatWidgetProps {
     primaryColor?: string;
     welcomeMessage?: string;
     faqSuggestions?: string[]; // New prop for Flex Message chips
+    apiBaseUrl?: string;
+    locale?: string;
+    customerName?: string;
+    email?: string;
 }
 
 declare global {
@@ -56,9 +60,13 @@ declare global {
             primaryColor?: string;
             welcomeMessage?: string;
             faqSuggestions?: string[];
+            apiBaseUrl?: string;
             apiUrl?: string;
             displayCurrency?: string;
             thbToUsdRate?: number;
+            locale?: string;
+            customerName?: string;
+            email?: string;
         };
     }
 }
@@ -164,7 +172,11 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     title,
     primaryColor,
     welcomeMessage,
-    faqSuggestions
+    faqSuggestions,
+    apiBaseUrl,
+    locale,
+    customerName,
+    email
 }) => {
     // Colors from the design
     const colors = {
@@ -184,6 +196,10 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             "Do you offer custom designs?",
             "What materials do you use?"
         ],
+        apiBaseUrl: (apiBaseUrl || window.genaiConfig?.apiBaseUrl || window.genaiConfig?.apiUrl || '').trim().replace(/\/+$/, ''),
+        locale: locale || window.genaiConfig?.locale || 'en-US',
+        customerName: customerName || window.genaiConfig?.customerName,
+        email: email || window.genaiConfig?.email,
         displayCurrency: window.genaiConfig?.displayCurrency || 'USD',
         thbToUsdRate: window.genaiConfig?.thbToUsdRate,
     };
@@ -192,7 +208,11 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    const [conversationId, setConversationId] = useState<number | null>(null);
+    const [conversationId, setConversationId] = useState<number | null>(() => {
+        const raw = localStorage.getItem('genai_conversation_id') || localStorage.getItem('chat_conversation_id');
+        const parsed = raw ? Number(raw) : NaN;
+        return Number.isFinite(parsed) ? parsed : null;
+    });
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -215,9 +235,10 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
     // Generate or retrieve Guest ID
     const getUserId = () => {
-        let userId = localStorage.getItem('chat_user_id');
+        let userId = localStorage.getItem('genai_user_id') || localStorage.getItem('chat_user_id');
         if (!userId) {
             userId = `guest_${Math.random().toString(36).substr(2, 9)}`;
+            localStorage.setItem('genai_user_id', userId);
             localStorage.setItem('chat_user_id', userId);
         }
         return userId;
@@ -242,12 +263,17 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                 user_id: getUserId(),
                 message: textToSend,
                 conversation_id: conversationId,
-                locale: 'en-US'
+                locale: config.locale,
+                customer_name: config.customerName,
+                email: config.email
             };
 
-            const { data } = await apiClient.post<ChatResponse>('/chat', payload);
+            const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/chat` : '/chat';
+            const { data } = await apiClient.post<ChatResponse>(endpoint, payload);
 
             setConversationId(data.conversation_id);
+            localStorage.setItem('genai_conversation_id', String(data.conversation_id));
+            localStorage.setItem('chat_conversation_id', String(data.conversation_id));
             setMessages(prev => {
                 const assistantMessage: Message = {
                     role: 'assistant',

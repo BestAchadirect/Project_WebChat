@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     THB_TO_USD_RATE: float = 1.0
     BASE_CURRENCY: str = "USD"
     CURRENCY_RATES_JSON: str = "{}"
+    CURRENCY_INTENT_ENABLED: bool = True
+    CURRENCY_INTENT_MODEL: str = "gpt-4o-mini"
+    CURRENCY_INTENT_MAX_TOKENS: int = 80
 
     # Routing UX (smalltalk / low-signal)
     SMALLTALK_ENABLED: bool = True
@@ -50,6 +53,12 @@ class Settings(BaseSettings):
     CONTEXTUAL_REPLY_MODEL: str = "gpt-4o-mini"
     CONTEXTUAL_REPLY_MAX_TOKENS: int = 120
     CONTEXTUAL_REPLY_TEMPERATURE: float = 0.3
+    UI_LOCALIZATION_ENABLED: bool = True
+    UI_LOCALIZATION_MODEL: str = "gpt-4o-mini"
+    UI_LOCALIZATION_MAX_TOKENS: int = 220
+    UI_LOCALIZATION_TEMPERATURE: float = 0.1
+    UI_LOCALIZATION_CACHE_MAX_ITEMS: int = 256
+    UI_LOCALIZATION_CACHE_TTL_SECONDS: int = 3600
     CHAT_LANGUAGE_MODE: str = "auto"  # auto | locale | fixed
     DEFAULT_LOCALE: str = "en-US"
     FIXED_REPLY_LANGUAGE: str = "en-US"
@@ -104,7 +113,7 @@ class Settings(BaseSettings):
     # File Storage
     UPLOAD_DIR: str = "uploads"  # Directory for storing uploaded files
     MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB max file size
-    ALLOWED_EXTENSIONS: str = "pdf,doc,docx,txt,csv"
+    ALLOWED_EXTENSIONS: str = "txt,csv"
 
     # Load backend-local .env regardless of current working directory.
     # Ignore unrelated env vars (e.g. VITE_*) so frontend settings don't crash the backend.

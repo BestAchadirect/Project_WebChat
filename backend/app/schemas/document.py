@@ -13,9 +13,21 @@ class DocumentResponse(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    
+    # Document Control
+    title: Optional[str] = None
+    tags: List[str] = []
+    category: Optional[str] = None
+    is_enabled: bool = True
 
     class Config:
         from_attributes = True
+
+class DocumentUpdate(BaseModel):
+    title: Optional[str] = None
+    tags: Optional[List[str]] = None
+    category: Optional[str] = None
+    is_enabled: Optional[bool] = None
 
 class DocumentUploadResponse(BaseModel):
     document_id: UUID
