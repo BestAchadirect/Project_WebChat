@@ -7,6 +7,7 @@ from sqlalchemy import select, update, desc, or_, func
 
 from app.api.deps import get_db
 from app.models.product import Product, StockStatus
+from app.models.product_group import ProductGroup
 from app.schemas.product import Product as ProductSchema, ProductUpdate, ProductListResponse
 
 router = APIRouter()
@@ -139,9 +140,21 @@ async def update_product(
         # But if the input is a string that looks like UUID it should work.
         raise HTTPException(status_code=404, detail="Product not found")
 
-    update_data = product_in.model_dump(exclude_unset=True)
+    update_data = product_in.model_dump(exclude_unset=True, exclude_none=True)
     for field, value in update_data.items():
         setattr(product, field, value)
+
+    if "master_code" in update_data:
+        master_code = update_data.get("master_code")
+        if master_code:
+            stmt = select(ProductGroup).where(ProductGroup.master_code == master_code)
+            result = await db.execute(stmt)
+            group = result.scalar_one_or_none()
+            if not group:
+                group = ProductGroup(master_code=master_code)
+                db.add(group)
+                await db.flush()
+            product.group_id = group.id
         
     await db.commit()
     await db.refresh(product)

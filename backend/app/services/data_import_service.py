@@ -14,6 +14,7 @@ from sqlalchemy import select, func, and_
 from sqlalchemy.orm import selectinload
 
 from app.models.product import Product, ProductEmbedding
+from app.models.product_group import ProductGroup
 from app.models.knowledge import (
     KnowledgeArticle,
     KnowledgeArticleVersion,
@@ -76,11 +77,58 @@ class DataImportService:
         return t
 
     @staticmethod
+    def _expand_search_terms(values: List[Any]) -> List[str]:
+        expanded: List[str] = []
+        seen = set()
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            for token in [text, *re.split(r"[^A-Za-z0-9]+", text)]:
+                token = token.strip()
+                if not token:
+                    continue
+                key = token.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                expanded.append(token)
+        return expanded
+
+    def _build_search_text(
+        self,
+        *,
+        display_name: str,
+        sku: str,
+        object_id: str | None,
+        description: str | None,
+        legacy_skus: List[str],
+        attributes: Dict[str, Any],
+        attribute_columns: List[str],
+    ) -> str:
+        parts: List[Any] = [
+            display_name,
+            sku,
+            object_id,
+            description,
+            *legacy_skus,
+        ]
+        for key in attribute_columns:
+            value = attributes.get(key)
+            if value is None:
+                continue
+            parts.append(value)
+        expanded = self._expand_search_terms(parts)
+        return self._normalize_search_text(" ".join(expanded))
+
+    @staticmethod
     def get_product_template() -> str:
         """Returns the CSV header for products."""
         # master_code allows grouping multiple SKUs. stock_status can be 'in_stock' or 'out_of_stock'.
         return (
-            "sku,master_code,name,price,stock_status,description,category,image_url,product_url,object_id,attributes_json,"
+            "sku,master_code,price,stock_status,description,category,image_url,product_url,object_id,attributes_json,"
             "jewelry_type,material,"
             "length,size,cz_color,design,crystal_color,color,gauge,size_in_pack,rack,height,"
             "packing_option,pincher_size,ring_size,quantity_in_bulk,opal_color,threading,"
@@ -114,24 +162,46 @@ class DataImportService:
 
         stats = {"created": 0, "updated": 0, "errors": 0}
         products_to_embed = []
+        group_cache: Dict[str, UUID] = {}
 
         try:
             await self._update_product_upload_status(db, upload_record.id, ProductUploadStatus.PROCESSING)
             for row in csv_reader:
                 try:
                     # Basic Validation
-                    if not row.get("sku") or not row.get("name"):
+                    if not row.get("sku"):
                         continue
 
                     sku = row["sku"].strip()
                     row_desc = row.get("description", "")
-                    row_name = row["name"]
+
+                    master_code_raw = row.get("master_code")
+                    master_code = (master_code_raw.strip() if isinstance(master_code_raw, str) else master_code_raw) or None
+                    row_name = row.get("name")
+                    row_name = (row_name.strip() if isinstance(row_name, str) else row_name) or None
+                    display_name = master_code or row_name or sku
+                    group_id: UUID | None = None
+                    if display_name:
+                        cached = group_cache.get(display_name)
+                        if cached:
+                            group_id = cached
+                        else:
+                            stmt = select(ProductGroup).where(ProductGroup.master_code == display_name)
+                            result = await db.execute(stmt)
+                            group = result.scalar_one_or_none()
+                            if not group:
+                                group = ProductGroup(master_code=display_name)
+                                db.add(group)
+                                await db.flush()
+                            group_id = group.id
+                            group_cache[display_name] = group_id
 
                     object_id_raw = row.get("object_id")
                     object_id = (object_id_raw.strip() if isinstance(object_id_raw, str) else object_id_raw) or None
-                    
-                    master_code_raw = row.get("master_code")
-                    master_code = (master_code_raw.strip() if isinstance(master_code_raw, str) else master_code_raw) or None
+                    legacy_raw = row.get("legacy_sku")
+                    legacy_skus: List[str] = []
+                    if isinstance(legacy_raw, str) and legacy_raw.strip():
+                        legacy_skus = [s.strip() for s in re.split(r"[|,]", legacy_raw) if s.strip()]
 
                     stock_status_raw = row.get("stock_status", "in_stock").lower().strip()
                     stock_status = "in_stock" if stock_status_raw in ["in_stock", "1", "true", "yes"] else "out_of_stock"
@@ -192,35 +262,27 @@ class DataImportService:
                     if isinstance(category, str) and category.strip():
                         attributes["category"] = category.strip()
 
-                    # Compute search values
-                    search_parts = [
-                        str(row_name or ""),
-                        str(row_desc or ""),
-                        str(sku or ""),
-                        str(attributes.get("jewelry_type") or ""),
-                        str(attributes.get("material") or ""),
-                        str(attributes.get("gauge") or ""),
-                        str(attributes.get("color") or ""),
-                        str(attributes.get("threading") or ""),
-                        str(attributes.get("outer_diameter") or ""),
-                        str(attributes.get("length") or ""),
-                        str(attributes.get("size") or ""),
-                        str(attributes.get("design") or ""),
-                        str(attributes.get("crystal_color") or ""),
-                        str(attributes.get("cz_color") or ""),
-                        str(attributes.get("opal_color") or ""),
-                        str(attributes.get("pearl_color") or ""),
-                    ]
-                    search_text = self._normalize_search_text(" ".join([p for p in search_parts if p]))
-                    search_hash = self._hash_text(search_text)
-
                     # Check exist
                     stmt = select(Product).where(Product.sku == sku)
                     result = await db.execute(stmt)
                     existing_product = result.scalar_one_or_none()
+                    if existing_product and existing_product.legacy_sku and not legacy_skus:
+                        legacy_skus = list(existing_product.legacy_sku)
+
+                    search_text = self._build_search_text(
+                        display_name=display_name,
+                        sku=sku,
+                        object_id=object_id,
+                        description=row_desc,
+                        legacy_skus=legacy_skus,
+                        attributes=attributes,
+                        attribute_columns=attribute_columns,
+                    )
+                    search_hash = self._hash_text(search_text)
 
                     if existing_product:
-                        existing_product.name = row_name
+                        existing_product.master_code = display_name
+                        existing_product.group_id = group_id
                         existing_product.price = self._parse_float(row.get("price", 0))
                         existing_product.currency = (getattr(settings, "BASE_CURRENCY", "USD") or "USD").upper()
                         existing_product.description = row_desc
@@ -229,7 +291,6 @@ class DataImportService:
                         existing_product.search_hash = search_hash
                         existing_product.attributes = attributes or (existing_product.attributes or {})
                         existing_product.object_id = object_id
-                        existing_product.master_code = master_code
                         existing_product.stock_status = stock_status
 
                         # Mirror common attributes into dedicated columns (if present in DB)
@@ -244,7 +305,8 @@ class DataImportService:
                     else:
                         new_product = Product(
                             sku=sku,
-                            name=row_name,
+                            master_code=display_name,
+                            group_id=group_id,
                             price=self._parse_float(row.get("price", 0)),
                             currency=(getattr(settings, "BASE_CURRENCY", "USD") or "USD").upper(),
                             description=row_desc,
@@ -254,7 +316,6 @@ class DataImportService:
                             product_upload_id=upload_record.id,
                             search_text=search_text,
                             search_hash=search_hash,
-                            master_code=master_code,
                             stock_status=stock_status,
                             attributes=attributes or {},
                         )

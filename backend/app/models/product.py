@@ -1,6 +1,6 @@
 from sqlalchemy import Column, String, Float, Boolean, Integer, ForeignKey, DateTime, Enum
 from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, synonym
 from pgvector.sqlalchemy import Vector
 from datetime import datetime
 import uuid
@@ -20,7 +20,6 @@ class Product(Base):
     object_id = Column(String, unique=True, index=True, nullable=True)  # Internal/Magento ID
     sku = Column(String, unique=True, index=True, nullable=False)
     legacy_sku = Column(ARRAY(String), default=list)  # Multiple SKUs
-    name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     price = Column(Float, nullable=False)
     currency = Column(String, default=lambda: (getattr(settings, "BASE_CURRENCY", "USD") or "USD").upper(), nullable=False)
@@ -36,7 +35,12 @@ class Product(Base):
     visibility = Column(Boolean, default=True)
     is_featured = Column(Boolean, default=False)
     priority = Column(Integer, default=0)
-    master_code = Column(String, index=True, nullable=True)
+    master_code = Column(String, index=True, nullable=False)
+
+    # Backward-compatible alias: many parts of the codebase still reference `product.name`.
+    # We store the value in master_code and expose it via this synonym.
+    name = synonym("master_code")
+    group_id = Column(UUID(as_uuid=True), ForeignKey("product_groups.id"), nullable=False, index=True)
 
     # New fields
     search_text = Column(String, nullable=True)
@@ -70,6 +74,7 @@ class Product(Base):
     # Relationships
     embeddings = relationship("ProductEmbedding", back_populates="product", cascade="all, delete-orphan")
     upload = relationship("ProductUpload", back_populates="products")
+    group = relationship("ProductGroup", back_populates="products")
 
 class ProductEmbedding(Base):
     __tablename__ = "product_embeddings"
