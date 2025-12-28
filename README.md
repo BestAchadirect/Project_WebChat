@@ -3,7 +3,7 @@
 FastAPI + PostgreSQL (pgvector) backend with a React admin dashboard.
 
 Supports:
-- Knowledge base import (CSV/DOCX) → chunking → embeddings → RAG chat answers
+- Knowledge base import (CSV) → chunking → embeddings → RAG chat answers
 - Product import (CSV) → product embeddings → product carousel in chat
 - Chat routing with guardrails: `smalltalk`, `general_chat`, `product`, `knowledge`, `mixed`, `clarify`, `fallback_general`
 
