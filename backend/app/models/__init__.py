@@ -9,5 +9,5 @@ from .knowledge import (
 from .product_upload import ProductUpload, ProductUploadStatus
 from .chat import AppUser, Conversation, Message, MessageRole
 from .task import Task, TaskStatus, TaskType
-from .document import Document, DocumentStatus
 from .qa_log import QALog, QAStatus
+from .product_change import ProductChange

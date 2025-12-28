@@ -14,7 +14,6 @@ from app.api.routes.health import router as health_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.data_import import router as data_import_router
 from app.api.routes.tasks import router as tasks_router
-from app.api.routes.documents import router as documents_router
 from app.api.routes.training import router as knowledge_router, qa_router
 from app.api.routes.products import router as products_router
 
@@ -67,7 +66,6 @@ app.include_router(health_router, tags=["Health"])
 app.include_router(chat_router, prefix=f"{settings.API_V1_STR}/chat", tags=["Chat"])
 app.include_router(data_import_router, prefix=f"{settings.API_V1_STR}/import", tags=["Import"])
 app.include_router(tasks_router, prefix=f"{settings.API_V1_STR}/tasks", tags=["Tasks"])
-app.include_router(documents_router, prefix=f"{settings.API_V1_STR}/documents", tags=["Documents"])
 app.include_router(knowledge_router, prefix=f"{settings.API_V1_STR}/dashboard/knowledge", tags=["Knowledge"])
 app.include_router(qa_router, prefix=f"{settings.API_V1_STR}/dashboard/qa", tags=["QA"])
 app.include_router(products_router, prefix=f"{settings.API_V1_STR}/products", tags=["Products"])

@@ -1,4 +1,4 @@
-# GenAI Document Management Architecture
+# GenAI Knowledge & Product Architecture
 
 ## System Overview
 
@@ -7,17 +7,15 @@ graph TB
     subgraph "Frontend"
         Admin[React Admin Dashboard]
     end
-    
+
     subgraph "Backend Services"
         API[FastAPI Backend]
-        Storage[Supabase Storage]
         DB[(PostgreSQL + pgvector)]
         OpenAI[OpenAI API]
     end
-    
-    Admin -->|Upload Docs| API
-    Admin -->|Search/View| API
-    API -->|Store Fies| Storage
+
+    Admin -->|Knowledge/Product Uploads| API
+    Admin -->|Monitoring & Tuning| API
     API -->|Store Metadata & Vectors| DB
     API -->|Generate Embeddings| OpenAI
     API -->|Retrieve Context| DB
@@ -26,61 +24,48 @@ graph TB
 ## Components
 
 ### Frontend-Admin
-React-based dashboard for managing documents:
+React-based dashboard for managing knowledge and products:
 - **Framework**: React 18 + TypeScript + Vite
 - **Styling**: Tailwind CSS
 - **Features**:
-  - Document upload (drag & drop)
-  - Document listing with status
-  - Search interface
-  - File management
+  - Knowledge CSV upload
+  - Product tuning controls
+  - QA monitoring
 
 ### Backend API
 FastAPI application serving as the core engine:
 - **Framework**: FastAPI (Python 3.12)
 - **Functions**:
-  - **Document Processing**: Validates, parses, and chunks uploaded documents.
+  - **Knowledge Import**: Parses CSV uploads into articles, versions, and chunks.
   - **Vector Embedding**: Generates embeddings using OpenAI `text-embedding-3-small`.
-  - **Storage Management**: Handles file operations with Supabase Storage.
   - **Search**: Performs cosine similarity search via pgvector.
-- **Removed Features**: Multi-tenancy and Authentication (simplification for current phase).
+  - **Product Tuning**: Updates visibility/featured/priority and master codes.
 
 ### Database
 PostgreSQL (v16+) extended with `pgvector`:
 - **Tables**:
-  - `documents`: Stores metadata (filename, storage path, hash).
-  - `embeddings`: Stores vector embeddings and text chunks.
-  - `chat_sessions`: (Prepared for future chat features).
-  - `messages`: (Prepared for future chat features).
-
-### File Storage
-**Supabase Storage**:
-- **Bucket**: `documents`
-- **Security**: Signed URLs for secure access.
-- **Structure**: `documents/{document_id}/{filename}`
+  - `knowledge_uploads`, `knowledge_articles`, `knowledge_article_versions`
+  - `knowledge_chunks`, `knowledge_embeddings`
+  - `products`, `product_embeddings`, `product_groups`
+  - `product_uploads`, `product_changes`
+  - `qa_logs`
 
 ## Data Flow
 
-### 1. Document Upload Pipeline
-1. **Upload**: User sends file (PDF/DOCX/TXT/CSV) via Admin Dashboard.
-2. **Validation**: Backend checks file size (max 50MB) and type.
-3. **Storage**: File is uploaded to Supabase Storage bucket.
-4. **Database**: Document metadata is saved to PostgreSQL.
-5. **Processing (Background)**:
-   - Text is extracted from the file.
-   - Text is split into chunks (1000 chars, 200 overlap).
-   - Embeddings are generated via OpenAI API.
-   - Embeddings are stored in `embeddings` table.
+### 1. Knowledge CSV Import
+1. **Upload**: Admin sends CSV via `/api/v1/import/knowledge`.
+2. **Parse**: Backend creates articles, versions, and chunks.
+3. **Embed**: Embeddings are generated for chunks.
+4. **Retrieve**: Chat pipeline pulls relevant chunks by similarity.
 
-### 2. Search / Retrieval Flow
-1. **Query**: User submits a search query.
-2. **Embedding**: Backend generates embedding for the query.
-3. **Vector Search**: Database performs similarity search (cosine distance).
-4. **Results**: Relevant text chunks and document metadata are returned.
+### 2. Product CSV Import
+1. **Upload**: Admin sends CSV via `/api/v1/import/products`.
+2. **Normalize**: Attributes are normalized (material, gauge, threading).
+3. **Index**: `search_text` + `search_keywords` are built.
+4. **Embed**: Product embeddings are generated.
 
 ## Security & Deployment
 
 - **Environment Config**: Credentials managed via `.env` file.
 - **CORS**: Configured to allow frontend-backend communication.
-- **Storage Access**: Uses signed URLs to prevent public access to stored files.
 - **Containerization**: Docker support available for deployment.

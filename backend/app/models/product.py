@@ -45,6 +45,7 @@ class Product(Base):
     # New fields
     search_text = Column(String, nullable=True)
     search_hash = Column(String, nullable=True)
+    search_keywords = Column(ARRAY(String), default=list, nullable=False)
 
     # Common product attribute columns (optional; also mirrored in attributes JSONB)
     jewelry_type = Column(String, nullable=True, index=True)

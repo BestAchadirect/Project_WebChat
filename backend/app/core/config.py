@@ -108,12 +108,9 @@ class Settings(BaseSettings):
     SUPABASE_URL: str
     SUPABASE_KEY: str  # Anon key
     SUPABASE_SERVICE_KEY: str  # Service role key for admin operations
-    SUPABASE_BUCKET: str = "documents"
-    
     # File Storage
     UPLOAD_DIR: str = "uploads"  # Directory for storing uploaded files
     MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB max file size
-    ALLOWED_EXTENSIONS: str = "txt,csv"
 
     # Load backend-local .env regardless of current working directory.
     # Ignore unrelated env vars (e.g. VITE_*) so frontend settings don't crash the backend.

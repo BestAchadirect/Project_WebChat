@@ -4,17 +4,19 @@ import json
 import html
 import re
 import hashlib
+import enum
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 from uuid import uuid4, UUID
 from datetime import datetime
 from fastapi import UploadFile, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, update, delete
 from sqlalchemy.orm import selectinload
 
 from app.models.product import Product, ProductEmbedding
 from app.models.product_group import ProductGroup
+from app.models.product_change import ProductChange
 from app.models.knowledge import (
     KnowledgeArticle,
     KnowledgeArticleVersion,
@@ -31,6 +33,83 @@ from app.core.logging import get_logger
 from app.core.config import settings
 
 logger = get_logger(__name__)
+
+ATTRIBUTE_COLUMNS = [
+    "jewelry_type",
+    "material",
+    "length",
+    "size",
+    "cz_color",
+    "design",
+    "crystal_color",
+    "color",
+    "gauge",
+    "size_in_pack",
+    "rack",
+    "height",
+    "packing_option",
+    "pincher_size",
+    "ring_size",
+    "quantity_in_bulk",
+    "opal_color",
+    "threading",
+    "outer_diameter",
+    "pearl_color",
+]
+
+SEARCH_KEYWORD_COLUMNS = [
+    "jewelry_type",
+    "material",
+    "gauge",
+    "threading",
+    "length",
+    "size",
+    "color",
+]
+
+MATERIAL_SYNONYMS = {
+    "g23": "Titanium G23",
+    "titanium g23": "Titanium G23",
+    "implant grade": "Titanium G23",
+    "implant-grade": "Titanium G23",
+    "implant": "Titanium G23",
+    "titanium": "Titanium",
+    "surgical steel": "Steel",
+    "stainless steel": "Steel",
+    "316l": "Steel",
+    "316l steel": "Steel",
+    "steel": "Steel",
+    "gold": "Gold",
+    "silver": "Silver",
+    "niobium": "Niobium",
+}
+
+THREADING_SYNONYMS = {
+    "internal": "Internal",
+    "internally threaded": "Internal",
+    "external": "External",
+    "externally threaded": "External",
+    "threadless": "Threadless",
+}
+
+JEWELRY_TYPE_SYNONYMS = {
+    "labret stud": "Labret",
+    "labrets": "Labret",
+    "barbells": "Barbell",
+    "rings": "Ring",
+    "studs": "Stud",
+    "tunnels": "Tunnel",
+    "plugs": "Plug",
+}
+
+SEARCH_SYNONYMS = {
+    "titanium g23": ["g23", "implant grade", "implant-grade", "implant"],
+    "steel": ["surgical steel", "stainless steel", "316l"],
+    "gold": ["14k gold", "18k gold"],
+    "silver": ["sterling silver"],
+    "internal": ["internally threaded"],
+    "external": ["externally threaded"],
+}
 
 class DataImportService:
     @staticmethod
@@ -68,6 +147,42 @@ class DataImportService:
         return 0.0
 
     @staticmethod
+    def _parse_bool(value: Any) -> bool | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(int(value))
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if not v:
+                return None
+            if v in {"1", "true", "yes", "y", "on"}:
+                return True
+            if v in {"0", "false", "no", "n", "off"}:
+                return False
+        return None
+
+    @staticmethod
+    def _parse_stock_status(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return "in_stock" if value else "out_of_stock"
+        if isinstance(value, (int, float)):
+            return "in_stock" if int(value) == 1 else "out_of_stock"
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if not v:
+                return None
+            if v in {"1", "in_stock", "true", "yes", "y"}:
+                return "in_stock"
+            if v in {"0", "out_of_stock", "false", "no", "n"}:
+                return "out_of_stock"
+        return None
+
+    @staticmethod
     def _normalize_search_text(text: str) -> str:
         if not text:
             return ""
@@ -75,6 +190,111 @@ class DataImportService:
         t = t.lower()
         t = re.sub(r"\s+", " ", t).strip()
         return t
+
+    def _normalize_keyword(self, value: Any) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if not text:
+            return ""
+        return self._normalize_search_text(text)
+
+    def _normalize_material(self, value: str) -> str:
+        lower = value.strip().lower()
+        if "g23" in lower:
+            return "Titanium G23"
+        if lower in MATERIAL_SYNONYMS:
+            return MATERIAL_SYNONYMS[lower]
+        return value.strip()
+
+    def _normalize_gauge(self, value: str) -> str:
+        lower = value.strip().lower()
+        match = re.search(r"\b(\d{1,2})\s*(?:g|gauge)\b", lower)
+        if match:
+            return f"{match.group(1)}g"
+        if lower.endswith("g") and lower[:-1].isdigit():
+            return lower
+        return value.strip()
+
+    def _normalize_threading(self, value: str) -> str:
+        lower = value.strip().lower()
+        if lower in THREADING_SYNONYMS:
+            return THREADING_SYNONYMS[lower]
+        return value.strip()
+
+    def _normalize_jewelry_type(self, value: str) -> str:
+        lower = value.strip().lower()
+        if lower in JEWELRY_TYPE_SYNONYMS:
+            return JEWELRY_TYPE_SYNONYMS[lower]
+        return value.strip()
+
+    def _normalize_attribute_value(self, key: str, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return None
+        if key == "material":
+            return self._normalize_material(text)
+        if key == "gauge":
+            return self._normalize_gauge(text)
+        if key == "threading":
+            return self._normalize_threading(text)
+        if key == "jewelry_type":
+            return self._normalize_jewelry_type(text)
+        return text
+
+    def _build_search_synonyms(self, attributes: Dict[str, Any]) -> List[str]:
+        synonyms: List[str] = []
+        for key in SEARCH_KEYWORD_COLUMNS:
+            value = attributes.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            canonical = value.strip().lower()
+            for syn in SEARCH_SYNONYMS.get(canonical, []):
+                synonyms.append(syn)
+            if key == "gauge" and canonical.endswith("g"):
+                synonyms.append(f"{canonical[:-1]} gauge")
+        return synonyms
+
+    def _build_search_keywords(
+        self,
+        *,
+        display_name: str,
+        sku: str,
+        legacy_skus: List[str],
+        attributes: Dict[str, Any],
+        keyword_columns: List[str],
+    ) -> List[str]:
+        tokens: List[str] = []
+
+        def add(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, list):
+                for item in value:
+                    add(item)
+                return
+            token = self._normalize_keyword(value)
+            if token:
+                tokens.append(token)
+
+        add(display_name)
+        add(sku)
+        add(legacy_skus)
+        for key in keyword_columns:
+            add(attributes.get(key))
+
+        seen = set()
+        deduped: List[str] = []
+        for token in tokens:
+            if token in seen:
+                continue
+            seen.add(token)
+            deduped.append(token)
+        return deduped
 
     @staticmethod
     def _expand_search_terms(values: List[Any]) -> List[str]:
@@ -105,6 +325,7 @@ class DataImportService:
         object_id: str | None,
         description: str | None,
         legacy_skus: List[str],
+        synonyms: List[str],
         attributes: Dict[str, Any],
         attribute_columns: List[str],
     ) -> str:
@@ -114,6 +335,7 @@ class DataImportService:
             object_id,
             description,
             *legacy_skus,
+            *synonyms,
         ]
         for key in attribute_columns:
             value = attributes.get(key)
@@ -123,12 +345,46 @@ class DataImportService:
         expanded = self._expand_search_terms(parts)
         return self._normalize_search_text(" ".join(expanded))
 
+    def _serialize_change_value(self, value: Any) -> Any:
+        if isinstance(value, enum.Enum):
+            return value.value
+        if isinstance(value, UUID):
+            return str(value)
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, list):
+            return [self._serialize_change_value(v) for v in value]
+        if isinstance(value, dict):
+            return {k: self._serialize_change_value(v) for k, v in value.items()}
+        return value
+
+    def _collect_product_changes(
+        self,
+        *,
+        product: Product,
+        updates: Dict[str, Any],
+    ) -> Tuple[List[str], Dict[str, Any], Dict[str, Any]]:
+        changed_fields: List[str] = []
+        old_values: Dict[str, Any] = {}
+        new_values: Dict[str, Any] = {}
+        for field, new_value in updates.items():
+            old_value = getattr(product, field)
+            old_serialized = self._serialize_change_value(old_value)
+            new_serialized = self._serialize_change_value(new_value)
+            if old_serialized == new_serialized:
+                continue
+            changed_fields.append(field)
+            old_values[field] = old_serialized
+            new_values[field] = new_serialized
+        return changed_fields, old_values, new_values
+
     @staticmethod
     def get_product_template() -> str:
         """Returns the CSV header for products."""
         # master_code allows grouping multiple SKUs. stock_status can be 'in_stock' or 'out_of_stock'.
         return (
-            "sku,master_code,price,stock_status,description,category,image_url,product_url,object_id,attributes_json,"
+            "sku,master_code,price,stock_status,description,category,image_url,product_url,object_id,"
+            "legacy_sku,visibility,is_featured,priority,search_keywords,attributes_json,"
             "jewelry_type,material,"
             "length,size,cz_color,design,crystal_color,color,gauge,size_in_pack,rack,height,"
             "packing_option,pincher_size,ring_size,quantity_in_bulk,opal_color,threading,"
@@ -203,8 +459,18 @@ class DataImportService:
                     if isinstance(legacy_raw, str) and legacy_raw.strip():
                         legacy_skus = [s.strip() for s in re.split(r"[|,]", legacy_raw) if s.strip()]
 
-                    stock_status_raw = row.get("stock_status", "in_stock").lower().strip()
-                    stock_status = "in_stock" if stock_status_raw in ["in_stock", "1", "true", "yes"] else "out_of_stock"
+                    stock_status = self._parse_stock_status(row.get("stock_status"))
+                    visibility = self._parse_bool(row.get("visibility"))
+                    is_featured = self._parse_bool(row.get("is_featured"))
+                    priority = self._parse_int(row.get("priority"))
+
+                    image_url = row.get("image_url")
+                    if isinstance(image_url, str):
+                        image_url = image_url.strip() or None
+
+                    product_url = row.get("product_url")
+                    if isinstance(product_url, str):
+                        product_url = product_url.strip() or None
                     
                     # Parse attributes:
                     # - attributes_json (optional): JSON object string
@@ -220,29 +486,7 @@ class DataImportService:
                             # Non-fatal: treat as missing
                             pass
 
-                    attribute_columns = [
-                        "jewelry_type",
-                        "material",
-                        "length",
-                        "size",
-                        "cz_color",
-                        "design",
-                        "crystal_color",
-                        "color",
-                        "gauge",
-                        "size_in_pack",
-                        "rack",
-                        "height",
-                        "packing_option",
-                        "pincher_size",
-                        "ring_size",
-                        "quantity_in_bulk",
-                        "opal_color",
-                        "threading",
-                        "outer_diameter",
-                        "pearl_color",
-                    ]
-                    for key in attribute_columns:
+                    for key in ATTRIBUTE_COLUMNS:
                         val = row.get(key)
                         if val is None:
                             continue
@@ -255,7 +499,15 @@ class DataImportService:
                             if parsed_int is not None:
                                 attributes[key] = parsed_int
                         else:
-                            attributes[key] = val
+                            normalized = self._normalize_attribute_value(key, val)
+                            if normalized is not None:
+                                attributes[key] = normalized
+
+                    for key in ATTRIBUTE_COLUMNS:
+                        if key in attributes:
+                            normalized = self._normalize_attribute_value(key, attributes[key])
+                            if normalized is not None:
+                                attributes[key] = normalized
 
                     category_raw = row.get("category")
                     category = category_raw.strip() if isinstance(category_raw, str) else category_raw
@@ -269,36 +521,111 @@ class DataImportService:
                     if existing_product and existing_product.legacy_sku and not legacy_skus:
                         legacy_skus = list(existing_product.legacy_sku)
 
+                    if stock_status is None:
+                        if existing_product:
+                            stock_status = existing_product.stock_status
+                        else:
+                            stock_status = "in_stock"
+
+                    if visibility is None and existing_product:
+                        visibility = existing_product.visibility
+                    if is_featured is None and existing_product:
+                        is_featured = existing_product.is_featured
+                    if priority is None and existing_product:
+                        priority = existing_product.priority
+
+                    effective_attributes = attributes
+                    if existing_product:
+                        effective_attributes = attributes or (existing_product.attributes or {})
+
+                    manual_keywords: List[str] = []
+                    search_keywords_raw = row.get("search_keywords")
+                    if isinstance(search_keywords_raw, str) and search_keywords_raw.strip():
+                        for token in search_keywords_raw.split(","):
+                            normalized = self._normalize_keyword(token)
+                            if normalized:
+                                manual_keywords.append(normalized)
+
+                    synonyms = self._build_search_synonyms(effective_attributes)
+                    if manual_keywords:
+                        synonyms = [*synonyms, *manual_keywords]
                     search_text = self._build_search_text(
                         display_name=display_name,
                         sku=sku,
                         object_id=object_id,
                         description=row_desc,
                         legacy_skus=legacy_skus,
-                        attributes=attributes,
-                        attribute_columns=attribute_columns,
+                        synonyms=synonyms,
+                        attributes=effective_attributes,
+                        attribute_columns=ATTRIBUTE_COLUMNS,
                     )
+                    search_keywords = self._build_search_keywords(
+                        display_name=display_name,
+                        sku=sku,
+                        legacy_skus=legacy_skus,
+                        attributes=effective_attributes,
+                        keyword_columns=SEARCH_KEYWORD_COLUMNS,
+                    )
+                    if manual_keywords:
+                        seen_keywords = set(search_keywords)
+                        for keyword in manual_keywords:
+                            if keyword not in seen_keywords:
+                                seen_keywords.add(keyword)
+                                search_keywords.append(keyword)
                     search_hash = self._hash_text(search_text)
 
                     if existing_product:
-                        existing_product.master_code = display_name
-                        existing_product.group_id = group_id
-                        existing_product.price = self._parse_float(row.get("price", 0))
-                        existing_product.currency = (getattr(settings, "BASE_CURRENCY", "USD") or "USD").upper()
-                        existing_product.description = row_desc
-                        existing_product.product_upload_id = upload_record.id
-                        existing_product.search_text = search_text
-                        existing_product.search_hash = search_hash
-                        existing_product.attributes = attributes or (existing_product.attributes or {})
-                        existing_product.object_id = object_id
-                        existing_product.stock_status = stock_status
+                        update_fields: Dict[str, Any] = {
+                            "master_code": display_name,
+                            "group_id": group_id,
+                            "price": self._parse_float(row.get("price", 0)),
+                            "currency": (getattr(settings, "BASE_CURRENCY", "USD") or "USD").upper(),
+                            "description": row_desc,
+                            "search_text": search_text,
+                            "search_hash": search_hash,
+                            "search_keywords": search_keywords,
+                            "attributes": effective_attributes or (existing_product.attributes or {}),
+                            "object_id": object_id,
+                            "stock_status": stock_status,
+                            "legacy_sku": legacy_skus,
+                        }
 
                         # Mirror common attributes into dedicated columns (if present in DB)
-                        for k in attribute_columns:
+                        for k in ATTRIBUTE_COLUMNS:
                             if k in {"size_in_pack", "quantity_in_bulk"}:
-                                setattr(existing_product, k, self._parse_int(attributes.get(k)))
+                                update_fields[k] = self._parse_int(effective_attributes.get(k))
                             else:
-                                setattr(existing_product, k, attributes.get(k))
+                                update_fields[k] = effective_attributes.get(k)
+
+                        if image_url is not None:
+                            update_fields["image_url"] = image_url
+                        if product_url is not None:
+                            update_fields["product_url"] = product_url
+                        if visibility is not None:
+                            update_fields["visibility"] = visibility
+                        if is_featured is not None:
+                            update_fields["is_featured"] = is_featured
+                        if priority is not None:
+                            update_fields["priority"] = priority
+
+                        changed_fields, old_values, new_values = self._collect_product_changes(
+                            product=existing_product,
+                            updates=update_fields,
+                        )
+
+                        for field, value in update_fields.items():
+                            setattr(existing_product, field, value)
+
+                        if changed_fields:
+                            db.add(
+                                ProductChange(
+                                    upload_id=upload_record.id,
+                                    product_id=existing_product.id,
+                                    changed_fields=changed_fields,
+                                    old_values=old_values,
+                                    new_values=new_values,
+                                )
+                            )
                         
                         stats["updated"] += 1
                         products_to_embed.append(existing_product)
@@ -310,16 +637,24 @@ class DataImportService:
                             price=self._parse_float(row.get("price", 0)),
                             currency=(getattr(settings, "BASE_CURRENCY", "USD") or "USD").upper(),
                             description=row_desc,
-                            image_url=row.get("image_url"),
-                            product_url=row.get("product_url"),
+                            image_url=image_url,
+                            product_url=product_url,
                             object_id=object_id,
                             product_upload_id=upload_record.id,
                             search_text=search_text,
                             search_hash=search_hash,
                             stock_status=stock_status,
+                            search_keywords=search_keywords,
                             attributes=attributes or {},
+                            legacy_sku=legacy_skus,
                         )
-                        for k in attribute_columns:
+                        if visibility is not None:
+                            new_product.visibility = visibility
+                        if is_featured is not None:
+                            new_product.is_featured = is_featured
+                        if priority is not None:
+                            new_product.priority = priority
+                        for k in ATTRIBUTE_COLUMNS:
                             if k in {"size_in_pack", "quantity_in_bulk"}:
                                 setattr(new_product, k, self._parse_int(attributes.get(k)))
                             else:
@@ -882,9 +1217,17 @@ class DataImportService:
         return file_path
 
     async def delete_knowledge_upload(self, db: AsyncSession, upload_id: UUID) -> None:
-        upload = await self.get_upload(db, upload_id)
+        stmt = select(KnowledgeUpload).where(KnowledgeUpload.id == upload_id)
+        result = await db.execute(stmt)
+        upload = result.scalar_one_or_none()
         if not upload:
             raise HTTPException(status_code=404, detail="Upload not found")
+
+        await db.execute(
+            update(KnowledgeArticle)
+            .where(KnowledgeArticle.upload_session_id == upload_id)
+            .values(upload_session_id=None)
+        )
 
         # Remove stored file safely
         file_path = Path(upload.file_path)
@@ -901,7 +1244,7 @@ class DataImportService:
             except OSError:
                 pass
 
-        await db.delete(upload)
+        await db.execute(delete(KnowledgeUpload).where(KnowledgeUpload.id == upload_id))
         await db.commit()
 
 data_import_service = DataImportService()

@@ -57,6 +57,27 @@ class ProductUpdate(BaseModel):
     priority: Optional[int] = None
     master_code: Optional[str] = None
     stock_status: Optional[StockStatus] = None
+    description: Optional[str] = None
+    jewelry_type: Optional[str] = None
+    material: Optional[str] = None
+    length: Optional[str] = None
+    size: Optional[str] = None
+    cz_color: Optional[str] = None
+    design: Optional[str] = None
+    crystal_color: Optional[str] = None
+    color: Optional[str] = None
+    gauge: Optional[str] = None
+    size_in_pack: Optional[int] = None
+    rack: Optional[str] = None
+    height: Optional[str] = None
+    packing_option: Optional[str] = None
+    pincher_size: Optional[str] = None
+    ring_size: Optional[str] = None
+    quantity_in_bulk: Optional[int] = None
+    opal_color: Optional[str] = None
+    threading: Optional[str] = None
+    outer_diameter: Optional[str] = None
+    pearl_color: Optional[str] = None
 
 class ProductCarouselItem(BaseModel):
     """Product item for carousel display."""

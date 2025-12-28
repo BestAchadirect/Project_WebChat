@@ -6,7 +6,6 @@ Multi-tenant SaaS backend for GenAI chatbot with RAG and Magento integration.
 
 - 🔐 JWT-based authentication
 - 🏢 Multi-tenant architecture
-- 📄 Document upload and processing (CSV, TXT)
 - 🔍 Vector similarity search with pgvector
 - 🛒 Magento 2 product search integration
 - 🤖 OpenAI LLM integration
@@ -74,11 +73,6 @@ API documentation will be available at: http://localhost:8000/docs
 - `GET /api/tenants/{id}` - Get tenant details
 - `PUT /api/tenants/{id}` - Update tenant (Magento config)
 
-### Documents
-- `POST /api/documents/upload` - Upload document for processing
-- `GET /api/documents/{id}` - Get document status
-- `GET /api/documents` - List all documents
-
 ### Chat
 - `POST /api/chat` - Send chat message
 
@@ -103,7 +97,6 @@ app/
     rag_service.py
     magento_service.py
     chat_service.py
-    document_service.py
     tenant_service.py
   core/                        # Security, logging, exceptions
   utils/                       # Utilities

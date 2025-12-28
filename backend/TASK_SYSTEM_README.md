@@ -1,6 +1,6 @@
 # Reusable Task System
 
-This backend now includes a reusable task system for managing background operations like document processing, data imports, and embedding generation.
+This backend now includes a reusable task system for managing background operations like data imports and embedding generation.
 
 ## Features
 
@@ -12,7 +12,6 @@ This backend now includes a reusable task system for managing background operati
 
 ## Task Types
 
-- `DOCUMENT_PROCESSING`: Processing uploaded documents (text extraction, chunking, embeddings)
 - `DATA_IMPORT`: Importing data from CSV files
 - `EMBEDDING_GENERATION`: Generating embeddings for products/knowledge
 - `PRODUCT_UPDATE`: Updating product information
@@ -33,9 +32,6 @@ Returns detailed information about a specific task
 
 ## Usage Examples
 
-### Document Upload (Automatic)
-When uploading documents via `/api/v1/documents/upload`, a background task is automatically created for processing.
-
 ### Data Import (Automatic)
 When importing products via `/api/v1/import/products`, embeddings are generated in a background task.
 
@@ -47,9 +43,9 @@ from app.models.task import TaskType
 # Create a task
 task = await task_service.create_task(
     db,
-    TaskType.DOCUMENT_PROCESSING,
-    "Processing document XYZ",
-    {"document_id": "123"}
+    TaskType.EMBEDDING_GENERATION,
+    "Processing embeddings for upload 123",
+    {"upload_id": "123"}
 )
 
 # Run in background

@@ -162,6 +162,58 @@ export const ProductTuningPage: React.FC = () => {
         loadProducts(0);
     };
 
+    const applyProductUpdate = async (productId: string, updates: Partial<Product>) => {
+        try {
+            const updated = await productsApi.updateProduct(productId, updates);
+            setProducts(prods => prods.map(p => p.id === productId ? updated : p));
+            if (selectedProduct?.id === productId) {
+                setSelectedProduct(updated);
+            }
+        } catch (error) {
+            console.error('Failed to update product:', error);
+        }
+    };
+
+    const handleFieldChange = (key: keyof Product, rawValue: string, type?: 'text' | 'number') => {
+        if (!selectedProduct) return;
+        let nextValue: string | number | null = rawValue;
+        if (type === 'number') {
+            nextValue = rawValue === '' ? null : Number(rawValue);
+        }
+        setSelectedProduct({ ...selectedProduct, [key]: nextValue } as Product);
+    };
+
+    const handleFieldBlur = async (key: keyof Product) => {
+        if (!selectedProduct) return;
+        const current = products.find(p => p.id === selectedProduct.id);
+        const nextValue = selectedProduct[key] as unknown;
+        if (current && current[key] === nextValue) return;
+        await applyProductUpdate(selectedProduct.id, { [key]: nextValue } as Partial<Product>);
+    };
+
+    const technicalFields: Array<{ key: keyof Product; label: string; type?: 'text' | 'number' }> = [
+        { key: 'material', label: 'Material' },
+        { key: 'jewelry_type', label: 'Jewelry Type' },
+        { key: 'length', label: 'Length' },
+        { key: 'size', label: 'Size' },
+        { key: 'gauge', label: 'Gauge' },
+        { key: 'design', label: 'Design' },
+        { key: 'cz_color', label: 'CZ Color' },
+        { key: 'opal_color', label: 'Opal Color' },
+        { key: 'threading', label: 'Threading' },
+        { key: 'outer_diameter', label: 'Diameter' },
+        { key: 'crystal_color', label: 'Crystal Color' },
+        { key: 'color', label: 'Color' },
+        { key: 'pearl_color', label: 'Pearl Color' },
+        { key: 'size_in_pack', label: 'Size In Pack', type: 'number' },
+        { key: 'quantity_in_bulk', label: 'Quantity In Bulk', type: 'number' },
+        { key: 'rack', label: 'Rack' },
+        { key: 'height', label: 'Height' },
+        { key: 'packing_option', label: 'Packing Option' },
+        { key: 'pincher_size', label: 'Pincher Size' },
+        { key: 'ring_size', label: 'Ring Size' },
+    ];
+
     return (
         <div className="flex h-[calc(100vh-120px)] overflow-hidden gap-6">
             {/* Sidebar Filters */}
@@ -497,28 +549,31 @@ export const ProductTuningPage: React.FC = () => {
                             <section className="space-y-4">
                                 <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest pl-1">Technical Attributes</h4>
                                 <div className="grid grid-cols-2 gap-x-6 gap-y-4">
-                                    <AttributeItem label="Material" value={selectedProduct.material} />
-                                    <AttributeItem label="Jewelry Type" value={selectedProduct.jewelry_type} />
-                                    <AttributeItem label="Length" value={selectedProduct.length} />
-                                    <AttributeItem label="Size" value={selectedProduct.size} />
-                                    <AttributeItem label="Gauge" value={selectedProduct.gauge} />
-                                    <AttributeItem label="Design" value={selectedProduct.design} />
-                                    <AttributeItem label="CZ Color" value={selectedProduct.cz_color} />
-                                    <AttributeItem label="Opal Color" value={selectedProduct.opal_color} />
-                                    <AttributeItem label="Threading" value={selectedProduct.threading} />
-                                    <AttributeItem label="Diameter" value={selectedProduct.outer_diameter} />
+                                    {technicalFields.map((field) => (
+                                        <EditableAttribute
+                                            key={field.key}
+                                            label={field.label}
+                                            type={field.type}
+                                            value={selectedProduct[field.key] as string | number | null | undefined}
+                                            onChange={(value) => handleFieldChange(field.key, value, field.type)}
+                                            onBlur={() => handleFieldBlur(field.key)}
+                                        />
+                                    ))}
                                 </div>
                             </section>
 
                             {/* Description */}
-                            {selectedProduct.description && (
-                                <section className="space-y-3">
-                                    <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest pl-1">Description</h4>
-                                    <div className="text-sm text-gray-600 leading-relaxed bg-gray-50 rounded-xl p-4 border border-gray-100">
-                                        {selectedProduct.description}
-                                    </div>
-                                </section>
-                            )}
+                            <section className="space-y-3">
+                                <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest pl-1">Description</h4>
+                                <textarea
+                                    value={selectedProduct.description ?? ''}
+                                    onChange={(e) => handleFieldChange('description', e.target.value)}
+                                    onBlur={() => handleFieldBlur('description')}
+                                    placeholder="Add a description for this product..."
+                                    rows={5}
+                                    className="w-full text-sm text-gray-700 leading-relaxed bg-gray-50 rounded-xl p-4 border border-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                />
+                            </section>
                         </div>
                     </div>
                 </div>
@@ -528,9 +583,22 @@ export const ProductTuningPage: React.FC = () => {
 };
 
 // Helper Components
-const AttributeItem: React.FC<{ label: string; value?: string | number | null }> = ({ label, value }) => (
-    <div className="flex flex-col border-b border-gray-50 pb-2">
+const EditableAttribute: React.FC<{
+    label: string;
+    value?: string | number | null;
+    type?: 'text' | 'number';
+    onChange: (value: string) => void;
+    onBlur: () => void;
+}> = ({ label, value, type = 'text', onChange, onBlur }) => (
+    <div className="flex flex-col gap-1 border-b border-gray-50 pb-2">
         <span className="text-[10px] font-bold text-gray-400 uppercase tracking-tight">{label}</span>
-        <span className="text-sm font-semibold text-gray-700 truncate">{value || 'N/A'}</span>
+        <input
+            type={type}
+            value={value === null || value === undefined ? '' : String(value)}
+            onChange={(e) => onChange(e.target.value)}
+            onBlur={onBlur}
+            placeholder="N/A"
+            className="text-sm font-semibold text-gray-700 bg-transparent border border-gray-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-primary-500"
+        />
     </div>
 );
