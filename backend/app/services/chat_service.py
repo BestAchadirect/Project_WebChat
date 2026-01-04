@@ -26,6 +26,7 @@ from app.services.knowledge_pipeline import KnowledgePipeline
 from app.services.verifier_service import VerifierService
 from app.services.currency_service import currency_service
 from app.services.response_renderer import ResponseRenderer
+from app.services.semantic_cache_service import semantic_cache_service
 from app.utils.debug_log import debug_log as _debug_log
 
 logger = get_logger(__name__)
@@ -561,6 +562,17 @@ class ChatService:
             )
             return reply_language
 
+        trimmed = (user_text or "").strip()
+        if trimmed and trimmed.isascii() and len(trimmed) <= 6:
+            reply_language = locale or default_locale
+            reason = "short_ascii"
+            self._log_event(
+                run_id=run_id,
+                location="chat_service.language.resolve",
+                data={"mode": mode, "reply_language": reply_language, "reason": reason},
+            )
+            return reply_language
+
         detected = await self._detect_language(user_text=user_text, run_id=run_id)
         reply_language = self._format_language_instruction(
             language=detected.get("language"),
@@ -594,6 +606,20 @@ class ChatService:
 
         if not (text or "").strip():
             meta["currency_intent_source"] = "empty"
+            return None, meta
+
+        lowered = text.lower()
+        has_digits = bool(re.search(r"\d", lowered))
+        has_symbols = bool(re.search(r"[$\u20AC\u00A3\u00A5\u0E3F]", text))
+        has_currency_word = bool(
+            re.search(
+                r"\b(usd|thb|eur|gbp|jpy|cny|rmb|aud|cad|sgd|hkd|myr|idr|vnd|php|krw|inr|"
+                r"dollar|dollars|euro|euros|pound|pounds|yen|baht|rupee|rupees)\b",
+                lowered,
+            )
+        )
+        if not (has_digits or has_symbols or has_currency_word):
+            meta["currency_intent_source"] = "heuristic_skip"
             return None, meta
 
         use_llm = bool(getattr(settings, "CURRENCY_INTENT_ENABLED", True))
@@ -1226,6 +1252,48 @@ class ChatService:
         knowledge_pipeline = self._knowledge_pipeline
         verifier_service = self._verifier_service
 
+        cache_query_embedding: Optional[List[float]] = None
+        cache_hit = False
+        cache_eligible = bool(
+            bool(getattr(settings, "SEMANTIC_CACHE_ENABLED", True))
+            and not history
+            and not ctx.sku_token
+            and not self._is_smalltalk(ctx.text)
+            and not self._is_meta_question(ctx.text)
+            and len((ctx.text or "").strip()) >= 10
+        )
+        debug_meta["cache_lookup"] = cache_eligible
+        if cache_eligible:
+            cache_query_embedding = await llm_service.generate_embedding(ctx.text)
+            hit = await semantic_cache_service.get_hit(
+                self.db,
+                query_embedding=cache_query_embedding,
+                reply_language=reply_language,
+                target_currency=target_currency,
+            )
+            if hit and hit.entry and isinstance(hit.entry.response_json, dict):
+                cached = hit.entry.response_json
+                cache_hit = True
+                debug_meta["cache_hit"] = True
+                debug_meta["cache_id"] = hit.entry.id
+                debug_meta["cache_distance"] = hit.distance
+                response = ChatResponse(
+                    conversation_id=conversation.id,
+                    reply_text=str(cached.get("reply_text") or ""),
+                    product_carousel=cached.get("product_carousel") or [],
+                    follow_up_questions=cached.get("follow_up_questions") or [],
+                    intent=str(cached.get("intent") or "knowledge"),
+                    sources=cached.get("sources") or [],
+                    debug=debug_meta,
+                )
+                debug_meta["route"] = response.intent
+                return await self._finalize_response(
+                    conversation_id=conversation.id,
+                    user_text=ctx.text,
+                    response=response,
+                )
+        debug_meta["cache_hit"] = cache_hit
+
         planner: Dict[str, Any] = {"used": False}
         planner_used = False
         planner_task = "general"
@@ -1304,7 +1372,7 @@ class ChatService:
                 logger.error(f"general_chat generation failed: {e}")
                 reply_text = await self._localize_ui_text(
                     reply_language=reply_language,
-                    text="Hello, I am here to help. How may I assist you today?",
+                    text="I am here to help. How may I assist you today?",
                     run_id=run_id,
                 )
             self._log_event(
@@ -1857,6 +1925,89 @@ class ChatService:
         debug_meta["rerank_d10"] = rerank_result.d10
         debug_meta["rerank_gap"] = rerank_result.gap
 
+        knowledge_strong_thr = float(getattr(settings, "KNOWLEDGE_DISTANCE_THRESHOLD", 0.40))
+        product_strong_thr = float(getattr(settings, "PRODUCT_DISTANCE_STRICT", 0.35))
+        knowledge_strong = knowledge_best is not None and float(knowledge_best) <= knowledge_strong_thr
+        product_strong = product_best is not None and float(product_best) <= product_strong_thr
+        if not is_complex:
+            if knowledge_strong and (product_weak or not product_cards):
+                fast_sources = reranked_top or knowledge_sources[: int(getattr(settings, "RAG_RERANK_TOPN", 5))]
+                reply_text = await self.synthesize_answer(
+                    ctx.text,
+                    fast_sources,
+                    reply_language,
+                    run_id=run_id,
+                )
+                decision = RouteDecision(route="knowledge", reason="fast_path_knowledge")
+                self._log_event(
+                    run_id=run_id,
+                    location="chat_service.route_selected",
+                    data={
+                        "route": decision.route,
+                        "reason": decision.reason,
+                        "knowledge_best": knowledge_best,
+                        "product_best": product_best,
+                        "verifier_skipped_reason": "fast_path_knowledge",
+                    },
+                )
+                debug_meta["route"] = decision.route
+                debug_meta["verifier_skipped_reason"] = "fast_path_knowledge"
+                response = await response_renderer.render(
+                    conversation_id=conversation.id,
+                    route=decision.route,
+                    reply_text=reply_text,
+                    product_carousel=[],
+                    follow_up_questions=[],
+                    sources=fast_sources,
+                    debug=debug_meta,
+                    target_currency=target_currency,
+                    user_text=ctx.text,
+                    apply_polish=True,
+                )
+                return await self._finalize_response(
+                    conversation_id=conversation.id,
+                    user_text=ctx.text,
+                    response=response,
+                )
+
+            if product_cards and product_strong and knowledge_weak:
+                reply_text = sku_price_reply or await self._localize_ui_text(
+                    reply_language=reply_language,
+                    text="Here are some products that might help:",
+                    run_id=run_id,
+                )
+                decision = RouteDecision(route="product", reason="fast_path_product")
+                self._log_event(
+                    run_id=run_id,
+                    location="chat_service.route_selected",
+                    data={
+                        "route": decision.route,
+                        "reason": decision.reason,
+                        "knowledge_best": knowledge_best,
+                        "product_best": product_best,
+                        "verifier_skipped_reason": "fast_path_product",
+                    },
+                )
+                debug_meta["route"] = decision.route
+                debug_meta["verifier_skipped_reason"] = "fast_path_product"
+                response = await response_renderer.render(
+                    conversation_id=conversation.id,
+                    route=decision.route,
+                    reply_text=reply_text,
+                    product_carousel=product_cards,
+                    follow_up_questions=[],
+                    sources=[],
+                    debug=debug_meta,
+                    target_currency=target_currency,
+                    user_text=ctx.text,
+                    apply_polish=False,
+                )
+                return await self._finalize_response(
+                    conversation_id=conversation.id,
+                    user_text=ctx.text,
+                    response=response,
+                )
+
         max_verify_chunks = max(
             1, int(getattr(settings, "RAG_VERIFY_MAX_KNOWLEDGE_CHUNKS", settings.RAG_RERANK_TOPN))
         )
@@ -2058,6 +2209,34 @@ class ChatService:
             user_text=ctx.text,
             apply_polish=True,
         )
+        if cache_eligible and (not cache_hit) and cache_query_embedding is not None and response.intent in {"knowledge", "mixed"}:
+            try:
+                def _dump(item: Any) -> Any:
+                    if hasattr(item, "model_dump"):
+                        return item.model_dump()
+                    if hasattr(item, "dict"):
+                        return item.dict()
+                    return item
+
+                payload = {
+                    "reply_text": response.reply_text,
+                    "product_carousel": [_dump(p) for p in (response.product_carousel or [])],
+                    "follow_up_questions": list(response.follow_up_questions or []),
+                    "intent": response.intent,
+                    "sources": [_dump(s) for s in (response.sources or [])],
+                }
+                await semantic_cache_service.save_hit(
+                    self.db,
+                    query_text=ctx.text,
+                    query_embedding=cache_query_embedding,
+                    response_json=payload,
+                    reply_language=reply_language,
+                    target_currency=target_currency,
+                )
+                debug_meta["cache_saved"] = True
+            except Exception as e:
+                debug_meta["cache_saved"] = False
+                debug_meta["cache_save_error"] = str(e)
         return await self._finalize_response(
             conversation_id=conversation.id,
             user_text=ctx.text,

@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     PLANNER_MAX_TOKENS: int = 200
     PLANNER_MIN_CONFIDENCE: float = 0.6
 
+    # Semantic cache (pgvector)
+    SEMANTIC_CACHE_ENABLED: bool = True
+    SEMANTIC_CACHE_THRESHOLD: float = 0.96
+    SEMANTIC_CACHE_TTL_DAYS: int = 7
+
     # Logging
     LOG_DIR: str = "logs"
     DEBUG_LOG_FILE: str = "debug.log"

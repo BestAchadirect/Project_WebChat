@@ -11,3 +11,4 @@ from .chat import AppUser, Conversation, Message, MessageRole
 from .task import Task, TaskStatus, TaskType
 from .qa_log import QALog, QAStatus
 from .product_change import ProductChange
+from .semantic_cache import SemanticCache
