@@ -8,3 +8,4 @@ tunnels:
   frontend-admin:
     proto: http
     addr: 5173
+
