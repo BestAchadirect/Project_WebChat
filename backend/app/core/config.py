@@ -39,9 +39,8 @@ class Settings(BaseSettings):
     THB_TO_USD_RATE: float = 1.0
     BASE_CURRENCY: str = "USD"
     CURRENCY_RATES_JSON: str = "{}"
-    CURRENCY_INTENT_ENABLED: bool = True
-    CURRENCY_INTENT_MODEL: str = "gpt-4o-mini"
-    CURRENCY_INTENT_MAX_TOKENS: int = 80
+    NLU_MODEL: str = "gpt-4o-mini"
+    NLU_MAX_TOKENS: int = 250
 
     # Routing UX (smalltalk / low-signal)
     SMALLTALK_ENABLED: bool = True
@@ -62,8 +61,6 @@ class Settings(BaseSettings):
     CHAT_LANGUAGE_MODE: str = "auto"  # auto | locale | fixed
     DEFAULT_LOCALE: str = "en-US"
     FIXED_REPLY_LANGUAGE: str = "en-US"
-    LANGUAGE_DETECT_MODEL: str = "gpt-4o-mini"
-    LANGUAGE_DETECT_MAX_TOKENS: int = 40
     PRODUCT_WEAK_DISTANCE: float = 0.55
     KNOWLEDGE_WEAK_DISTANCE: float = 0.60
 

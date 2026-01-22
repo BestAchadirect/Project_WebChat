@@ -92,8 +92,12 @@ class ParsedQuery(BaseModel):
 class ChatResponse(BaseModel):
     conversation_id: int
     reply_text: str
+    carousel_msg: Optional[str] = None
     product_carousel: List[ProductCard] = []
     follow_up_questions: List[str] = []
     intent: str = "retrieval_router"
     sources: List[KnowledgeSource] = []
     debug: Dict[str, Any] = Field(default_factory=dict)
+    view_button_text: str = "View Product Details"
+    material_label: str = "Material"
+    jewelry_type_label: str = "Jewelry Type"

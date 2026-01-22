@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from openai import AsyncOpenAI
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.prompts.system_prompts import ui_localization_prompt, currency_intent_prompt
+from app.prompts.system_prompts import ui_localization_prompt, unified_nlu_prompt
 
 logger = get_logger(__name__)
 
@@ -174,57 +174,79 @@ class LLMService:
         content = response.choices[0].message.content or "{}"
         return json.loads(content)
     
-    async def plan_retrieval(
+    async def run_nlu(
         self,
         *,
         user_message: str,
+        history: Optional[List[Dict[str, str]]] = None,
         locale: Optional[str] = None,
+        supported_currencies: Optional[List[str]] = None,
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Return a retrieval plan for the user message (strict JSON)."""
-        system_prompt = (
-            "You are a retrieval planner for an e-commerce chatbot.\n"
-            "Your job is to interpret the user message and return a STRICT JSON plan.\n\n"
-            "Return JSON with keys:\n"
-            "- task: one of [\"product_search\", \"shipping_region\", \"policy\", \"contact\", \"general\", \"mixed\"]\n"
-            "- is_smalltalk: true/false (greeting/thanks/social)\n"
-            "- is_meta_question: true/false (about the assistant, how it works, AI/human)\n"
-            "- is_catalog_browse: true/false (asks to browse categories / what products you have)\n"
-            "- kb_query: short query string for knowledge base lookup (empty if not needed)\n"
-            "- product_query: short query string for product search (empty if not needed)\n"
-            "- entities: object with keys like country, state, sku, jewelry_type, gauge, material, budget\n"
-            "- needs_clarification: true/false\n"
-            "- clarifying_question: string (required if needs_clarification)\n"
-            "- confidence: number 0 to 1\n\n"
-            "Rules:\n"
-            "- If is_smalltalk=true, task must be general and needs_clarification=false.\n"
-            "- If is_meta_question=true, task must be general and needs_clarification=false.\n"
-            "- If is_catalog_browse=true, task should be product_search and needs_clarification=true with a short category question.\n"
-            "- If the user asks about shipping region (e.g., \"sell in US\"), use task=shipping_region and kb_query about shipping/availability.\n"
-            "- If the user wants recommendations or items, use task=product_search and product_query.\n"
-            "- If the user asks about refunds, payment, MOQ, or policies, use task=policy and kb_query.\n"
-            "- If the user asks for phone, email, or WhatsApp, use task=contact and kb_query.\n"
-            "- Use task=mixed if both product and policy are clearly requested.\n"
-            "- Do NOT echo the user message as clarifying_question.\n"
-            "- Ask only ONE clarifying question if needed.\n"
-        )
-
+        """Return a unified NLU analysis for the user message (strict JSON)."""
+        system_prompt = unified_nlu_prompt(supported_currencies)
         messages = [{"role": "system", "content": system_prompt}]
         if locale:
             messages.append({"role": "system", "content": f"Locale: {locale}"})
+        
+        if history:
+            messages.extend(history)
+            
         messages.append({"role": "user", "content": user_message})
 
-        use_model = model or getattr(settings, "PLANNER_MODEL", None) or self.model
-        token_limit = max_tokens or int(getattr(settings, "PLANNER_MAX_TOKENS", 200))
+        use_model = model or getattr(settings, "NLU_MODEL", None) or self.model
+        token_limit = max_tokens or int(getattr(settings, "NLU_MAX_TOKENS", 250))
 
-        data = await self.generate_chat_json(
-            messages=messages,
-            model=use_model,
-            temperature=0.0,
-            max_tokens=token_limit,
+        try:
+            return await self.generate_chat_json(
+                messages=messages,
+                model=use_model,
+                temperature=0.0,
+                max_tokens=token_limit,
+            )
+        except Exception as e:
+            logger.error(f"NLU analysis failed: {e}")
+            return {}
+
+    async def translate_product_descriptions(
+        self,
+        *,
+        descriptions: List[str],
+        reply_language: str,
+        model: Optional[str] = None,
+    ) -> List[str]:
+        """Translate a batch of product descriptions into the target language."""
+        if not descriptions or not reply_language:
+            return descriptions
+
+        # Use a high-density JSON prompt for batch translation
+        system = (
+            f"You are a professional translator. Translate the provided list of English product descriptions into {reply_language}.\n"
+            "Return ONLY a JSON object with a 'translations' key containing the list of translated strings.\n"
+            "Keep technical terms (SKU, diameter, etc.) as is if appropriate for the destination language."
         )
-        return data
+        user = json.dumps({"descriptions": descriptions}, ensure_ascii=True)
+        
+        use_model = model or getattr(settings, "UI_LOCALIZATION_MODEL", None) or self.model
+        
+        try:
+            data = await self.generate_chat_json(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                model=use_model,
+                temperature=0.0,
+                max_tokens=1000, # Allow more for batch
+            )
+            translated = data.get("translations", [])
+            if isinstance(translated, list) and len(translated) == len(descriptions):
+                return [str(t).strip() for t in translated]
+            return descriptions
+        except Exception as e:
+            logger.error(f"Batch description translation failed: {e}")
+            return descriptions
 
     async def localize_ui_strings(
         self,
@@ -280,35 +302,6 @@ class LLMService:
 
         self._ui_text_cache.set(cache_key, localized)
         return localized
-
-    async def detect_currency_intent(
-        self,
-        *,
-        user_message: str,
-        locale: Optional[str] = None,
-        supported_currencies: Optional[List[str]] = None,
-        model: Optional[str] = None,
-        max_tokens: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        system_prompt = currency_intent_prompt(supported_currencies or [])
-        messages = [{"role": "system", "content": system_prompt}]
-        if locale:
-            messages.append({"role": "system", "content": f"Locale: {locale}"})
-        messages.append({"role": "user", "content": user_message})
-
-        use_model = model or getattr(settings, "CURRENCY_INTENT_MODEL", None) or self.model
-        token_limit = max_tokens or int(getattr(settings, "CURRENCY_INTENT_MAX_TOKENS", 80))
-
-        try:
-            return await self.generate_chat_json(
-                messages=messages,
-                model=use_model,
-                temperature=0.0,
-                max_tokens=token_limit,
-            )
-        except Exception as e:
-            logger.error(f"Currency intent detection failed: {e}")
-            return {}
 
 # Singleton instance
 llm_service = LLMService()

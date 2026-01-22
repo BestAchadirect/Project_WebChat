@@ -383,7 +383,7 @@ export const ProductTuningPage: React.FC = () => {
                                             )}
                                         </div>
                                     </td>
-                                    <td className="px-4 py-3 text-sm font-mono text-gray-500">
+                                    <td className="px-4 py-3 text-sm font-mono text-gray-500 uppercase">
                                         {product.master_code ? product.master_code : <span className="text-gray-300">—</span>}
                                         {product.is_featured && (
                                             <div className="mt-1">
@@ -399,7 +399,7 @@ export const ProductTuningPage: React.FC = () => {
                                             {product.description || <span className="text-gray-300 italic">No description</span>}
                                         </div>
                                     </td>
-                                    <td className="px-4 py-3 text-sm font-mono text-gray-500">{product.sku}</td>
+                                    <td className="px-4 py-3 text-sm font-mono text-gray-500 uppercase font-bold">{product.sku}</td>
                                     <td className="px-4 py-3 text-sm font-bold text-gray-900">${product.price.toFixed(2)}</td>
                                     <td className="px-4 py-3 text-center">
                                         <div className={`w-2 h-2 rounded-full mx-auto ${product.visibility ? (product.in_stock ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-yellow-500') : 'bg-gray-300'}`} />
@@ -445,7 +445,7 @@ export const ProductTuningPage: React.FC = () => {
                             </button>
                             <div>
                                 <h2 className="text-lg font-bold text-gray-900 leading-tight">Product Details</h2>
-                                <p className="text-xs text-gray-500 uppercase font-bold tracking-widest">{selectedProduct.sku}</p>
+                                <p className="text-xs text-gray-500 uppercase font-bold tracking-widest uppercase">{selectedProduct.sku}</p>
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -539,7 +539,7 @@ export const ProductTuningPage: React.FC = () => {
                                                 console.error('Failed to update master code:', error);
                                             }
                                         }}
-                                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 font-mono"
+                                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 font-mono uppercase"
                                     />
                                     <p className="text-[10px] text-gray-400 mt-2">Group multiple SKUs under one master collection.</p>
                                 </div>
