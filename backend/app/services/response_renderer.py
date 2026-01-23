@@ -37,6 +37,8 @@ class ResponseRenderer:
     ) -> ChatResponse:
         reply_text = reply_data.get("reply", "")
         carousel_msg = reply_data.get("carousel_hint", "")
+        if not product_carousel:
+            carousel_msg = ""
 
         text = self._strip_sources_block(reply_text)
         if product_carousel:

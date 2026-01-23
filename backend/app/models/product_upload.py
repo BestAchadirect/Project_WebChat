@@ -3,7 +3,7 @@ import enum
 import uuid
 
 from sqlalchemy import Column, DateTime, Enum, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
@@ -41,6 +41,13 @@ class ProductUpload(Base):
     )
     error_message = Column(Text, nullable=True)
     imported_products = Column(Integer, default=0)
+    
+    # Progress tracking for large imports
+    total_rows = Column(Integer, nullable=True)
+    rows_processed = Column(Integer, default=0)
+    progress_percentage = Column(Integer, default=0)
+    error_log = Column(JSONB, default=list)  # Store detailed error information
+    
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)

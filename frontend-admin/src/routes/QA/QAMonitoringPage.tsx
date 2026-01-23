@@ -32,14 +32,17 @@ export const QAMonitoringPage: React.FC = () => {
             setTesting(true);
             setTestResult(null);
             // Call chat endpoint for testing
-            const response = await apiClient.post('/chat/message', {
+            const response = await apiClient.post('/chat/', {
+                user_id: 'qa-tester',
                 message: testQuestion,
                 conversation_id: null,
             });
             setTestResult({
-                answer: response.data.reply || response.data.message || 'No response',
+                answer: response.data.reply_text || response.data.reply || response.data.message || 'No response',
                 sources: response.data.sources || [],
             });
+            // Refresh logs to show the new test in the table
+            loadLogs();
         } catch (error) {
             console.error('Test failed:', error);
             setTestResult({ answer: 'Error: Failed to get response', sources: [] });

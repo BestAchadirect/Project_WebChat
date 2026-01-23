@@ -9,6 +9,7 @@ interface Message {
     viewButtonText?: string;
     materialLabel?: string;
     jewelryTypeLabel?: string;
+    followUpQuestions?: string[];  // Add follow-up questions support
 }
 
 interface KnowledgeSource {
@@ -134,6 +135,135 @@ const customStyles = `
 .typing-dot:nth-child(2) { animation-delay: 0.2s; }
 .typing-dot:nth-child(3) { animation-delay: 0.4s; }
 `;
+
+// Banner Carousel Component
+const BannerCarousel: React.FC<{
+    primaryColor: string;
+    onBannerClick: () => void;
+}> = ({ primaryColor, onBannerClick }) => {
+    const [currentSlide, setCurrentSlide] = useState(0);
+    const [touchStart, setTouchStart] = useState(0);
+    const [touchEnd, setTouchEnd] = useState(0);
+
+    const banners = [
+        {
+            title: "Chat with Assistant",
+            description: "Have questions? Lyro is here to assist you with products and orders.",
+            icon: (
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M5.78393 10.7733L3.47785 6.16113C2.36853 3.9425 1.81387 2.83318 2.32353 2.32353C2.83318 1.81387 3.9425 2.36853 6.16113 3.47785L19.5769 10.1857C21.138 10.9663 21.9185 11.3566 21.9185 11.9746C21.9185 12.5926 21.138 12.9829 19.5769 13.7634L6.16113 20.4713C3.9425 21.5806 2.83318 22.1353 2.32353 21.6256C1.81387 21.116 2.36853 20.0067 3.47785 17.788L5.78522 13.1733H12.6367C13.2995 13.1733 13.8367 12.636 13.8367 11.9733C13.8367 11.3105 13.2995 10.7733 12.6367 10.7733H5.78393Z" fill="currentColor" />
+                </svg>
+            )
+        },
+        {
+            title: "New Arrivals Weekly",
+            description: "Check out our latest products and trending jewelry pieces.",
+            icon: (
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" fill="currentColor" />
+                </svg>
+            )
+        },
+        {
+            title: "Fast Shipping",
+            description: "Free shipping on orders over $50. Get your jewelry delivered quickly.",
+            icon: (
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M13 16V6H3V16H1V18H2C2 19.11 2.89 20 4 20C5.105 20 6 19.11 6 18H14C14 19.11 14.895 20 16 20C17.105 20 18 19.11 18 18H19V13H16L13 16ZM4 18.5C3.725 18.5 3.5 18.275 3.5 18C3.5 17.725 3.725 17.5 4 17.5C4.275 17.5 4.5 17.725 4.5 18C4.5 18.275 4.275 18.5 4 18.5ZM16 18.5C15.725 18.5 15.5 18.275 15.5 18C15.5 17.725 15.725 17.5 16 17.5C16.275 17.5 16.5 17.725 16.5 18C16.5 18.275 16.275 18.5 16 18.5ZM13 11L17.55 11.88L14.85 14.47L13 12.88V11Z" fill="currentColor" />
+                </svg>
+            )
+        }
+    ];
+
+    const handleTouchStart = (e: React.TouchEvent) => {
+        setTouchStart(e.targetTouches[0].clientX);
+    };
+
+    const handleTouchMove = (e: React.TouchEvent) => {
+        setTouchEnd(e.targetTouches[0].clientX);
+    };
+
+    const handleTouchEnd = () => {
+        if (!touchStart || !touchEnd) return;
+
+        const distance = touchStart - touchEnd;
+        const isLeftSwipe = distance > 50;
+        const isRightSwipe = distance < -50;
+
+        if (isLeftSwipe && currentSlide < banners.length - 1) {
+            setCurrentSlide(currentSlide + 1);
+        }
+        if (isRightSwipe && currentSlide > 0) {
+            setCurrentSlide(currentSlide - 1);
+        }
+
+        setTouchStart(0);
+        setTouchEnd(0);
+    };
+
+    // Auto-rotate banners every 5 seconds
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setCurrentSlide((prev) => (prev + 1) % banners.length);
+        }, 5000);
+        return () => clearInterval(timer);
+    }, [banners.length]);
+
+    return (
+        <div className="mb-8">
+            <div
+                className="relative overflow-hidden rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.06)] border border-gray-50"
+                onTouchStart={handleTouchStart}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
+            >
+                <div
+                    className="flex transition-transform duration-500 ease-out"
+                    style={{ transform: `translateX(-${currentSlide * 100}%)` }}
+                >
+                    {banners.map((banner, index) => (
+                        <div
+                            key={index}
+                            className="w-full flex-shrink-0 bg-white p-6 cursor-pointer group hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] transition-all active:scale-[0.98]"
+                            onClick={onBannerClick}
+                        >
+                            <div className="flex items-center justify-between">
+                                <div className="flex-1">
+                                    <h4 className="font-black text-gray-900 text-lg mb-1 leading-tight">{banner.title}</h4>
+                                    <p className="text-sm text-gray-400 font-medium leading-snug pr-4">{banner.description}</p>
+                                </div>
+                                <div
+                                    className="w-12 h-12 rounded-full flex items-center justify-center group-hover:rotate-12 transition-transform shadow-sm"
+                                    style={{ backgroundColor: `${primaryColor}15`, color: primaryColor }}
+                                >
+                                    {banner.icon}
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Indicator Dots */}
+            <div className="flex justify-center gap-2 mt-3">
+                {banners.map((_, index) => (
+                    <button
+                        key={index}
+                        onClick={() => setCurrentSlide(index)}
+                        className={`h-1.5 rounded-full transition-all ${index === currentSlide
+                            ? 'w-6'
+                            : 'w-1.5 opacity-30'
+                            }`}
+                        style={{
+                            backgroundColor: index === currentSlide ? primaryColor : '#9CA3AF'
+                        }}
+                        aria-label={`Go to slide ${index + 1}`}
+                    />
+                ))}
+            </div>
+        </div>
+    );
+};
 
 const ProductCarousel: React.FC<{
     items: ProductCard[];
@@ -372,6 +502,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                     viewButtonText: data.view_button_text,
                     materialLabel: data.material_label,
                     jewelryTypeLabel: data.jewelry_type_label,
+                    followUpQuestions: data.follow_up_questions || [],
                 };
                 const updated: Message[] = [...prev, assistantMessage];
                 return updated;
@@ -445,7 +576,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             {/* Chat Container */}
             <div className={`${containerClasses} bg-[#FCFCFE] rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-gray-100`}>
                 {/* Header (Premium Greeting Version) */}
-                <div className={`pt-6 pb-12 px-6 text-white transition-all duration-300 shadow-lg relative overflow-hidden`} style={{ backgroundColor: config.primaryColor }}>
+                <div className={`pt-4 pb-7 px-6 text-white transition-all duration-300 shadow-lg relative overflow-hidden`} style={{ backgroundColor: config.primaryColor }}>
                     {/* Decorative bubble/glow */}
                     <div className="absolute top-[-20px] right-[-20px] w-32 h-32 bg-white/10 rounded-full blur-2xl"></div>
 
@@ -497,44 +628,15 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                         </div>
                     </div>
 
-                    <div className="animate-fade-in relative z-10">
-                        <h2 className="text-2xl font-black mb-1 flex items-center gap-2">
-                            {activeTab === 'chat' ? (
-                                <><span>Hi there!</span> <img className="w-6 h-6" alt="👋" src="https://cdnjs.cloudflare.com/ajax/libs/twemoji/12.1.1/72x72/1f44b.png" /></>
-                            ) : (
-                                <>Hi there! <span className="animate-bounce-slow inline-block">👋</span></>
-                            )}
-                        </h2>
-                        {activeTab === 'home' && (
-                            <p className="text-sm text-white/80 leading-relaxed font-medium">
-                                AI chat powered by our team -<br />how can we help you?
-                            </p>
-                        )}
-                    </div>
                 </div>
 
                 {/* Main View Container */}
-                <div className="relative flex-1 bg-white -mt-6 rounded-t-[2rem] overflow-hidden flex flex-col shadow-inner z-20">
+                <div className="relative flex-1 bg-white -mt-5 rounded-t-[2rem] overflow-hidden flex flex-col shadow-inner z-20">
                     {/* Home Tab */}
                     {activeTab === 'home' && (
                         <div className="flex-1 overflow-y-auto scrollbar-custom p-6 animate-fade-in-up pb-10">
-                            {/* Chat Start Card */}
-                            <div
-                                className="bg-white rounded-2xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.06)] border border-gray-50 mb-8 group cursor-pointer hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] hover:-translate-y-1 transition-all active:scale-[0.98]"
-                                onClick={() => setActiveTab('chat')}
-                            >
-                                <div className="flex items-center justify-between">
-                                    <div className="flex-1">
-                                        <h4 className="font-black text-gray-900 text-lg mb-1 leading-tight">Chat with Assistant</h4>
-                                        <p className="text-sm text-gray-400 font-medium leading-snug pr-4">Have questions? Lyro is here to assist you with products and orders.</p>
-                                    </div>
-                                    <div className="w-12 h-12 rounded-full flex items-center justify-center group-hover:rotate-12 transition-transform shadow-sm" style={{ backgroundColor: `${config.primaryColor}15` }}>
-                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ color: config.primaryColor }}>
-                                            <path d="M5.78393 10.7733L3.47785 6.16113C2.36853 3.9425 1.81387 2.83318 2.32353 2.32353C2.83318 1.81387 3.9425 2.36853 6.16113 3.47785L19.5769 10.1857C21.138 10.9663 21.9185 11.3566 21.9185 11.9746C21.9185 12.5926 21.138 12.9829 19.5769 13.7634L6.16113 20.4713C3.9425 21.5806 2.83318 22.1353 2.32353 21.6256C1.81387 21.116 2.36853 20.0067 3.47785 17.788L5.78522 13.1733H12.6367C13.2995 13.1733 13.8367 12.636 13.8367 11.9733C13.8367 11.3105 13.2995 10.7733 12.6367 10.7733H5.78393Z" fill="currentColor" />
-                                        </svg>
-                                    </div>
-                                </div>
-                            </div>
+                            {/* Sliding Banner Carousel */}
+                            <BannerCarousel primaryColor={config.primaryColor} onBannerClick={() => setActiveTab('chat')} />
 
                             {/* Suggestions List */}
                             <div className="space-y-3">
@@ -563,15 +665,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                     {/* Chat Tab */}
                     {activeTab === 'chat' && (
                         <div className="flex-1 flex flex-col overflow-hidden animate-fade-in bg-white h-full relative">
-                            <div className="flex-1 overflow-y-auto p-4 scrollbar-custom pb-32">
-                                <div className="flex justify-center mb-6">
-                                    <button type="button" className="flex items-center gap-2 px-4 py-2 bg-gray-50 text-gray-500 rounded-full text-xs font-bold hover:bg-gray-100 transition-colors border border-gray-100 shadow-sm">
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                                            <path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z" />
-                                        </svg>
-                                        <span>Previous messages</span>
-                                    </button>
-                                </div>
+                            <div className="flex-1 overflow-y-auto p-4 scrollbar-custom pb-24">
 
                                 {messages.length === 0 && (
                                     <div className="flex justify-start mb-6 animate-fade-in-up">
@@ -615,8 +709,28 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                                 />
                                             </div>
                                         )}
+
+                                        {/* Follow-up Questions / Quick Reply Buttons */}
+                                        {msg.role === 'assistant' && msg.followUpQuestions && msg.followUpQuestions.length > 0 && (
+                                            <div className="max-w-[90%] mt-3 flex flex-wrap gap-2">
+                                                {msg.followUpQuestions.map((question, qIdx) => (
+                                                    <button
+                                                        key={qIdx}
+                                                        onClick={() => sendMessage(question)}
+                                                        className="px-4 py-2 bg-white hover:bg-gray-50 text-gray-700 rounded-full text-xs font-bold transition-all border-2 shadow-sm hover:shadow-md active:scale-95 flex items-center gap-1.5"
+                                                        style={{ borderColor: config.primaryColor }}
+                                                    >
+                                                        <span>{question}</span>
+                                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                                            <path d="M7.5 6.175L8.675 5L13.675 10L8.675 15L7.5 13.825L11.3167 10L7.5 6.175Z" fill="currentColor" />
+                                                        </svg>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
                                 ))}
+
 
                                 {isLoading && (
                                     <div className="flex justify-start mb-4 animate-fade-in">
@@ -632,7 +746,6 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
                             {/* Input Group (Deep Chat Style) */}
                             <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 flex flex-col pt-2 pb-3 px-4 shadow-[0_-10px_30px_rgba(0,0,0,0.03)] z-10">
-                                <hr className="border-gray-50 mb-2" />
                                 <div className="flex items-center gap-3">
                                     <textarea
                                         ref={textareaRef}
@@ -654,29 +767,6 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                             <path d="M5.78393 10.7733L3.47785 6.16113C2.36853 3.9425 1.81387 2.83318 2.32353 2.32353C2.83318 1.81387 3.9425 2.36853 6.16113 3.47785L19.5769 10.1857C21.138 10.9663 21.9185 11.3566 21.9185 11.9746C21.9185 12.5926 21.138 12.9829 19.5769 13.7634L6.16113 20.4713C3.9425 21.5806 2.83318 22.1353 2.32353 21.6256C1.81387 21.116 2.36853 20.0067 3.47785 17.788L5.78522 13.1733H12.6367C13.2995 13.1733 13.8367 12.636 13.8367 11.9733C13.8367 11.3105 13.2995 10.7733 12.6367 10.7733H5.78393Z" fill="currentColor" />
                                         </svg>
                                     </button>
-                                </div>
-                                <div className="flex items-center justify-between mt-1">
-                                    <div className="flex items-center gap-1">
-                                        <button className="p-2 text-gray-400 hover:text-gray-600 transition-colors" title="Attachment">
-                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                                            </svg>
-                                        </button>
-                                        <button className="p-2 text-gray-400 hover:text-gray-600 transition-colors" title="Emoji">
-                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                <circle cx="12" cy="12" r="10" />
-                                                <path d="M8 14s1.5 2 4 2 4-2 4-2" />
-                                                <line x1="9" y1="9" x2="9.01" y2="9" />
-                                                <line x1="15" y1="9" x2="15.01" y2="9" />
-                                            </svg>
-                                        </button>
-                                    </div>
-                                    <div className="flex items-center">
-                                        <a href="https://www.achadirect.com" target="_blank" rel="noopener noreferrer" className="opacity-40 hover:opacity-100 transition-opacity flex items-center gap-1">
-                                            <span className="text-[9px] font-bold text-gray-400 uppercase tracking-tighter">Powered by</span>
-                                            <img src="https://www.achadirect.com/media/logo/default/logo-sq.png" className="h-3 w-auto grayscale" alt="Acha Direct" />
-                                        </a>
-                                    </div>
                                 </div>
                             </div>
                         </div>

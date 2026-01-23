@@ -5,7 +5,19 @@ FastAPI + PostgreSQL (pgvector) backend with a React admin dashboard.
 Supports:
 - Knowledge base import (CSV) → chunking → embeddings → RAG chat answers
 - Product import (CSV) → product embeddings → product carousel in chat
-- Chat routing with guardrails: `smalltalk`, `general_chat`, `product`, `knowledge`, `mixed`, `clarify`, `fallback_general`
+- Chat routing with Unified NLU: `browse_products`, `search_specific`, `knowledge_query`, `off_topic`
+
+### New Features (Jan 2026)
+- **Smart Product Search**:
+  - **Exact SKU Match**: Returns 1 specific product (e.g., "Find SKU-123").
+  - **Master Code / Name Match**: Returns all variants in the group (e.g., "Titanium Clicker").
+  - **AI Code Detection**: Intelligently extracts codes from natural language (e.g., "Find me code ACCO.") using system prompts.
+  - **Fallback**: Vector semantic search if no strict code match found.
+  - **Increased Limit**: Carousel now shows up to 10 products (previously 3).
+- **Interactive Banner Carousel**: Replaced static greeting with touch-friendly rotating banners.
+- **Dynamic Quick Replies**:
+  - **Context-Aware**: AI suggests 3-5 relevant follow-up questions (e.g., "Shipping costs?", "View Cart").
+  - **Smart Fallback**: "See more [Category]" button if no specific questions generated.
 
 ## Structure
 

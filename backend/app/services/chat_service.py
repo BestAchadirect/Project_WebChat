@@ -11,6 +11,7 @@ from app.core.logging import get_logger
 from app.core.config import settings
 from app.models.chat import AppUser, Conversation, Message, MessageRole
 from app.models.product import Product, ProductEmbedding
+from app.models.qa_log import QALog, QAStatus
 from app.prompts.system_prompts import (
     rag_answer_prompt,
     ui_localization_prompt,
@@ -383,6 +384,24 @@ class ChatService:
     ) -> ChatResponse:
         await self.save_message(conversation_id, MessageRole.USER, user_text)
         await self.save_message(conversation_id, MessageRole.ASSISTANT, response.reply_text)
+        
+        # Log to QALog for Monitoring
+        try:
+            qa_status = QAStatus.SUCCESS
+            if response.intent == "fallback_general" or "don't have enough information" in response.reply_text.lower():
+                qa_status = QAStatus.FALLBACK
+            
+            qa_log = QALog(
+                question=user_text,
+                answer=response.reply_text,
+                sources=[{"title": s.title, "relevance": s.relevance} for s in response.sources],
+                status=qa_status
+            )
+            self.db.add(qa_log)
+            await self.db.commit()
+        except Exception as e:
+            logger.error(f"Failed to log QA event: {e}")
+            
         return response
 
     async def get_history(self, conversation_id: int, limit: int = 5) -> List[Dict[str, str]]:
@@ -395,6 +414,103 @@ class ChatService:
         result = await self.db.execute(stmt)
         msgs = result.scalars().all()
         return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
+
+    async def smart_product_search(
+        self,
+        query: str,
+        query_embedding: List[float],
+        limit: int = 10,
+        run_id: Optional[str] = None,
+        extracted_code: Optional[str] = None,
+    ) -> Tuple[List[ProductCard], List[float], Optional[float], Dict[str, float]]:
+        """
+        Smart search with prioritization:
+        1. Exact SKU match -> Return specific variant
+        2. Master Code / Name match -> Return all variants in group
+        3. Vector Search -> Fallback
+        """
+        # Normalize: "Find me this code ACCO" -> "ACCO" attempt
+        
+        candidates = []
+        # Priority 1: Code extracted by LLM (system prompt)
+        if extracted_code:
+            candidates.append(extracted_code.strip())
+            
+        # Priority 2: Manual extraction fallback
+        candidates.append(query.strip())
+        
+        # Heuristic: Extract potential codes (uppercase words, alphanumeric)
+        tokens = query.split()
+        if len(tokens) > 1:
+            # Try the last word (often the code)
+            candidates.append(tokens[-1])
+            # Try words that look like codes (longer than 2 chars, uppercase or digits)
+            candidates.extend([t for t in tokens if len(t) > 2 and (t.isupper() or any(c.isdigit() for c in t))])
+            
+        # Deduplicate and prioritize
+        candidates = list(dict.fromkeys(candidates))
+        
+        for candidate in candidates:
+            # Clean candidate: remove non-code chars but keep dots/hyphens if inside
+            # First strip common punctuation from ends
+            clean_cand = candidate.strip(".,!?;:'\"()[]{}")
+            # Then remove any other weird chars if needed, but be careful not to break "A.BC" skus
+            # For now, just stripping end punctuation is likely enough for "ACCORF."
+            
+            if not clean_cand:
+                continue
+
+            # 1. Exact SKU Match
+            sku_stmt = select(Product).where(Product.sku.ilike(clean_cand))
+            sku_result = await self.db.execute(sku_stmt)
+            sku_product = sku_result.scalars().first()
+            
+            if sku_product:
+                logger.info(f"Smart Search: Found exact SKU match for '{clean_cand}'")
+                card = self._product_to_card(sku_product)
+                return [card], [0.0], 0.0, {str(sku_product.id): 0.0}
+                
+            # 2. Exact Master Code / Product Name Match
+            master_stmt = select(Product).where(or_(
+                Product.master_code.ilike(clean_cand),
+                Product.name.ilike(clean_cand)
+            )).limit(1)
+            master_result = await self.db.execute(master_stmt)
+            master_product = master_result.scalars().first()
+            
+            if master_product:
+                logger.info(f"Smart Search: Found master code match for '{clean_cand}' (Group: {master_product.group_id})")
+                # Fetch all variants in this group
+                variants_stmt = select(Product).where(Product.group_id == master_product.group_id)
+                variants_result = await self.db.execute(variants_stmt)
+                variants = variants_result.scalars().all()
+                
+                cards = [self._product_to_card(p) for p in variants]
+                if len(cards) > limit * 2:
+                    cards = cards[:limit * 2]
+                    
+                distances = [0.0] * len(cards)
+                dist_map = {str(c.id): 0.0 for c in cards}
+                return cards, distances, 0.0, dist_map
+            
+        # 3. Fallback to Vector Search
+        return await self.search_products(query_embedding, limit, run_id)
+
+    def _product_to_card(self, product: Product) -> ProductCard:
+        return ProductCard(
+            id=product.id,
+            object_id=product.object_id,
+            sku=product.sku,
+            legacy_sku=product.legacy_sku or [],
+            name=product.name,
+            description=product.description,
+            price=product.price,
+            currency=product.currency,
+            stock_status=product.stock_status,
+            image_url=product.image_url,
+            product_url=product.product_url,
+            attributes=product.attributes or {},
+        )
 
     async def search_products(
         self,
@@ -523,6 +639,7 @@ class ChatService:
             return {
                 "reply": str(data.get("reply", "")),
                 "carousel_hint": str(data.get("carousel_hint", "")),
+                "recommended_questions": data.get("recommended_questions", []),
             }
         except Exception as e:
             logger.error(f"LLM response generation failed: {e}")
@@ -531,7 +648,7 @@ class ChatService:
                 text="I'm having trouble generating an answer right now. Please try again.",
                 run_id=run_id or "synthesize_answer",
             )
-            return {"reply": msg, "carousel_hint": ""}
+            return {"reply": msg, "carousel_hint": "", "recommended_questions": []}
 
 
     async def process_chat(self, req: ChatRequest) -> ChatResponse:
@@ -588,10 +705,15 @@ class ChatService:
         )
         query_embedding = await llm_service.generate_embedding(search_query)
         
-        product_cards, distances, best_distance, dist_map = await self.search_products(
+        # Extract product code from NLU if available
+        nlu_product_code = nlu_data.get("product_code", "")
+        
+        product_cards, distances, best_distance, dist_map = await self.smart_product_search(
+            query=search_query,
             query_embedding=query_embedding,
-            limit=5,
-            run_id=run_id
+            limit=10,
+            run_id=run_id,
+            extracted_code=nlu_product_code
         )
         
         # 2b. Knowledge Search
@@ -608,6 +730,12 @@ class ChatService:
         intent = str(nlu_data.get("intent") or "knowledge_query").strip().lower()
         show_products_flag = bool(nlu_data.get("show_products", False))
         
+        # Override show_products_flag if we found an EXACT match (smart search)
+        if best_distance is not None and best_distance == 0.0 and product_cards:
+            logger.info("Forcing show_products=True due to exact SKU/MasterCode match")
+            show_products_flag = True
+            intent = "search_specific"
+
         # 4. Filter Products based on intent and relevance
         top_products = []
         product_threshold = getattr(settings, "PRODUCT_DISTANCE_THRESHOLD", 0.45)
@@ -620,7 +748,7 @@ class ChatService:
                 product_threshold = 0.65  # Moderately relaxed for specific search
 
         if product_cards and best_distance is not None and best_distance < product_threshold:
-            top_products = product_cards
+            top_products = product_cards[:10]  # Show up to 10 products
             # Create a source snippet for products
             product_text = "\n".join([f"TYPE: {p.attributes.get('jewelry_type', 'Jewelry')}, NAME: {p.name}, SKU: {p.sku}, PRICE: {p.price} {p.currency}" for p in top_products[:3]])
             sources.append(KnowledgeSource(
@@ -631,7 +759,7 @@ class ChatService:
             ))
         elif show_products_flag and product_cards:
             # Fallback: Always show some products if user wants products, even if below threshold
-            top_products = product_cards[:3]
+            top_products = product_cards[:10]  # Show up to 10 products
             product_text = "\n".join([f"- {p.attributes.get('jewelry_type', 'Jewelry')} {p.name} ({p.sku}): {p.price} {p.currency}" for p in top_products])
             sources.append(KnowledgeSource(
                 source_id="products_fallback",
@@ -653,12 +781,31 @@ class ChatService:
         )
 
         # 5. Render
+        # Add "See more" button if products are shown
+        follow_up_questions = []
+        
+        # Priority 1: Context-aware questions from LLM
+        if reply_data.get("recommended_questions"):
+            follow_up_questions = reply_data["recommended_questions"]
+            
+        # Priority 2: Smart fallback IF no LLM suggestions and products exist
+        elif top_products:
+            # Extract the primary search term for "See more" query
+            jewelry_type = top_products[0].attributes.get('jewelry_type', '')
+            material = top_products[0].attributes.get('material', '')
+            search_term = jewelry_type or material or "similar items"
+            follow_up_questions = [f"See more {search_term}"]
+            
+        # Enforce limit of 5
+        if len(follow_up_questions) > 5:
+            follow_up_questions = follow_up_questions[:5]
+        
         response = await self._response_renderer.render(
             conversation_id=conversation.id,
             route="rag_strict",
             reply_data=reply_data,
             product_carousel=top_products,
-            follow_up_questions=[], # Removed as requested
+            follow_up_questions=follow_up_questions,
             sources=sources,
             debug=debug_meta,
             reply_language=reply_language,
