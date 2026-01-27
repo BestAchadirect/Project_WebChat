@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     RERANK_GAP_THRESHOLD: float = 0.06
     RERANK_WEAK_D1_THRESHOLD: float = 0.45
     RAG_MAX_CHUNK_CHARS_FOR_CONTEXT: int = 1200
+    RAG_ANSWER_MODEL: str = "gpt-4o-mini"
     RAG_VERIFY_MODEL: str = "gpt-4o-mini"
     RAG_DECOMPOSE_MODEL: str = "gpt-4o-mini"
     RAG_DECOMPOSE_MAX_SUBQUESTIONS: int = 8

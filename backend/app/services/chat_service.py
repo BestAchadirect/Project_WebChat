@@ -672,7 +672,12 @@ class ChatService:
             
         messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"})
         try:
-            data = await llm_service.generate_chat_json(messages, temperature=0.2)
+            answer_model = getattr(settings, "RAG_ANSWER_MODEL", None) or settings.OPENAI_MODEL
+            data = await llm_service.generate_chat_json(
+                messages,
+                model=answer_model,
+                temperature=0.2,
+            )
             return {
                 "reply": str(data.get("reply", "")),
                 "carousel_hint": str(data.get("carousel_hint", "")),

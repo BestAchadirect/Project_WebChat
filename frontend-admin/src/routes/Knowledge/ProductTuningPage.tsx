@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { productsApi, Product } from '../../api/training';
 
 type BulkFieldState = Record<string, { enabled: boolean; value: string }>;
@@ -17,6 +17,16 @@ export const ProductTuningPage: React.FC = () => {
     const [bulkEditFields, setBulkEditFields] = useState<BulkFieldState>({});
     const [bulkEditSaving, setBulkEditSaving] = useState(false);
     const [bulkEditError, setBulkEditError] = useState<string | null>(null);
+    const selectAllRef = useRef<HTMLInputElement | null>(null);
+    const [showColumnMenu, setShowColumnMenu] = useState(false);
+    const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({
+        image: true,
+        master_code: true,
+        description: true,
+        sku: true,
+        price: true,
+        status: true,
+    });
 
     // Filters
     const [filterVisibility, setFilterVisibility] = useState<'all' | 'visible' | 'hidden'>('all');
@@ -148,12 +158,19 @@ export const ProductTuningPage: React.FC = () => {
         setSelectedIds(newSet);
     };
 
-    const toggleSelectAll = () => {
-        if (selectedIds.size === products.length) {
-            setSelectedIds(new Set());
-        } else {
+    const handleSelectAllChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.checked) {
             setSelectedIds(new Set(products.map(p => p.id)));
+            return;
         }
+        setSelectedIds(new Set());
+    };
+
+    const toggleColumn = (key: string) => {
+        setVisibleColumns((prev) => ({
+            ...prev,
+            [key]: !prev[key],
+        }));
     };
 
     const resetFilters = () => {
@@ -302,6 +319,15 @@ export const ProductTuningPage: React.FC = () => {
 
     const bulkHasUpdates = Object.values(bulkEditFields).some((field) => field?.enabled);
 
+    const allSelected = products.length > 0 && selectedIds.size === products.length;
+    const someSelected = selectedIds.size > 0 && selectedIds.size < products.length;
+
+    useEffect(() => {
+        if (selectAllRef.current) {
+            selectAllRef.current.indeterminate = someSelected;
+        }
+    }, [someSelected]);
+
     return (
         <div className="flex h-[calc(100vh-120px)] overflow-hidden gap-6">
             {/* Sidebar Filters */}
@@ -407,28 +433,63 @@ export const ProductTuningPage: React.FC = () => {
                         <h1 className="text-2xl font-bold text-gray-900">Product Tuning</h1>
                         <p className="text-sm text-gray-500">{total} SKUs matching your filters</p>
                     </div>
-                    {selectedIds.size > 0 && (
-                        <div className="flex gap-2 animate-in fade-in slide-in-from-top-2">
+                    <div className="flex items-center gap-2">
+                        <div className="relative">
                             <button
-                                onClick={openBulkEdit}
-                                className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 shadow-sm transition-all active:scale-95"
+                                onClick={() => setShowColumnMenu((prev) => !prev)}
+                                className="px-4 py-2 bg-white border border-gray-200 text-gray-700 text-sm rounded-lg hover:bg-gray-50 shadow-sm transition-all"
                             >
-                                Edit Attributes ({selectedIds.size})
+                                Columns
                             </button>
-                            <button
-                                onClick={handleBulkShow}
-                                className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 shadow-sm transition-all active:scale-95"
-                            >
-                                Show Selected ({selectedIds.size})
-                            </button>
-                            <button
-                                onClick={handleBulkHide}
-                                className="px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 shadow-sm transition-all active:scale-95"
-                            >
-                                Hide Selected ({selectedIds.size})
-                            </button>
+                            {showColumnMenu && (
+                                <div className="absolute right-0 mt-2 w-56 bg-white border border-gray-200 rounded-lg shadow-lg p-3 z-20">
+                                    <div className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">Show Columns</div>
+                                    <div className="space-y-2">
+                                        {[
+                                            { key: 'image', label: 'Image' },
+                                            { key: 'master_code', label: 'Master Code' },
+                                            { key: 'description', label: 'Description' },
+                                            { key: 'sku', label: 'SKU' },
+                                            { key: 'price', label: 'Price' },
+                                            { key: 'status', label: 'Status' },
+                                        ].map((col) => (
+                                            <label key={col.key} className="flex items-center gap-2 text-sm text-gray-700">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={visibleColumns[col.key]}
+                                                    onChange={() => toggleColumn(col.key)}
+                                                    className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                                />
+                                                {col.label}
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
                         </div>
-                    )}
+                        {selectedIds.size > 0 && (
+                            <div className="flex gap-2 animate-in fade-in slide-in-from-top-2">
+                                <button
+                                    onClick={openBulkEdit}
+                                    className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 shadow-sm transition-all active:scale-95"
+                                >
+                                    Edit Attributes ({selectedIds.size})
+                                </button>
+                                <button
+                                    onClick={handleBulkShow}
+                                    className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 shadow-sm transition-all active:scale-95"
+                                >
+                                    Show Selected ({selectedIds.size})
+                                </button>
+                                <button
+                                    onClick={handleBulkHide}
+                                    className="px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 shadow-sm transition-all active:scale-95"
+                                >
+                                    Hide Selected ({selectedIds.size})
+                                </button>
+                            </div>
+                        )}
+                    </div>
                 </div>
 
                 <div className="flex-1 overflow-y-auto bg-white rounded-xl shadow-sm border border-gray-200 relative">
@@ -438,17 +499,30 @@ export const ProductTuningPage: React.FC = () => {
                                 <th className="w-12 px-4 py-3 text-left">
                                     <input
                                         type="checkbox"
-                                        checked={selectedIds.size === products.length && products.length > 0}
-                                        onChange={toggleSelectAll}
+                                        ref={selectAllRef}
+                                        checked={allSelected}
+                                        onChange={handleSelectAllChange}
                                         className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                                     />
                                 </th>
-                                <th className="w-20 px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Image</th>
-                                <th className="w-40 px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Master Code</th>
-                                <th className="Description px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Description</th>
-                                <th className="w-32 px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">SKU</th>
-                                <th className="w-24 px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Price</th>
-                                <th className="w-20 px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Status</th>
+                                {visibleColumns.image && (
+                                    <th className="w-20 px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Image</th>
+                                )}
+                                {visibleColumns.master_code && (
+                                    <th className="w-40 px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Master Code</th>
+                                )}
+                                {visibleColumns.description && (
+                                    <th className="Description px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Description</th>
+                                )}
+                                {visibleColumns.sku && (
+                                    <th className="w-32 px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">SKU</th>
+                                )}
+                                {visibleColumns.price && (
+                                    <th className="w-24 px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Price</th>
+                                )}
+                                {visibleColumns.status && (
+                                    <th className="w-20 px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Status</th>
+                                )}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
@@ -466,18 +540,21 @@ export const ProductTuningPage: React.FC = () => {
                                             className="rounded border-gray-300 text-primary-600"
                                         />
                                     </td>
-                                    <td className="px-4 py-3">
-                                        <div className="relative w-10 h-10 bg-gray-100 rounded-lg overflow-hidden border border-gray-100 group-hover:border-primary-200 transition-colors">
-                                            {product.image_url ? (
-                                                <img src={product.image_url} alt="" className="w-full h-full object-cover" />
-                                            ) : (
-                                                <div className="w-full h-full flex items-center justify-center text-gray-300">
-                                                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </td>
-                                    <td className="px-4 py-3 text-sm font-mono text-gray-500 uppercase">
+                                    {visibleColumns.image && (
+                                        <td className="px-4 py-3">
+                                            <div className="relative w-10 h-10 bg-gray-100 rounded-lg overflow-hidden border border-gray-100 group-hover:border-primary-200 transition-colors">
+                                                {product.image_url ? (
+                                                    <img src={product.image_url} alt="" className="w-full h-full object-cover" />
+                                                ) : (
+                                                    <div className="w-full h-full flex items-center justify-center text-gray-300">
+                                                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </td>
+                                    )}
+                                    {visibleColumns.master_code && (
+                                        <td className="px-4 py-3 text-sm font-mono text-gray-500 uppercase">
                                         {product.master_code ? product.master_code : <span className="text-gray-300">—</span>}
                                         {product.is_featured && (
                                             <div className="mt-1">
@@ -487,17 +564,26 @@ export const ProductTuningPage: React.FC = () => {
                                                 </span>
                                             </div>
                                         )}
-                                    </td>
-                                    <td className="Description px-4 py-3">
+                                        </td>
+                                    )}
+                                    {visibleColumns.description && (
+                                        <td className="Description px-4 py-3">
                                         <div className="text-xs text-gray-500" title={product.description || ''}>
                                             {product.description || <span className="text-gray-300 italic">No description</span>}
                                         </div>
-                                    </td>
-                                    <td className="px-4 py-3 text-sm font-mono text-gray-500 uppercase font-bold">{product.sku}</td>
-                                    <td className="px-4 py-3 text-sm font-bold text-gray-900">${product.price.toFixed(2)}</td>
-                                    <td className="px-4 py-3 text-center">
-                                        <div className={`w-2 h-2 rounded-full mx-auto ${product.visibility ? (product.in_stock ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-yellow-500') : 'bg-gray-300'}`} />
-                                    </td>
+                                        </td>
+                                    )}
+                                    {visibleColumns.sku && (
+                                        <td className="px-4 py-3 text-sm font-mono text-gray-500 uppercase font-bold">{product.sku}</td>
+                                    )}
+                                    {visibleColumns.price && (
+                                        <td className="px-4 py-3 text-sm font-bold text-gray-900">${product.price.toFixed(2)}</td>
+                                    )}
+                                    {visibleColumns.status && (
+                                        <td className="px-4 py-3 text-center">
+                                            <div className={`w-2 h-2 rounded-full mx-auto ${product.visibility ? (product.in_stock ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-yellow-500') : 'bg-gray-300'}`} />
+                                        </td>
+                                    )}
                                 </tr>
                             ))}
                         </tbody>
