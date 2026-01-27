@@ -48,6 +48,7 @@ class Message(Base):
     
     role = Column(String(20), nullable=False)  # user, assistant, system
     content = Column(Text, nullable=False)
+    product_data = Column(JSON, nullable=True) # Store carousel items for context
     
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 

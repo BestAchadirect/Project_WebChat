@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { productsApi, Product } from '../../api/training';
 
+type BulkFieldState = Record<string, { enabled: boolean; value: string }>;
+
 export const ProductTuningPage: React.FC = () => {
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(true);
@@ -11,6 +13,10 @@ export const ProductTuningPage: React.FC = () => {
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+    const [bulkEditOpen, setBulkEditOpen] = useState(false);
+    const [bulkEditFields, setBulkEditFields] = useState<BulkFieldState>({});
+    const [bulkEditSaving, setBulkEditSaving] = useState(false);
+    const [bulkEditError, setBulkEditError] = useState<string | null>(null);
 
     // Filters
     const [filterVisibility, setFilterVisibility] = useState<'all' | 'visible' | 'hidden'>('all');
@@ -214,6 +220,88 @@ export const ProductTuningPage: React.FC = () => {
         { key: 'ring_size', label: 'Ring Size' },
     ];
 
+    const buildBulkFieldState = (): BulkFieldState => {
+        const initial: BulkFieldState = {};
+        technicalFields.forEach((field) => {
+            initial[field.key as string] = { enabled: false, value: '' };
+        });
+        return initial;
+    };
+
+    const openBulkEdit = () => {
+        setBulkEditFields(buildBulkFieldState());
+        setBulkEditError(null);
+        setBulkEditOpen(true);
+    };
+
+    const toggleBulkField = (key: string) => {
+        setBulkEditFields((prev) => ({
+            ...prev,
+            [key]: {
+                enabled: !prev[key]?.enabled,
+                value: prev[key]?.value ?? ''
+            }
+        }));
+    };
+
+    const updateBulkFieldValue = (key: string, value: string) => {
+        setBulkEditFields((prev) => ({
+            ...prev,
+            [key]: {
+                enabled: prev[key]?.enabled ?? false,
+                value
+            }
+        }));
+    };
+
+    const handleBulkUpdate = async () => {
+        if (selectedIds.size === 0 || bulkEditSaving) return;
+
+        const updates: Record<string, string | number | null> = {};
+        technicalFields.forEach((field) => {
+            const state = bulkEditFields[field.key as string];
+            if (!state?.enabled) return;
+            if (field.type === 'number') {
+                if (state.value === '') {
+                    updates[field.key as string] = null;
+                } else {
+                    const parsed = Number(state.value);
+                    if (!Number.isNaN(parsed)) {
+                        updates[field.key as string] = parsed;
+                    }
+                }
+            } else {
+                updates[field.key as string] = state.value;
+            }
+        });
+
+        if (Object.keys(updates).length === 0) {
+            return;
+        }
+
+        setBulkEditSaving(true);
+        setBulkEditError(null);
+        try {
+            const ids = Array.from(selectedIds);
+            await productsApi.bulkUpdate(ids, updates as Partial<Product>);
+            setProducts((prods) =>
+                prods.map((p) => (selectedIds.has(p.id) ? { ...p, ...updates } : p))
+            );
+            if (selectedProduct && selectedIds.has(selectedProduct.id)) {
+                setSelectedProduct({ ...selectedProduct, ...updates });
+            }
+            setSelectedIds(new Set());
+            setBulkEditOpen(false);
+        } catch (error) {
+            console.error('Failed to bulk update products:', error);
+            setBulkEditError('Bulk update failed. Please try again.');
+        } finally {
+            setBulkEditSaving(false);
+        }
+    };
+
+    const bulkHasUpdates = Object.values(bulkEditFields).some((field) => field?.enabled);
+
     return (
         <div className="flex h-[calc(100vh-120px)] overflow-hidden gap-6">
             {/* Sidebar Filters */}
@@ -321,6 +409,12 @@ export const ProductTuningPage: React.FC = () => {
                     </div>
                     {selectedIds.size > 0 && (
                         <div className="flex gap-2 animate-in fade-in slide-in-from-top-2">
+                            <button
+                                onClick={openBulkEdit}
+                                className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 shadow-sm transition-all active:scale-95"
+                            >
+                                Edit Attributes ({selectedIds.size})
+                            </button>
                             <button
                                 onClick={handleBulkShow}
                                 className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 shadow-sm transition-all active:scale-95"
@@ -574,6 +668,80 @@ export const ProductTuningPage: React.FC = () => {
                                     className="w-full text-sm text-gray-700 leading-relaxed bg-gray-50 rounded-xl p-4 border border-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
                                 />
                             </section>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {bulkEditOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                    <div className="w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden">
+                        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                            <div>
+                                <h3 className="text-lg font-semibold text-gray-900">Bulk Edit Attributes</h3>
+                                <p className="text-xs text-gray-500">Update {selectedIds.size} selected SKUs</p>
+                            </div>
+                            <button
+                                onClick={() => {
+                                    setBulkEditOpen(false);
+                                    setBulkEditError(null);
+                                }}
+                                className="text-gray-400 hover:text-gray-600 transition-colors"
+                            >
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+                        <div className="p-6 max-h-[60vh] overflow-y-auto space-y-4">
+                            {technicalFields.map((field) => {
+                                const state = bulkEditFields[field.key as string] || { enabled: false, value: '' };
+                                return (
+                                    <div key={field.key} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+                                        <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                                            <input
+                                                type="checkbox"
+                                                checked={state.enabled}
+                                                onChange={() => toggleBulkField(field.key as string)}
+                                                className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                            />
+                                            {field.label}
+                                        </label>
+                                        <input
+                                            type={field.type === 'number' ? 'number' : 'text'}
+                                            value={state.value}
+                                            onChange={(e) => updateBulkFieldValue(field.key as string, e.target.value)}
+                                            disabled={!state.enabled}
+                                            className={`sm:col-span-2 w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-primary-500 ${state.enabled ? 'border-gray-200 bg-white' : 'border-gray-100 bg-gray-50 text-gray-400'}`}
+                                            placeholder={state.enabled ? 'Enter value...' : 'Enable to edit'}
+                                        />
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex items-center justify-between">
+                            <div className="text-xs text-gray-500">
+                                <p>Only checked fields will be overwritten.</p>
+                                {bulkEditError && <p className="text-red-600 mt-1">{bulkEditError}</p>}
+                            </div>
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => {
+                                        setBulkEditOpen(false);
+                                        setBulkEditError(null);
+                                    }}
+                                    className="px-4 py-2 text-sm rounded-lg border border-gray-200 text-gray-600 hover:bg-white"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleBulkUpdate}
+                                    disabled={!bulkHasUpdates || bulkEditSaving}
+                                    className="px-4 py-2 text-sm rounded-lg bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+                                >
+                                    {bulkEditSaving ? 'Updating...' : `Update ${selectedIds.size} SKUs`}
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>

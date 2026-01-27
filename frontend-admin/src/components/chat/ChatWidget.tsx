@@ -125,6 +125,13 @@ const customStyles = `
 .scrollbar-custom::-webkit-scrollbar-thumb:hover {
     background: #CBD5E0;
 }
+.scrollbar-hide::-webkit-scrollbar {
+    display: none;
+}
+.scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
 .typing-dot {
     animation: typing 1.4s infinite;
 }
@@ -367,17 +374,19 @@ const ProductCarousel: React.FC<{
                         </div>
 
                         {/* 4. Buttons for View the link */}
-                        <div className="p-2 bg-white">
-                            <a
-                                href={p.product_url || '#'}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="block w-full text-center py-2 rounded-lg text-sm font-bold text-white transition-all transform active:scale-95 shadow-sm hover:brightness-110"
-                                style={{ backgroundColor: primaryColor }}
-                            >
-                                {viewButtonText || "View Product Details"}
-                            </a>
-                        </div>
+                        {p.product_url && (
+                            <div className="p-2 bg-white">
+                                <a
+                                    href={p.product_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="block w-full text-center py-2 rounded-lg text-sm font-bold text-white transition-all transform active:scale-95 shadow-sm hover:brightness-110"
+                                    style={{ backgroundColor: primaryColor }}
+                                >
+                                    {viewButtonText || "View Product Details"}
+                                </a>
+                            </div>
+                        )}
                     </div>
                 ))}
             </div>
@@ -444,6 +453,18 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         scrollToBottom();
     }, [messages, isOpen, isLoading]);
 
+    // Body scroll lock on mobile when open
+    useEffect(() => {
+        if (isOpen && window.innerWidth < 768) {
+            document.body.style.overflow = 'hidden';
+        } else {
+            document.body.style.overflow = '';
+        }
+        return () => {
+            document.body.style.overflow = '';
+        };
+    }, [isOpen]);
+
     // Adjust textarea height
     useEffect(() => {
         if (textareaRef.current) {
@@ -487,7 +508,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                 email: config.email
             };
 
-            const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/chat` : '/chat';
+            const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/chat/` : '/chat/';
             const { data } = await apiClient.post<ChatResponse>(endpoint, payload);
 
             setConversationId(data.conversation_id);
@@ -534,7 +555,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     // Determine container classes
     const containerClasses = isInline
         ? `absolute bottom-6 right-6 z-10 w-[380px] h-[600px] transition-all duration-300 ease-in-out transform ${isOpen ? 'translate-y-0 opacity-100 pointer-events-auto' : 'translate-y-5 opacity-0 pointer-events-none'}`
-        : `fixed bottom-[100px] right-[30px] z-[1000] w-[380px] h-[600px] transition-all duration-300 ease-in-out transform ${isOpen ? 'translate-y-0 opacity-100 pointer-events-auto' : 'translate-y-5 opacity-0 pointer-events-none'}`;
+        : `fixed inset-0 z-[1000] md:inset-auto md:bottom-[100px] md:right-[30px] md:w-[380px] md:h-[600px] transition-all duration-300 ease-in-out transform ${isOpen ? 'translate-y-0 opacity-100 pointer-events-auto' : 'translate-y-full md:translate-y-5 opacity-0 pointer-events-none'}`;
 
     return (
         <div style={{ fontFamily: "'Poppins', sans-serif" }}>
@@ -575,16 +596,18 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             {/* Chat Container */}
             {/* Chat Container */}
             <div className={`${containerClasses} bg-[#FCFCFE] rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-gray-100`}>
-                {/* Header (Premium Greeting Version) */}
-                <div className={`pt-4 pb-7 px-6 text-white transition-all duration-300 shadow-lg relative overflow-hidden`} style={{ backgroundColor: config.primaryColor }}>
-                    {/* Decorative bubble/glow */}
-                    <div className="absolute top-[-20px] right-[-20px] w-32 h-32 bg-white/10 rounded-full blur-2xl"></div>
-
-                    <div className="flex items-center justify-between mb-4 relative z-10">
+                {/* Header */}
+                <div
+                    className="relative px-4 py-3 sm:px-5 sm:py-4 text-white overflow-hidden shadow-sm"
+                    style={{ backgroundColor: config.primaryColor }}
+                >
+                    <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-white/15 blur-2xl"></div>
+                    <div className="absolute -left-8 -bottom-8 h-24 w-24 rounded-full bg-white/10 blur-2xl"></div>
+                    <div className="flex items-center justify-between relative z-10">
                         {activeTab === 'chat' ? (
                             <button
                                 onClick={() => setActiveTab('home')}
-                                className="flex items-center gap-2 text-white/80 hover:text-white transition-colors bg-white/10 px-3 py-1.5 rounded-lg text-sm font-semibold"
+                                className="flex items-center gap-2 text-white/90 hover:text-white transition-colors bg-white/15 px-3 py-1.5 rounded-lg text-sm font-semibold"
                             >
                                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
                                     <path d="M12.9995 17.7115L5.28809 10L12.9995 2.28857L14.1198 3.40878L7.52829 10L14.1198 16.5913L12.9995 17.7115Z" />
@@ -613,35 +636,34 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                             </div>
                         )}
                         <div className="flex items-center gap-2">
-                            <button className="text-white/70 hover:text-white transition-colors p-2 rounded-lg">
+                            <button className="text-white/80 hover:text-white transition-colors p-2 rounded-lg">
                                 <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                                     <path d="M11.5 4C11.5 4.82843 10.8284 5.5 10 5.5C9.17157 5.5 8.5 4.82843 8.5 4C8.5 3.17157 9.17157 2.5 10 2.5C10.8284 2.5 11.5 3.17157 11.5 4Z" />
                                     <path d="M11.5 10C11.5 10.8284 10.8284 11.5 10 11.5C9.17157 11.5 8.5 10.8284 8.5 10C8.5 9.17157 8.5 8.5 10 8.5C10.8284 8.5 11.5 9.17157 11.5 10Z" />
                                     <path d="M10 17.5C10.8284 17.5 11.5 16.8284 11.5 16C11.5 15.1716 10.8284 14.5 10 14.5C9.17157 14.5 8.5 15.1716 8.5 16C8.5 16.8284 9.17157 17.5 10 17.5Z" />
                                 </svg>
                             </button>
-                            <button onClick={() => setIsOpen(false)} className="text-white/70 hover:text-white transition-colors bg-white/10 hover:bg-white/20 p-2 rounded-lg">
+                            <button onClick={() => setIsOpen(false)} className="text-white/80 hover:text-white transition-colors bg-white/15 hover:bg-white/25 p-2 rounded-lg">
                                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.6} d="M19 9l-7 7-7-7" />
                                 </svg>
                             </button>
                         </div>
                     </div>
-
                 </div>
 
                 {/* Main View Container */}
-                <div className="relative flex-1 bg-white -mt-5 rounded-t-[2rem] overflow-hidden flex flex-col shadow-inner z-20">
+                <div className="relative flex-1 bg-white overflow-hidden flex flex-col shadow-inner z-20">
                     {/* Home Tab */}
                     {activeTab === 'home' && (
                         <div className="flex-1 overflow-y-auto scrollbar-custom p-6 animate-fade-in-up pb-10">
                             {/* Sliding Banner Carousel */}
                             <BannerCarousel primaryColor={config.primaryColor} onBannerClick={() => setActiveTab('chat')} />
 
-                            {/* Suggestions List */}
-                            <div className="space-y-3">
-                                <h5 className="text-[10px] uppercase font-black text-gray-300 tracking-[0.2em] px-1 mb-4">Quick Links</h5>
-                                <div className="space-y-2">
+                            {/* Suggestions Slider */}
+                            <div className="mt-4">
+                                <h5 className="text-[10px] uppercase font-black text-gray-300 tracking-[0.2em] px-1 mb-3">Quick Links</h5>
+                                <div className="space-y-2 px-1">
                                     {config.faqSuggestions.map((faq, idx) => (
                                         <button
                                             key={idx}
@@ -649,12 +671,9 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                                 setActiveTab('chat');
                                                 sendMessage(faq);
                                             }}
-                                            className="w-full text-left p-4 bg-gray-50/50 hover:bg-gray-100/80 rounded-xl flex items-center justify-between group transition-all border border-transparent hover:border-gray-200"
+                                            className="w-full text-left px-4 py-3 bg-gray-50/80 hover:bg-gray-100 rounded-xl border border-gray-100 transition-all active:scale-95 shadow-sm"
                                         >
-                                            <span className="text-sm font-bold text-gray-600 group-hover:text-gray-900 transition-colors">{faq}</span>
-                                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 20 20" className="text-gray-300 group-hover:text-gray-500 transition-all transform group-hover:translate-x-1">
-                                                <path d="M7.5 6.175L8.675 5L13.675 10L8.675 15L7.5 13.825L11.3167 10L7.5 6.175Z" fill="currentColor" />
-                                            </svg>
+                                            <span className="text-sm font-bold text-gray-700">{faq}</span>
                                         </button>
                                     ))}
                                 </div>
@@ -669,7 +688,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
                                 {messages.length === 0 && (
                                     <div className="flex justify-start mb-6 animate-fade-in-up">
-                                        <div className="bg-gray-50 border border-gray-100 p-4 rounded-2xl rounded-bl-sm shadow-sm max-w-[85%] text-sm font-medium text-gray-700 leading-relaxed">
+                                        <div className="bg-gray-50 border border-gray-100 p-4 rounded-none shadow-sm max-w-[85%] text-sm font-medium text-gray-700 leading-relaxed">
                                             <p>{config.welcomeMessage}</p>
                                         </div>
                                     </div>
@@ -678,11 +697,11 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                     <div key={idx} className={`flex flex-col mb-4 animate-fade-in-up ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                                         <div className="max-w-[85%]">
                                             <div
-                                                className={`px-4 py-3 rounded-2xl text-sm font-medium leading-relaxed ${msg.role === 'user'
-                                                    ? 'text-white rounded-br-none shadow-md'
+                                                className={`px-4 py-3 rounded-none text-sm font-medium leading-relaxed ${msg.role === 'user'
+                                                    ? 'text-white shadow-md'
                                                     : msg.role === 'system'
                                                         ? 'bg-red-50 text-red-600 border border-red-100'
-                                                        : 'bg-gray-50 border border-gray-100 text-gray-800 rounded-bl-none'
+                                                        : 'bg-gray-50 border border-gray-100 text-gray-800'
                                                     }`}
                                                 style={msg.role === 'user' ? { backgroundColor: config.primaryColor } : {}}
                                             >
@@ -710,22 +729,24 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                             </div>
                                         )}
 
-                                        {/* Follow-up Questions / Quick Reply Buttons */}
+                                        {/* Follow-up Questions / Quick Reply Slider */}
                                         {msg.role === 'assistant' && msg.followUpQuestions && msg.followUpQuestions.length > 0 && (
-                                            <div className="max-w-[90%] mt-3 flex flex-wrap gap-2">
-                                                {msg.followUpQuestions.map((question, qIdx) => (
-                                                    <button
-                                                        key={qIdx}
-                                                        onClick={() => sendMessage(question)}
-                                                        className="px-4 py-2 bg-white hover:bg-gray-50 text-gray-700 rounded-full text-xs font-bold transition-all border-2 shadow-sm hover:shadow-md active:scale-95 flex items-center gap-1.5"
-                                                        style={{ borderColor: config.primaryColor }}
-                                                    >
-                                                        <span>{question}</span>
-                                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                                            <path d="M7.5 6.175L8.675 5L13.675 10L8.675 15L7.5 13.825L11.3167 10L7.5 6.175Z" fill="currentColor" />
-                                                        </svg>
-                                                    </button>
-                                                ))}
+                                            <div className="w-full mt-3 overflow-hidden">
+                                                <div className="flex gap-2 overflow-x-auto pb-4 px-1 scrollbar-hide">
+                                                    {msg.followUpQuestions.map((question, qIdx) => (
+                                                        <button
+                                                            key={qIdx}
+                                                            onClick={() => sendMessage(question)}
+                                                            className="whitespace-nowrap flex-shrink-0 px-4 py-2 bg-white hover:bg-gray-50 text-gray-700 rounded-full text-xs font-bold transition-all border-2 shadow-sm hover:shadow-md active:scale-95 flex items-center gap-1.5"
+                                                            style={{ borderColor: config.primaryColor }}
+                                                        >
+                                                            <span>{question}</span>
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                                                <path d="M7.5 6.175L8.675 5L13.675 10L8.675 15L7.5 13.825L11.3167 10L7.5 6.175Z" fill="currentColor" />
+                                                            </svg>
+                                                        </button>
+                                                    ))}
+                                                </div>
                                             </div>
                                         )}
                                     </div>
@@ -734,7 +755,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
                                 {isLoading && (
                                     <div className="flex justify-start mb-4 animate-fade-in">
-                                        <div className="bg-gray-50 border border-gray-100 px-4 py-3 rounded-2xl rounded-bl-none flex space-x-1.5 items-center h-[40px] shadow-sm">
+                                        <div className="bg-gray-50 border border-gray-100 px-4 py-3 rounded-none flex space-x-1.5 items-center h-[40px] shadow-sm">
                                             <span className="w-1.5 h-1.5 bg-gray-300 rounded-full typing-dot"></span>
                                             <span className="w-1.5 h-1.5 bg-gray-300 rounded-full typing-dot"></span>
                                             <span className="w-1.5 h-1.5 bg-gray-300 rounded-full typing-dot"></span>

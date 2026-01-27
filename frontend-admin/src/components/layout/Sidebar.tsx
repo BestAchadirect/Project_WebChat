@@ -1,8 +1,18 @@
 import React, { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 
-export const Sidebar: React.FC = () => {
+interface SidebarProps {
+    onMobileClose?: () => void;
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({ onMobileClose }) => {
     const [documentsExpanded, setDocumentsExpanded] = useState(true);
+
+    const handleLinkClick = () => {
+        if (onMobileClose) {
+            onMobileClose();
+        }
+    };
 
     const navItems = [
         {
@@ -52,16 +62,26 @@ export const Sidebar: React.FC = () => {
     ];
 
     return (
-        <div className="bg-gradient-to-b from-gray-900 to-gray-800 text-white h-full flex flex-col">
+        <div className="bg-gradient-to-b from-gray-900 to-gray-800 text-white h-full flex flex-col overflow-hidden min-h-0">
             {/* Logo */}
-            <div className="p-6 border-b border-gray-700">
+            <div className="p-6 border-b border-gray-700 flex items-center justify-between">
                 <h1 className="text-2xl font-bold bg-gradient-to-r from-primary-400 to-secondary-400 bg-clip-text text-transparent">
                     GenAI Admin
                 </h1>
+                {onMobileClose && (
+                    <button
+                        onClick={onMobileClose}
+                        className="md:hidden p-2 text-gray-400 hover:text-white transition-colors"
+                    >
+                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                )}
             </div>
 
             {/* Navigation */}
-            <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
+            <nav className="flex-1 p-4 space-y-2 overflow-y-auto min-h-0">
                 {/* Documents Section (Collapsible) */}
                 <div>
                     <button
@@ -90,6 +110,7 @@ export const Sidebar: React.FC = () => {
                                 <NavLink
                                     key={item.path}
                                     to={item.path}
+                                    onClick={handleLinkClick}
                                     className={({ isActive }) =>
                                         `block px-4 py-2 text-sm rounded-lg transition-all duration-200 ${isActive
                                             ? 'bg-primary-600 text-white'
@@ -109,6 +130,7 @@ export const Sidebar: React.FC = () => {
                     <NavLink
                         key={item.path}
                         to={item.path}
+                        onClick={handleLinkClick}
                         className={({ isActive }) =>
                             `flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${isActive
                                 ? 'bg-gradient-to-r from-primary-600 to-primary-700 shadow-lg'
@@ -125,7 +147,7 @@ export const Sidebar: React.FC = () => {
             {/* Footer */}
             <div className="p-4 border-t border-gray-700">
                 <p className="text-xs text-gray-400 text-center">
-                    © 2025 GenAI SaaS
+                    © 2026 GenAI SaaS
                 </p>
             </div>
         </div>

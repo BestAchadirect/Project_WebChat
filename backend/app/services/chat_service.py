@@ -370,8 +370,19 @@ class ChatService:
         await self.db.refresh(conversation)
         return conversation
 
-    async def save_message(self, conversation_id: int, role: str, content: str) -> None:
-        msg = Message(conversation_id=conversation_id, role=role, content=content)
+    async def save_message(self, conversation_id: int, role: str, content: str, product_data: List[ProductCard] | None = None) -> None:
+        if product_data:
+            # Ensure UUIDs are converted to strings for JSON serialization
+            data_json = []
+            for p in product_data:
+                d = p.dict()
+                if 'id' in d and d['id']:
+                    d['id'] = str(d['id'])
+                data_json.append(d)
+        else:
+            data_json = None
+            
+        msg = Message(conversation_id=conversation_id, role=role, content=content, product_data=data_json)
         self.db.add(msg)
         await self.db.commit()
 
@@ -383,7 +394,12 @@ class ChatService:
         response: ChatResponse,
     ) -> ChatResponse:
         await self.save_message(conversation_id, MessageRole.USER, user_text)
-        await self.save_message(conversation_id, MessageRole.ASSISTANT, response.reply_text)
+        await self.save_message(
+            conversation_id, 
+            MessageRole.ASSISTANT, 
+            response.reply_text,
+            product_data=response.product_carousel
+        )
         
         # Log to QALog for Monitoring
         try:
@@ -404,7 +420,7 @@ class ChatService:
             
         return response
 
-    async def get_history(self, conversation_id: int, limit: int = 5) -> List[Dict[str, str]]:
+    async def get_history(self, conversation_id: int, limit: int = 5) -> List[Dict[str, Any]]:
         stmt = (
             select(Message)
             .where(Message.conversation_id == conversation_id)
@@ -413,7 +429,13 @@ class ChatService:
         )
         result = await self.db.execute(stmt)
         msgs = result.scalars().all()
-        return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
+        return [
+            {
+                "role": m.role, 
+                "content": m.content,
+                "product_data": m.product_data
+            } for m in reversed(msgs)
+        ]
 
     async def smart_product_search(
         self,
@@ -616,12 +638,25 @@ class ChatService:
             )
             return {"reply": msg, "carousel_hint": ""}
 
+        product_context = []
+        if history:
+            for msg in reversed(history):
+                if msg.get("role") == "assistant" and msg.get("product_data"):
+                    products = msg["product_data"]
+                    summary = ", ".join([f"{p.get('name')} (SKU: {p.get('sku')})" for p in products[:5]])
+                    product_context.append(f"Previously shown products: {summary}")
+
+        history_snippets = "\n".join(product_context)
+        
         context = "\n\n".join(
             [
                 f"ID: {s.source_id}\nTITLE: {s.title}\nTEXT: {s.content_snippet}"
                 for s in sources[: min(5, len(sources))]
             ]
         )
+        
+        if history_snippets:
+            context = f"History Context:\n{history_snippets}\n\nSearch Context:\n{context}"
         messages = [
             {
                 "role": "system",
@@ -631,7 +666,9 @@ class ChatService:
         
         # Insert last 5 messages for context
         if history:
-            messages.extend(history)
+            # Format history for LLM (only role and content)
+            history_clean = [{"role": m["role"], "content": m["content"]} for m in history]
+            messages.extend(history_clean)
             
         messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"})
         try:

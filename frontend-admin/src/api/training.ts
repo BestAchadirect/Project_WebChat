@@ -130,7 +130,7 @@ export const trainingApi = {
     async listQALogs(limit = 50, offset = 0, status?: string): Promise<QALog[]> {
         const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
         if (status) params.append('status', status);
-        const response = await apiClient.get(`/dashboard/qa/qa-logs/?${params.toString()}`);
+        const response = await apiClient.get(`/dashboard/qa/qa-logs?${params.toString()}`);
         return response.data;
     },
 };
@@ -147,13 +147,13 @@ export const chunksApi = {
         if (params?.offset) searchParams.append('offset', String(params.offset));
         if (params?.article_id) searchParams.append('article_id', params.article_id);
         if (params?.search) searchParams.append('search', params.search);
-        const response = await apiClient.get(`/dashboard/knowledge/chunks/?${searchParams.toString()}`);
+        const response = await apiClient.get(`/dashboard/knowledge/chunks?${searchParams.toString()}`);
         return response.data;
     },
 
     async listArticlesGrouped(search?: string): Promise<ArticleGroupedResponse> {
         const params = search ? `?search=${encodeURIComponent(search)}` : '';
-        const response = await apiClient.get(`/dashboard/knowledge/articles-grouped/${params}`);
+        const response = await apiClient.get(`/dashboard/knowledge/articles-grouped${params}`);
         return response.data;
     },
 
@@ -214,7 +214,7 @@ export const productsApi = {
                 }
             });
         }
-        const response = await apiClient.get(`/products?${searchParams.toString()}`);
+        const response = await apiClient.get(`/products/?${searchParams.toString()}`);
         return response.data;
     },
 
@@ -232,11 +232,19 @@ export const productsApi = {
         const response = await apiClient.post('/products/bulk/show', productIds);
         return response.data;
     },
+
+    async bulkUpdate(productIds: string[], updates: Partial<Product>): Promise<{ status: string; updated: number }> {
+        const response = await apiClient.post('/products/bulk/update', {
+            product_ids: productIds,
+            updates
+        });
+        return response.data;
+    },
 };
 
 export const documentsApi = {
     async listDocuments(skip = 0, limit = 50): Promise<{ items: Document[]; total: number }> {
-        const response = await apiClient.get(`/documents?skip=${skip}&limit=${limit}`);
+        const response = await apiClient.get(`/import/knowledge/uploads?offset=${skip}&limit=${limit}`);
         return response.data;
     },
 

@@ -62,6 +62,17 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 API documentation will be available at: http://localhost:8000/docs
 
+### Local HTTPS (optional)
+
+If you want HTTPS locally, generate a self-signed certificate and set:
+
+```
+SSL_CERTFILE=path/to/localhost-cert.pem
+SSL_KEYFILE=path/to/localhost-key.pem
+```
+
+Then start the server (e.g. `backend\start.ps1` or `uvicorn ...`). The browser will show a self‑signed cert warning.
+
 ## API Endpoints
 
 ### Authentication

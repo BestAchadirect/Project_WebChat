@@ -60,6 +60,27 @@ python -m uvicorn main:app --reload
 API: `http://localhost:8000`  
 Docs: `http://localhost:8000/docs`
 
+#### Local HTTPS (optional)
+
+If you want HTTPS locally, generate a self-signed certificate and set:
+
+```
+SSL_CERTFILE=path/to/localhost-cert.pem
+SSL_KEYFILE=path/to/localhost-key.pem
+```
+
+Example (OpenSSL):
+
+```bash
+mkdir certs
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout certs/localhost-key.pem \
+  -out certs/localhost-cert.pem \
+  -subj "/CN=localhost"
+```
+
+Then run `.\dev.ps1` or `backend\start.ps1`. Your browser will show a self‑signed cert warning.
+
 ### Frontend admin
 
 ```bash
@@ -118,3 +139,17 @@ Vite proxies `/api/*` to the local FastAPI backend (port `8000`).
 Notes:
 - `infra/ngrok/start-ngrok.ps1` generates `infra/ngrok/ngrok.local.yml` at runtime (gitignored) to avoid committing the authtoken.
 - If `ngrok` is not on your PATH, set `NGROK_EXE` in the repo root `.env` (example: `NGROK_EXE=C:\Tools\ngrok\ngrok.exe`).
+
+## Troubleshooting
+
+### `ERR_NETWORK` / Network Error (Axios)
+If you see "Network Error" in the frontend (especially via ngrok):
+1.  **Check Backend**: Ensure `backend` is running on port 8000.
+2.  **CORS**: Check `ALLOWED_ORIGINS` in `.env`. For ngrok dev, set `ALLOWED_ORIGINS=*`.
+3.  **Proxy SSL**: In `vite.config.ts`, ensure `secure: false` is set in the proxy config to allow self-signed/local certs.
+4.  **Redirects (307)**: Ensure your API calls end with a slash if the backend route requires it (or verify your API routes don't enforce trailing slashes).
+    - Example: Requesting `/api/v1/products` when `/api/v1/products/` is expected causes a redirect that breaks some proxies.
+
+### `dev.ps1` Issues
+- **PowerShell Execution Policy**: You may need to run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`.
+- **Node/IPv6**: The script forces `http://127.0.0.1:8000` for the backend URL to avoid Node.js localhost IPv6 resolution issues on Windows.

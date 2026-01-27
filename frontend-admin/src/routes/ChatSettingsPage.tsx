@@ -87,7 +87,7 @@ export const ChatSettingsPage: React.FC = () => {
 
     return (
         <div className="space-y-6">
-            <div>
+            <div className="sticky top-0 z-20 -mx-4 md:-mx-6 px-4 md:px-6 py-4 bg-gray-50/95 backdrop-blur border-b border-gray-200">
                 <h1 className="text-3xl font-bold text-gray-900 tracking-tight">Chat Setting</h1>
                 <p className="mt-2 text-gray-600">
                     Customize your AI assistant's appearance and behavior.

@@ -79,6 +79,10 @@ class ProductUpdate(BaseModel):
     outer_diameter: Optional[str] = None
     pearl_color: Optional[str] = None
 
+class ProductBulkUpdateRequest(BaseModel):
+    product_ids: List[UUID]
+    updates: ProductUpdate
+
 class ProductCarouselItem(BaseModel):
     """Product item for carousel display."""
     product_id: str

@@ -1,4 +1,5 @@
 from typing import List, Optional
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,9 +9,32 @@ from sqlalchemy import select, update, desc, or_, func
 from app.api.deps import get_db
 from app.models.product import Product, StockStatus
 from app.models.product_group import ProductGroup
-from app.schemas.product import Product as ProductSchema, ProductUpdate, ProductListResponse
+from app.schemas.product import Product as ProductSchema, ProductUpdate, ProductListResponse, ProductBulkUpdateRequest
 
 router = APIRouter()
+
+ALLOWED_BULK_UPDATE_FIELDS = {
+    "material",
+    "jewelry_type",
+    "color",
+    "gauge",
+    "threading",
+    "length",
+    "size",
+    "cz_color",
+    "opal_color",
+    "outer_diameter",
+    "design",
+    "crystal_color",
+    "pearl_color",
+    "rack",
+    "height",
+    "packing_option",
+    "pincher_size",
+    "ring_size",
+    "size_in_pack",
+    "quantity_in_bulk",
+}
 
 @router.get("/", response_model=ProductListResponse)
 async def list_products(
@@ -222,3 +246,27 @@ async def bulk_show_products(
     )
     await db.commit()
     return {"status": "success", "count": len(product_ids)}
+
+@router.post("/bulk/update")
+async def bulk_update_products(
+    payload: ProductBulkUpdateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    if not payload.product_ids:
+        raise HTTPException(status_code=400, detail="product_ids cannot be empty")
+
+    update_data = payload.updates.model_dump(exclude_unset=True)
+    update_data = {k: v for k, v in update_data.items() if k in ALLOWED_BULK_UPDATE_FIELDS}
+
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+
+    update_data["updated_at"] = datetime.utcnow()
+
+    result = await db.execute(
+        update(Product)
+        .where(Product.id.in_(payload.product_ids))
+        .values(**update_data)
+    )
+    await db.commit()
+    return {"status": "success", "updated": result.rowcount or 0}
