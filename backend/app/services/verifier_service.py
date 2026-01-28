@@ -24,9 +24,7 @@ class VerifierService:
     ) -> Dict[str, Any]:
         verifier_model = settings.RAG_VERIFY_MODEL or settings.OPENAI_MODEL
 
-        max_verify_chunks = max(
-            1, int(getattr(settings, "RAG_VERIFY_MAX_KNOWLEDGE_CHUNKS", settings.RAG_RERANK_TOPN))
-        )
+        max_verify_chunks = max(1, int(getattr(settings, "RAG_VERIFY_MAX_KNOWLEDGE_CHUNKS", 12)))
         provided_chunk_ids = {str(s.source_id) for s in knowledge_sources[:max_verify_chunks]}
 
         chunks_text = "\n\n".join(
@@ -210,6 +208,7 @@ class VerifierService:
                 model=verifier_model,
                 temperature=0.0,
                 max_tokens=600,
+                usage_kind="rag_verifier",
             )
             decision = _normalize_decision(decision_raw)
         except Exception as e:

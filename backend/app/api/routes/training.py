@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Any
 from uuid import UUID
 import hashlib
 
@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import get_db
 from app.models.qa_log import QALog
 from app.models.knowledge import KnowledgeChunk, KnowledgeArticle, KnowledgeEmbedding
+from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.training import (
     QALogResponse, ChunkResponse, ChunkUpdate, ChunkListResponse,
     ArticleGroupedResponse, ArticleChunkGroup,
@@ -17,6 +18,7 @@ from app.schemas.training import (
     SimilarityTestRequest, SimilarityTestResponse, SimilarityResult
 )
 from app.services.embedding import EmbeddingService
+from app.services.chat_service import ChatService
 from app.core.config import settings
 
 router = APIRouter()
@@ -37,6 +39,20 @@ async def list_qa_logs(
         
     result = await db.execute(query)
     return result.scalars().all()
+
+
+@qa_router.post("/test-chat", response_model=ChatResponse)
+async def qa_test_chat(
+    request: ChatRequest,
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    service = ChatService(db)
+    try:
+        return await service.process_chat(request, channel="qa_console")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Helper function to build chunk response with metadata ---

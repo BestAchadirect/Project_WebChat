@@ -22,7 +22,7 @@ async def chat(
     """
     service = ChatService(db)
     try:
-        response = await service.process_chat(request)
+        response = await service.process_chat(request, channel="widget")
         return response
     except Exception as e:
         import traceback

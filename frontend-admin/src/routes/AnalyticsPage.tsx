@@ -1,37 +1,123 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { analyticsApi } from '../api/analytics';
-import { ChatStats } from '../types/analytics';
+import { ChatStats, ChatLog } from '../types/analytics';
 import { ChatStatsCards } from '../components/analytics/ChatStatsCards';
 import { Spinner } from '../components/common/Spinner';
 
+type Period = 'today' | 'week' | 'month' | 'all';
+
+type ActivityBucket = {
+    label: string;
+    count: number;
+};
+
+const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+const formatDayLabel = (date: Date) =>
+    date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+const formatHourLabel = (hour: number) =>
+    new Date(2000, 0, 1, hour).toLocaleTimeString(undefined, { hour: 'numeric' });
+
+const buildActivityBuckets = (logs: ChatLog[], period: Period): ActivityBucket[] => {
+    const now = new Date();
+    if (period === 'today') {
+        const start = startOfDay(now);
+        const buckets = Array.from({ length: 24 }, (_, hour) => ({
+            label: formatHourLabel(hour),
+            count: 0,
+        }));
+        logs.forEach((log) => {
+            const ts = new Date(log.startedAt);
+            if (ts < start || ts > now) return;
+            const hour = ts.getHours();
+            buckets[hour].count += 1;
+        });
+        return buckets;
+    }
+
+    const days = period === 'week' ? 7 : 30;
+    const start = startOfDay(now);
+    start.setDate(start.getDate() - (days - 1));
+    const buckets = Array.from({ length: days }, (_, index) => {
+        const day = new Date(start);
+        day.setDate(start.getDate() + index);
+        return {
+            label: formatDayLabel(day),
+            count: 0,
+        };
+    });
+
+    logs.forEach((log) => {
+        const ts = new Date(log.startedAt);
+        if (ts < start || ts > now) return;
+        const bucketIndex = Math.floor(
+            (startOfDay(ts).getTime() - start.getTime()) / (24 * 60 * 60 * 1000)
+        );
+        if (bucketIndex >= 0 && bucketIndex < buckets.length) {
+            buckets[bucketIndex].count += 1;
+        }
+    });
+
+    return buckets;
+};
+
 export const AnalyticsPage: React.FC = () => {
     const [stats, setStats] = useState<ChatStats | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
-    const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'all'>('week');
+    const [logs, setLogs] = useState<ChatLog[]>([]);
+    const [isStatsLoading, setIsStatsLoading] = useState(true);
+    const [isLogsLoading, setIsLogsLoading] = useState(true);
+    const [period, setPeriod] = useState<Period>('week');
+
+    const dateRange = useMemo(() => {
+        if (period === 'all') return { start: undefined, end: undefined };
+        const now = new Date();
+        if (period === 'today') {
+            return { start: startOfDay(now), end: now };
+        }
+        const start = new Date(now);
+        const daysBack = period === 'week' ? 6 : 29;
+        start.setDate(start.getDate() - daysBack);
+        return { start: startOfDay(start), end: now };
+    }, [period]);
 
     const fetchStats = async () => {
-        setIsLoading(true);
+        setIsStatsLoading(true);
         try {
             const data = await analyticsApi.getChatStats(period);
             setStats(data);
         } catch (error) {
             console.error('Failed to fetch stats:', error);
         } finally {
-            setIsLoading(false);
+            setIsStatsLoading(false);
+        }
+    };
+
+    const fetchLogs = async () => {
+        setIsLogsLoading(true);
+        try {
+            const data = await analyticsApi.getChatLogs({
+                startDate: dateRange.start ? dateRange.start.toISOString() : undefined,
+                endDate: dateRange.end ? dateRange.end.toISOString() : undefined,
+                limit: 120,
+                offset: 0,
+            });
+            setLogs(data || []);
+        } catch (error) {
+            console.error('Failed to fetch chat logs:', error);
+        } finally {
+            setIsLogsLoading(false);
         }
     };
 
     useEffect(() => {
         fetchStats();
+        fetchLogs();
     }, [period]);
 
-    if (isLoading) {
-        return (
-            <div className="flex items-center justify-center h-64">
-                <Spinner size="lg" />
-            </div>
-        );
-    }
+    const activityBuckets = useMemo(() => buildActivityBuckets(logs, period), [logs, period]);
+    const maxActivity = Math.max(...activityBuckets.map((bucket) => bucket.count), 0);
+    const recentLogs = logs.slice(0, 12);
 
     return (
         <div className="space-y-6">
@@ -60,22 +146,112 @@ export const AnalyticsPage: React.FC = () => {
                 </div>
             </div>
 
-            {stats && <ChatStatsCards stats={stats} />}
-
-            {/* Placeholder for charts */}
-            <div className="bg-white rounded-xl shadow-sm p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Chat Activity</h3>
-                <div className="h-64 flex items-center justify-center border-2 border-dashed border-gray-300 rounded-lg">
-                    <p className="text-gray-500">Chart visualization coming soon</p>
+            {isStatsLoading ? (
+                <div className="flex items-center justify-center h-40">
+                    <Spinner size="lg" />
                 </div>
+            ) : (
+                stats && <ChatStatsCards stats={stats} />
+            )}
+
+            {/* Chat Activity */}
+            <div className="bg-white rounded-xl shadow-sm p-6">
+                <div className="flex items-center justify-between mb-4">
+                    <div>
+                        <h3 className="text-lg font-semibold text-gray-900">Chat Activity</h3>
+                        <p className="text-xs text-gray-500 mt-1">
+                            Conversations started per {period === 'today' ? 'hour' : 'day'}
+                        </p>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                        {logs.length.toLocaleString()} conversations loaded
+                    </div>
+                </div>
+
+                {isLogsLoading ? (
+                    <div className="h-64 flex items-center justify-center">
+                        <Spinner size="lg" />
+                    </div>
+                ) : (
+                    <div className="h-64 flex items-end gap-2">
+                        {activityBuckets.map((bucket, index) => {
+                            const heightPercent = maxActivity ? (bucket.count / maxActivity) * 100 : 0;
+                            return (
+                                <div
+                                    key={`${bucket.label}-${index}`}
+                                    className="flex flex-1 flex-col items-center justify-end gap-2"
+                                >
+                                    <div className="w-full flex items-end justify-center h-52">
+                                        <div
+                                            className="w-full rounded-t-lg bg-primary-500/80 transition-all"
+                                            style={{ height: `${heightPercent}%` }}
+                                            title={`${bucket.count} conversations`}
+                                        />
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 whitespace-nowrap">
+                                        {bucket.label}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
             </div>
 
             {/* Recent Chat Logs */}
             <div className="bg-white rounded-xl shadow-sm p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Recent Conversations</h3>
-                <div className="h-64 flex items-center justify-center border-2 border-dashed border-gray-300 rounded-lg">
-                    <p className="text-gray-500">Chat logs table coming soon</p>
+                <div className="flex items-center justify-between mb-4">
+                    <div>
+                        <h3 className="text-lg font-semibold text-gray-900">Recent Conversations</h3>
+                        <p className="text-xs text-gray-500 mt-1">Latest sessions with message previews</p>
+                    </div>
                 </div>
+
+                {isLogsLoading ? (
+                    <div className="h-40 flex items-center justify-center">
+                        <Spinner size="lg" />
+                    </div>
+                ) : (
+                    <div className="divide-y divide-gray-200">
+                        {recentLogs.map((log) => {
+                            const lastMessage = log.messages[log.messages.length - 1];
+                            return (
+                                <div key={log.id} className="py-4 flex items-start justify-between gap-4">
+                                    <div className="flex-1">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-sm font-semibold text-gray-900">
+                                                Session {log.sessionId}
+                                            </span>
+                                            {log.userId && (
+                                                <span className="text-xs text-gray-500">User {log.userId}</span>
+                                            )}
+                                        </div>
+                                        <div className="text-xs text-gray-500 mt-1">
+                                            {new Date(log.startedAt).toLocaleString()}
+                                        </div>
+                                        {lastMessage && (
+                                            <div className="mt-2 text-sm text-gray-700 line-clamp-2">
+                                                <span className="font-medium capitalize">{lastMessage.role}:</span>{' '}
+                                                {lastMessage.content}
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="text-right">
+                                        <div className="text-lg font-semibold text-gray-900">
+                                            {log.messageCount}
+                                        </div>
+                                        <div className="text-xs text-gray-500">messages</div>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                        {recentLogs.length === 0 && (
+                            <div className="py-10 text-center text-gray-500">
+                                No conversations found for this period.
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );

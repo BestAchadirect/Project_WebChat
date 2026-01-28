@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -323,6 +324,14 @@ class ChatService:
             }
         )
 
+    @staticmethod
+    def _ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+        if not dt:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
     async def get_or_create_user(
         self,
         user_id: str,
@@ -362,7 +371,23 @@ class ChatService:
             result = await self.db.execute(stmt)
             existing = result.scalar_one_or_none()
             if existing:
-                return existing
+                now = datetime.now(timezone.utc)
+                started_at = self._ensure_utc(existing.started_at)
+                last_message_at = self._ensure_utc(existing.last_message_at) or started_at
+
+                idle_minutes = int(getattr(settings, "CONVERSATION_IDLE_TIMEOUT_MINUTES", 30) or 0)
+                hard_cap_hours = int(getattr(settings, "CONVERSATION_HARD_CAP_HOURS", 24) or 0)
+
+                idle_expired = False
+                hard_cap_expired = False
+
+                if idle_minutes > 0 and last_message_at:
+                    idle_expired = last_message_at < (now - timedelta(minutes=idle_minutes))
+                if hard_cap_hours > 0 and started_at:
+                    hard_cap_expired = started_at < (now - timedelta(hours=hard_cap_hours))
+
+                if not (idle_expired or hard_cap_expired):
+                    return existing
 
         conversation = Conversation(user_id=user.id)
         self.db.add(conversation)
@@ -370,7 +395,14 @@ class ChatService:
         await self.db.refresh(conversation)
         return conversation
 
-    async def save_message(self, conversation_id: int, role: str, content: str, product_data: List[ProductCard] | None = None) -> None:
+    async def save_message(
+        self,
+        conversation_id: int,
+        role: str,
+        content: str,
+        product_data: List[ProductCard] | None = None,
+        token_usage: Dict[str, Any] | None = None,
+    ) -> None:
         if product_data:
             # Ensure UUIDs are converted to strings for JSON serialization
             data_json = []
@@ -382,8 +414,19 @@ class ChatService:
         else:
             data_json = None
             
-        msg = Message(conversation_id=conversation_id, role=role, content=content, product_data=data_json)
+        msg = Message(
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            product_data=data_json,
+            token_usage=token_usage,
+        )
         self.db.add(msg)
+        await self.db.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(last_message_at=func.now())
+        )
         await self.db.commit()
 
     async def _finalize_response(
@@ -392,13 +435,16 @@ class ChatService:
         conversation_id: int,
         user_text: str,
         response: ChatResponse,
+        token_usage: Optional[Dict[str, Any]] = None,
+        channel: Optional[str] = None,
     ) -> ChatResponse:
         await self.save_message(conversation_id, MessageRole.USER, user_text)
         await self.save_message(
             conversation_id, 
             MessageRole.ASSISTANT, 
             response.reply_text,
-            product_data=response.product_carousel
+            product_data=response.product_carousel,
+            token_usage=token_usage,
         )
         
         # Log to QALog for Monitoring
@@ -410,8 +456,13 @@ class ChatService:
             qa_log = QALog(
                 question=user_text,
                 answer=response.reply_text,
-                sources=[{"title": s.title, "relevance": s.relevance} for s in response.sources],
-                status=qa_status
+                sources=[
+                    {"source_id": s.source_id, "title": s.title, "relevance": s.relevance}
+                    for s in response.sources
+                ],
+                status=qa_status,
+                token_usage=token_usage,
+                channel=channel,
             )
             self.db.add(qa_log)
             await self.db.commit()
@@ -677,6 +728,7 @@ class ChatService:
                 messages,
                 model=answer_model,
                 temperature=0.2,
+                usage_kind="rag_answer",
             )
             return {
                 "reply": str(data.get("reply", "")),
@@ -693,15 +745,18 @@ class ChatService:
             return {"reply": msg, "carousel_hint": "", "recommended_questions": []}
 
 
-    async def process_chat(self, req: ChatRequest) -> ChatResponse:
+    async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) -> ChatResponse:
         user = await self.get_or_create_user(req.user_id, req.customer_name, req.email)
         conversation = await self.get_or_create_conversation(user, req.conversation_id)
         
         run_id = f"chat-{int(time.time() * 1000)}"
+        channel = channel or "widget"
         debug_meta: Dict[str, Any] = {
             "run_id": run_id,
-            "route": "rag_strict"
+            "route": "rag_strict",
+            "channel": channel,
         }
+        llm_service.begin_token_tracking()
 
         # 1. Unified NLU Analysis
         text = req.message or ""
@@ -856,10 +911,13 @@ class ChatService:
             apply_polish=False,
         )
 
+        token_usage = llm_service.consume_token_usage()
         return await self._finalize_response(
             conversation_id=conversation.id,
             user_text=text,
             response=response,
+            token_usage=token_usage,
+            channel=channel,
         )
 
 

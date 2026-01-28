@@ -27,7 +27,6 @@ class KnowledgeSource(BaseModel):
     relevance: float
     url: Optional[str] = None
     distance: Optional[float] = None
-    rerank_score: Optional[float] = Field(default=None, exclude=True)
     query_hint: Optional[str] = Field(default=None, exclude=True)
 
 

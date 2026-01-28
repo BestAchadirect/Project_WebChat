@@ -117,6 +117,25 @@ Admin: `http://localhost:5173`
 - `backend/backend.log` (app logger)
 - `backend/logs/debug.log` (NDJSON debug events used by RAG/product routing)
 
+## Database migrations (Alembic)
+
+Rules of thumb:
+- **Do not delete or rename** files in `backend/alembic/versions` once created.
+- If you need to undo a schema change, **create a new migration** that reverses it.
+- Always commit migration files to GitHub **with** the code changes that depend on them.
+- Never commit secrets like `.env` (keep them local).
+
+Recommended workflow:
+1) Make model changes
+2) `alembic revision --autogenerate -m "..."` (from `backend/`)
+3) Review the migration file for correctness
+4) Commit code + migration together
+5) Deploy and run `alembic upgrade head`
+
+Safety checks (CI or pre-commit):
+- `alembic heads`
+- `alembic history --verbose`
+
 ## ngrok (tunnel backend + frontend)
 
 This repo uses a single public ngrok URL pointing at the Vite dev server (port `5173`).

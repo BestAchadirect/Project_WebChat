@@ -8,7 +8,27 @@ export interface QALog {
     sources: any[];
     status: 'success' | 'no_answer' | 'fallback' | 'failed';
     error_message?: string;
+    token_usage?: TokenUsageSummary | null;
+    channel?: string | null;
     created_at: string;
+}
+
+export interface TokenUsageCall {
+    kind: string;
+    model: string;
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    cached?: boolean;
+    cached_prompt_tokens?: number;
+}
+
+export interface TokenUsageSummary {
+    total_prompt_tokens: number;
+    total_completion_tokens: number;
+    total_tokens: number;
+    cached_prompt_tokens?: number;
+    by_call: TokenUsageCall[];
 }
 
 export interface Product {

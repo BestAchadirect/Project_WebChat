@@ -51,6 +51,14 @@ interface ProductCard {
     attributes?: Record<string, any>;
 }
 
+interface BannerItem {
+    id: number;
+    image_url: string;
+    link_url?: string | null;
+    alt_text?: string | null;
+    sort_order?: number;
+}
+
 interface ChatWidgetProps {
     isInline?: boolean;
     title?: string;
@@ -145,42 +153,18 @@ const customStyles = `
 
 // Banner Carousel Component
 const BannerCarousel: React.FC<{
+    banners: BannerItem[];
     primaryColor: string;
     onBannerClick: () => void;
-}> = ({ primaryColor, onBannerClick }) => {
+}> = ({ banners, primaryColor, onBannerClick }) => {
     const [currentSlide, setCurrentSlide] = useState(0);
     const [touchStart, setTouchStart] = useState(0);
     const [touchEnd, setTouchEnd] = useState(0);
+    const hasMultiple = banners.length > 1;
 
-    const banners = [
-        {
-            title: "Chat with Assistant",
-            description: "Have questions? Lyro is here to assist you with products and orders.",
-            icon: (
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M5.78393 10.7733L3.47785 6.16113C2.36853 3.9425 1.81387 2.83318 2.32353 2.32353C2.83318 1.81387 3.9425 2.36853 6.16113 3.47785L19.5769 10.1857C21.138 10.9663 21.9185 11.3566 21.9185 11.9746C21.9185 12.5926 21.138 12.9829 19.5769 13.7634L6.16113 20.4713C3.9425 21.5806 2.83318 22.1353 2.32353 21.6256C1.81387 21.116 2.36853 20.0067 3.47785 17.788L5.78522 13.1733H12.6367C13.2995 13.1733 13.8367 12.636 13.8367 11.9733C13.8367 11.3105 13.2995 10.7733 12.6367 10.7733H5.78393Z" fill="currentColor" />
-                </svg>
-            )
-        },
-        {
-            title: "New Arrivals Weekly",
-            description: "Check out our latest products and trending jewelry pieces.",
-            icon: (
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" fill="currentColor" />
-                </svg>
-            )
-        },
-        {
-            title: "Fast Shipping",
-            description: "Free shipping on orders over $50. Get your jewelry delivered quickly.",
-            icon: (
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M13 16V6H3V16H1V18H2C2 19.11 2.89 20 4 20C5.105 20 6 19.11 6 18H14C14 19.11 14.895 20 16 20C17.105 20 18 19.11 18 18H19V13H16L13 16ZM4 18.5C3.725 18.5 3.5 18.275 3.5 18C3.5 17.725 3.725 17.5 4 17.5C4.275 17.5 4.5 17.725 4.5 18C4.5 18.275 4.275 18.5 4 18.5ZM16 18.5C15.725 18.5 15.5 18.275 15.5 18C15.5 17.725 15.725 17.5 16 17.5C16.275 17.5 16.5 17.725 16.5 18C16.5 18.275 16.275 18.5 16 18.5ZM13 11L17.55 11.88L14.85 14.47L13 12.88V11Z" fill="currentColor" />
-                </svg>
-            )
-        }
-    ];
+    useEffect(() => {
+        setCurrentSlide(0);
+    }, [banners.length]);
 
     const handleTouchStart = (e: React.TouchEvent) => {
         setTouchStart(e.targetTouches[0].clientX);
@@ -208,13 +192,25 @@ const BannerCarousel: React.FC<{
         setTouchEnd(0);
     };
 
-    // Auto-rotate banners every 5 seconds
     useEffect(() => {
+        if (!hasMultiple) return;
         const timer = setInterval(() => {
             setCurrentSlide((prev) => (prev + 1) % banners.length);
         }, 5000);
         return () => clearInterval(timer);
-    }, [banners.length]);
+    }, [hasMultiple, banners.length]);
+
+    if (banners.length === 0) {
+        return null;
+    }
+
+    const handleBannerSelect = (banner: BannerItem) => {
+        if (banner.link_url) {
+            window.open(banner.link_url, '_blank', 'noopener,noreferrer');
+            return;
+        }
+        onBannerClick();
+    };
 
     return (
         <div className="mb-8">
@@ -228,46 +224,39 @@ const BannerCarousel: React.FC<{
                     className="flex transition-transform duration-500 ease-out"
                     style={{ transform: `translateX(-${currentSlide * 100}%)` }}
                 >
-                    {banners.map((banner, index) => (
-                        <div
-                            key={index}
-                            className="w-full flex-shrink-0 bg-white p-6 cursor-pointer group hover:shadow-[0_8px_30px_rgb(0,0,0,0.12)] transition-all active:scale-[0.98]"
-                            onClick={onBannerClick}
-                        >
-                            <div className="flex items-center justify-between">
-                                <div className="flex-1">
-                                    <h4 className="font-black text-gray-900 text-lg mb-1 leading-tight">{banner.title}</h4>
-                                    <p className="text-sm text-gray-400 font-medium leading-snug pr-4">{banner.description}</p>
-                                </div>
-                                <div
-                                    className="w-12 h-12 rounded-full flex items-center justify-center group-hover:rotate-12 transition-transform shadow-sm"
-                                    style={{ backgroundColor: `${primaryColor}15`, color: primaryColor }}
-                                >
-                                    {banner.icon}
-                                </div>
-                            </div>
+                    {banners.map((banner) => (
+                        <div key={banner.id} className="w-full flex-shrink-0 bg-white">
+                            <button
+                                type="button"
+                                onClick={() => handleBannerSelect(banner)}
+                                className="w-full text-left transition-all active:scale-[0.99]"
+                            >
+                                <img
+                                    src={banner.image_url}
+                                    alt={banner.alt_text || 'Promotional banner'}
+                                    className="w-full h-28 sm:h-32 object-cover"
+                                />
+                            </button>
                         </div>
                     ))}
                 </div>
             </div>
 
-            {/* Indicator Dots */}
-            <div className="flex justify-center gap-2 mt-3">
-                {banners.map((_, index) => (
-                    <button
-                        key={index}
-                        onClick={() => setCurrentSlide(index)}
-                        className={`h-1.5 rounded-full transition-all ${index === currentSlide
-                            ? 'w-6'
-                            : 'w-1.5 opacity-30'
-                            }`}
-                        style={{
-                            backgroundColor: index === currentSlide ? primaryColor : '#9CA3AF'
-                        }}
-                        aria-label={`Go to slide ${index + 1}`}
-                    />
-                ))}
-            </div>
+            {hasMultiple && (
+                <div className="flex justify-center gap-2 mt-3">
+                    {banners.map((banner, index) => (
+                        <button
+                            key={banner.id}
+                            onClick={() => setCurrentSlide(index)}
+                            className={`h-1.5 rounded-full transition-all ${index === currentSlide ? 'w-6' : 'w-1.5 opacity-30'}`}
+                            style={{
+                                backgroundColor: index === currentSlide ? primaryColor : '#9CA3AF'
+                            }}
+                            aria-label={`Go to slide ${index + 1}`}
+                        />
+                    ))}
+                </div>
+            )}
         </div>
     );
 };
@@ -441,6 +430,8 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         const parsed = raw ? Number(raw) : NaN;
         return Number.isFinite(parsed) ? parsed : null;
     });
+    const [banners, setBanners] = useState<BannerItem[]>([]);
+    const [isBannerLoading, setIsBannerLoading] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -452,6 +443,27 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     useEffect(() => {
         scrollToBottom();
     }, [messages, isOpen, isLoading]);
+
+    useEffect(() => {
+        const fetchBanners = async () => {
+            try {
+                setIsBannerLoading(true);
+                const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/banners` : '/banners';
+                const { data } = await apiClient.get<BannerItem[]>(endpoint);
+                const sorted = Array.isArray(data)
+                    ? [...data].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+                    : [];
+                setBanners(sorted);
+            } catch (error) {
+                console.error('Failed to load banners:', error);
+                setBanners([]);
+            } finally {
+                setIsBannerLoading(false);
+            }
+        };
+
+        fetchBanners();
+    }, [config.apiBaseUrl]);
 
     // Body scroll lock on mobile when open
     useEffect(() => {
@@ -658,7 +670,15 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                     {activeTab === 'home' && (
                         <div className="flex-1 overflow-y-auto scrollbar-custom p-6 animate-fade-in-up pb-10">
                             {/* Sliding Banner Carousel */}
-                            <BannerCarousel primaryColor={config.primaryColor} onBannerClick={() => setActiveTab('chat')} />
+                            {isBannerLoading ? (
+                                <div className="mb-8 h-28 sm:h-32 rounded-2xl bg-gray-100 animate-pulse"></div>
+                            ) : (
+                                <BannerCarousel
+                                    banners={banners}
+                                    primaryColor={config.primaryColor}
+                                    onBannerClick={() => setActiveTab('chat')}
+                                />
+                            )}
 
                             {/* Suggestions Slider */}
                             <div className="mt-4">

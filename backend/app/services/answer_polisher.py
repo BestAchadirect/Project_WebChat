@@ -91,6 +91,7 @@ class AnswerPolisher:
                 temperature=0.0,
                 max_tokens=max_tokens,
                 model=model,
+                usage_kind="answer_polisher",
             )
         except Exception as e:
             logger.warning(f"answer_polisher failed: {e}")
