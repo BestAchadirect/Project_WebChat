@@ -34,6 +34,12 @@ def _absolute_image_url(request: Request, image_url: str) -> str:
     if lower.startswith("http://") or lower.startswith("https://"):
         return image_url
     if image_url.startswith("/"):
+        # Prefer forwarded headers (ngrok/proxy) when present so we don't emit 127.0.0.1 URLs.
+        forwarded_host = request.headers.get("x-forwarded-host")
+        if forwarded_host:
+            host = forwarded_host.split(",")[0].strip()
+            proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
+            return f"{proto}://{host}{image_url}"
         base_url = str(request.base_url).rstrip("/")
         return f"{base_url}{image_url}"
     return image_url

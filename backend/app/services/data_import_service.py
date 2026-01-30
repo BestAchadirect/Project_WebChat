@@ -11,7 +11,7 @@ from uuid import uuid4, UUID
 from datetime import datetime
 from fastapi import UploadFile, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, update, delete
+from sqlalchemy import select, func, and_, update, delete, or_
 from sqlalchemy.orm import selectinload
 
 from app.models.product import Product, ProductEmbedding
@@ -948,6 +948,8 @@ class DataImportService:
                 )
                 await task_service.update_task_status(db, task.id, TaskStatus.RUNNING)
 
+                model = getattr(settings, "KNOWLEDGE_EMBEDDING_MODEL", settings.EMBEDDING_MODEL)
+
                 # Find chunks for these articles that need embeddings
                 # We simply select chunks and check their embedding relationship
                 # Or for simplicity, select chunks created recently?
@@ -975,6 +977,8 @@ class DataImportService:
                 
                 logger.info(f"Found {total} chunks to process")
                 
+                chunks_to_embed: List[KnowledgeChunk] = []
+
                 for chunk in chunks_to_process:
                     # Check for REUSE
                     # Find ANY existing embedding with same chunk_hash
@@ -984,6 +988,7 @@ class DataImportService:
                         select(KnowledgeEmbedding)
                         .join(KnowledgeChunk, KnowledgeEmbedding.chunk_id == KnowledgeChunk.id)
                         .where(KnowledgeChunk.chunk_hash == chunk.chunk_hash)
+                        .where(or_(KnowledgeEmbedding.model.is_(None), KnowledgeEmbedding.model == model))
                         .limit(1)
                     )
                     reuse_res = await db.execute(reuse_stmt)
@@ -996,30 +1001,39 @@ class DataImportService:
                             chunk_id=chunk.id,
                             chunk_text=chunk.chunk_text,
                             embedding=existing_emb.embedding, # Copy vector
-                            model=existing_emb.model,
+                            model=model,
                             version=chunk.version
                         )
                         db.add(new_emb)
+                        processed += 1
                     else:
-                        # Generate
-                        vector = await llm_service.generate_embedding(chunk.chunk_text)
+                        chunks_to_embed.append(chunk)
+
+                if processed:
+                    await db.commit()
+                    progress = int(processed / total * 100)
+                    await task_service.update_task_status(db, task.id, TaskStatus.RUNNING, progress=progress)
+
+                # Batch embed remaining chunks
+                batch_size = 50
+                for start in range(0, len(chunks_to_embed), batch_size):
+                    batch = chunks_to_embed[start:start + batch_size]
+                    vectors = await llm_service.generate_embeddings_batch([c.chunk_text for c in batch])
+                    for chunk, vector in zip(batch, vectors):
                         new_emb = KnowledgeEmbedding(
                             article_id=chunk.article_id,
                             chunk_id=chunk.id,
                             chunk_text=chunk.chunk_text,
                             embedding=vector,
-                            model="text-embedding-3-small", 
+                            model=model,
                             version=chunk.version
                         )
                         db.add(new_emb)
-                    
-                    processed += 1
-                    if processed % 10 == 0:
-                        await db.commit() # Commit periodically
-                        progress = int(processed / total * 100)
-                        await task_service.update_task_status(db, task.id, TaskStatus.RUNNING, progress=progress)
+                    processed += len(batch)
+                    await db.commit()
+                    progress = int(processed / total * 100)
+                    await task_service.update_task_status(db, task.id, TaskStatus.RUNNING, progress=progress)
 
-                await db.commit()
                 await task_service.update_task_status(db, task.id, TaskStatus.COMPLETED, progress=100)
                 
                 if upload_session_id:

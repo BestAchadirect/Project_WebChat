@@ -59,6 +59,78 @@ class ChatService:
         lowered = re.sub(r"\s+", " ", lowered).strip()
         return lowered
 
+    @staticmethod
+    def _normalize_jewelry_type(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+    def _infer_primary_jewelry_type(
+        self,
+        *,
+        products: List[ProductCard],
+        query_text: str,
+    ) -> Optional[str]:
+        for p in products:
+            attrs = p.attributes or {}
+            jt = attrs.get("jewelry_type") or attrs.get("type")
+            if isinstance(jt, str) and jt.strip():
+                return jt.strip()
+        return self._infer_jewelry_type_filter(query_text)
+
+    def _build_cross_sell_query(self, jewelry_type: str) -> Optional[str]:
+        if not jewelry_type:
+            return None
+        key = self._normalize_jewelry_type(jewelry_type)
+        mapping = {
+            "barbells": "barbell replacement balls ends spikes attachments",
+            "circularbarbells": "barbell replacement balls ends spikes attachments",
+            "labrets": "labret tops ends threadless attachments",
+            "ballclosurerings": "replacement balls beads closures",
+            "rings": "replacement balls beads closures",
+            "captivebeadrings": "replacement balls beads closures",
+        }
+        return mapping.get(key)
+
+    def _build_cross_sell_label(self, jewelry_type: str) -> Optional[str]:
+        if not jewelry_type:
+            return None
+        key = self._normalize_jewelry_type(jewelry_type)
+        label_map = {
+            "barbells": "Barbell attachments",
+            "circularbarbells": "Barbell attachments",
+            "labrets": "Labret tops",
+            "ballclosurerings": "Ring beads",
+            "rings": "Ring beads",
+            "captivebeadrings": "Ring beads",
+        }
+        return label_map.get(key)
+
+    def _filter_cross_sell_products(
+        self,
+        *,
+        products: List[ProductCard],
+        exclude_type: Optional[str],
+        exclude_ids: set[str],
+        limit: int,
+    ) -> List[ProductCard]:
+        if not products:
+            return []
+        exclude_norm = self._normalize_jewelry_type(exclude_type)
+        filtered: List[ProductCard] = []
+        for p in products:
+            pid = str(p.id)
+            if pid in exclude_ids:
+                continue
+            attrs = p.attributes or {}
+            jt = attrs.get("jewelry_type") or attrs.get("type")
+            if exclude_norm and self._normalize_jewelry_type(jt) == exclude_norm:
+                continue
+            filtered.append(p)
+            if len(filtered) >= limit:
+                break
+        return filtered
+
 
 
     @staticmethod
@@ -240,6 +312,91 @@ class ChatService:
             return m.group(1)
         return None
 
+    @staticmethod
+    def _clean_code_candidate(token: str) -> str:
+        return (token or "").strip(".,!?;:'\"()[]{}<>")
+
+    @staticmethod
+    def _looks_like_code(token: str) -> bool:
+        if not token:
+            return False
+        t = token.strip()
+        if " " in t:
+            return False
+        if len(t) < 3 or len(t) > 32:
+            return False
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", t):
+            return False
+        has_digit = any(c.isdigit() for c in t)
+        has_sep = any(c in "._-" for c in t)
+        is_all_upper = t.isupper()
+        return has_digit or has_sep or (is_all_upper and len(t) <= 10)
+
+    def _extract_code_candidates(self, *, query: str, extracted_code: Optional[str]) -> List[str]:
+        candidates: List[str] = []
+        if extracted_code:
+            clean = self._clean_code_candidate(extracted_code)
+            if self._looks_like_code(clean):
+                candidates.append(clean)
+        sku = self._extract_sku(query)
+        if sku and self._looks_like_code(sku):
+            candidates.append(sku)
+        if query and self._looks_like_code(query):
+            candidates.append(query.strip())
+        for token in re.split(r"\s+", query or ""):
+            clean = self._clean_code_candidate(token)
+            if self._looks_like_code(clean):
+                candidates.append(clean)
+        return list(dict.fromkeys(candidates))
+
+    @staticmethod
+    def _is_question_like(text: str) -> bool:
+        if not text:
+            return False
+        lowered = text.strip().lower()
+        if "?" in lowered:
+            return True
+        starters = (
+            "who", "what", "when", "where", "why", "how",
+            "can", "do", "does", "did", "is", "are", "should", "could", "would", "will",
+        )
+        return lowered.startswith(starters)
+
+    @staticmethod
+    def _is_complex_query(text: str) -> bool:
+        if not text:
+            return False
+        word_count = len(re.findall(r"\b\w+\b", text))
+        if word_count >= 14:
+            return True
+        if text.count("?") > 1:
+            return True
+        lowered = text.lower()
+        if any(sep in lowered for sep in (" and ", " or ", " also ", ";", " as well as ")):
+            return True
+        return False
+
+    @staticmethod
+    def _count_policy_topics(text: str) -> int:
+        if not text:
+            return 0
+        lowered = text.lower()
+        topics = [
+            "shipping", "delivery", "return", "refund", "exchange", "warranty",
+            "payment", "discount", "tax", "customs", "duty", "wholesale",
+            "minimum order", "moq", "sample", "custom", "backorder", "lead time",
+            "cancellation", "cancel", "order status", "policy",
+        ]
+        hits: set[str] = set()
+        for topic in topics:
+            if " " in topic:
+                if topic in lowered:
+                    hits.add(topic)
+            else:
+                if re.search(rf"\b{re.escape(topic)}\b", lowered):
+                    hits.add(topic)
+        return len(hits)
+
     def _infer_jewelry_type_filter(self, text: str) -> Optional[str]:
         if not text:
             return None
@@ -402,7 +559,9 @@ class ChatService:
         content: str,
         product_data: List[ProductCard] | None = None,
         token_usage: Dict[str, Any] | None = None,
-    ) -> None:
+        commit: bool = True,
+        touch_conversation: bool = True,
+    ) -> Message:
         if product_data:
             # Ensure UUIDs are converted to strings for JSON serialization
             data_json = []
@@ -422,12 +581,15 @@ class ChatService:
             token_usage=token_usage,
         )
         self.db.add(msg)
-        await self.db.execute(
-            update(Conversation)
-            .where(Conversation.id == conversation_id)
-            .values(last_message_at=func.now())
-        )
-        await self.db.commit()
+        if touch_conversation:
+            await self.db.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(last_message_at=func.now())
+            )
+        if commit:
+            await self.db.commit()
+        return msg
 
     async def _finalize_response(
         self,
@@ -438,37 +600,58 @@ class ChatService:
         token_usage: Optional[Dict[str, Any]] = None,
         channel: Optional[str] = None,
     ) -> ChatResponse:
-        await self.save_message(conversation_id, MessageRole.USER, user_text)
-        await self.save_message(
-            conversation_id, 
-            MessageRole.ASSISTANT, 
-            response.reply_text,
-            product_data=response.product_carousel,
+        qa_status = QAStatus.SUCCESS
+        if response.intent == "fallback_general" or "don't have enough information" in response.reply_text.lower():
+            qa_status = QAStatus.FALLBACK
+
+        qa_log = QALog(
+            question=user_text,
+            answer=response.reply_text,
+            sources=[
+                {"source_id": s.source_id, "title": s.title, "relevance": s.relevance}
+                for s in response.sources
+            ],
+            status=qa_status,
             token_usage=token_usage,
+            channel=channel,
         )
-        
-        # Log to QALog for Monitoring
+
         try:
-            qa_status = QAStatus.SUCCESS
-            if response.intent == "fallback_general" or "don't have enough information" in response.reply_text.lower():
-                qa_status = QAStatus.FALLBACK
-            
-            qa_log = QALog(
-                question=user_text,
-                answer=response.reply_text,
-                sources=[
-                    {"source_id": s.source_id, "title": s.title, "relevance": s.relevance}
-                    for s in response.sources
-                ],
-                status=qa_status,
-                token_usage=token_usage,
-                channel=channel,
+            await self.save_message(
+                conversation_id,
+                MessageRole.USER,
+                user_text,
+                commit=False,
+                touch_conversation=False,
             )
-            self.db.add(qa_log)
+            await self.save_message(
+                conversation_id,
+                MessageRole.ASSISTANT,
+                response.reply_text,
+                product_data=response.product_carousel,
+                token_usage=token_usage,
+                commit=False,
+                touch_conversation=False,
+            )
+            await self.db.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(last_message_at=func.now())
+            )
+            await self.db.flush()
+
+            try:
+                async with self.db.begin_nested():
+                    self.db.add(qa_log)
+                    await self.db.flush()
+            except Exception as e:
+                logger.error(f"Failed to log QA event: {e}")
+
             await self.db.commit()
-        except Exception as e:
-            logger.error(f"Failed to log QA event: {e}")
-            
+        except Exception:
+            await self.db.rollback()
+            raise
+
         return response
 
     async def get_history(self, conversation_id: int, limit: int = 5) -> List[Dict[str, Any]]:
@@ -502,35 +685,13 @@ class ChatService:
         2. Master Code / Name match -> Return all variants in group
         3. Vector Search -> Fallback
         """
-        # Normalize: "Find me this code ACCO" -> "ACCO" attempt
-        
-        candidates = []
-        # Priority 1: Code extracted by LLM (system prompt)
-        if extracted_code:
-            candidates.append(extracted_code.strip())
-            
-        # Priority 2: Manual extraction fallback
-        candidates.append(query.strip())
-        
-        # Heuristic: Extract potential codes (uppercase words, alphanumeric)
-        tokens = query.split()
-        if len(tokens) > 1:
-            # Try the last word (often the code)
-            candidates.append(tokens[-1])
-            # Try words that look like codes (longer than 2 chars, uppercase or digits)
-            candidates.extend([t for t in tokens if len(t) > 2 and (t.isupper() or any(c.isdigit() for c in t))])
-            
-        # Deduplicate and prioritize
-        candidates = list(dict.fromkeys(candidates))
+        candidates = self._extract_code_candidates(query=query, extracted_code=extracted_code)
+        if not candidates:
+            return await self.search_products(query_embedding, limit, run_id)
         
         for candidate in candidates:
-            # Clean candidate: remove non-code chars but keep dots/hyphens if inside
-            # First strip common punctuation from ends
-            clean_cand = candidate.strip(".,!?;:'\"()[]{}")
-            # Then remove any other weird chars if needed, but be careful not to break "A.BC" skus
-            # For now, just stripping end punctuation is likely enough for "ACCORF."
-            
-            if not clean_cand:
+            clean_cand = candidate
+            if not clean_cand or not self._looks_like_code(clean_cand):
                 continue
 
             # 1. Exact SKU Match
@@ -570,6 +731,15 @@ class ChatService:
         return await self.search_products(query_embedding, limit, run_id)
 
     def _product_to_card(self, product: Product) -> ProductCard:
+        attrs = dict(product.attributes or {})
+        if product.jewelry_type and "jewelry_type" not in attrs:
+            attrs["jewelry_type"] = product.jewelry_type
+        if product.material and "material" not in attrs:
+            attrs["material"] = product.material
+        if product.gauge and "gauge" not in attrs:
+            attrs["gauge"] = product.gauge
+        if product.threading and "threading" not in attrs:
+            attrs["threading"] = product.threading
         return ProductCard(
             id=product.id,
             object_id=product.object_id,
@@ -582,7 +752,7 @@ class ChatService:
             stock_status=product.stock_status,
             image_url=product.image_url,
             product_url=product.product_url,
-            attributes=product.attributes or {},
+            attributes=attrs,
         )
 
     async def search_products(
@@ -785,47 +955,105 @@ class ChatService:
         target_currency = await self._resolve_target_currency(nlu_data=nlu_data, user_text=text)
         debug_meta["target_currency"] = target_currency
 
-        # 2. Universal Retrieval (Always Search)
+        # 2. Retrieval Gating (Skip unnecessary searches)
         # Use refined query for search if available, otherwise fallback to original text
         search_query = nlu_data.get("refined_query") or text
-        
-        # 2a. Product Search
+
+        intent = str(nlu_data.get("intent") or "knowledge_query").strip().lower()
+        show_products_flag = bool(nlu_data.get("show_products", False))
+        nlu_product_code = str(nlu_data.get("product_code") or "").strip()
+        nlu_product_code = self._clean_code_candidate(nlu_product_code)
+
+        sku_token = self._extract_sku(text)
+        if nlu_product_code and self._looks_like_code(nlu_product_code):
+            sku_token = sku_token or nlu_product_code
+
+        is_product_intent = intent in {"browse_products", "search_specific"} or show_products_flag
+        if sku_token:
+            is_product_intent = True
+
+        if intent in {"knowledge_query", "off_topic"}:
+            use_knowledge = True
+            use_products = show_products_flag or bool(sku_token)
+        elif intent in {"browse_products", "search_specific"}:
+            use_products = True
+            use_knowledge = False
+        else:
+            use_products = False
+            use_knowledge = False
+
+        is_question_like = self._is_question_like(text)
+        is_complex = self._is_complex_query(text)
+        policy_topic_count = self._count_policy_topics(text)
+        is_policy_intent = intent == "knowledge_query" and policy_topic_count > 0
+
+        looks_like_product = bool(self._infer_jewelry_type_filter(text) or sku_token or is_product_intent)
         ctx = ChatContext(
             text=text,
-            is_question_like=True,
-            looks_like_product=False,
-            has_store_intent=False,
-            is_policy_intent=False,
-            policy_topic_count=0,
-            sku_token=None,
+            is_question_like=is_question_like,
+            looks_like_product=looks_like_product,
+            has_store_intent=use_products,
+            is_policy_intent=is_policy_intent,
+            policy_topic_count=policy_topic_count,
+            sku_token=sku_token,
             requested_currency=target_currency if target_currency != default_display_currency.upper() else None,
         )
-        query_embedding = await llm_service.generate_embedding(search_query)
-        
-        # Extract product code from NLU if available
-        nlu_product_code = nlu_data.get("product_code", "")
-        
-        product_cards, distances, best_distance, dist_map = await self.smart_product_search(
-            query=search_query,
-            query_embedding=query_embedding,
-            limit=10,
-            run_id=run_id,
-            extracted_code=nlu_product_code
-        )
-        
-        # 2b. Knowledge Search
-        kb_sources, _ = await self._knowledge_pipeline.search_knowledge(
-            query_text=search_query,
-            query_embedding=query_embedding,
-            limit=5,
-            run_id=run_id
-        )
+
+        debug_meta["intent"] = intent
+        debug_meta["retrieval_gate"] = {
+            "use_products": use_products,
+            "use_knowledge": use_knowledge,
+            "is_complex": is_complex,
+            "is_policy_intent": is_policy_intent,
+            "policy_topic_count": policy_topic_count,
+        }
+
+        query_embedding: Optional[List[float]] = None
+        if use_products or use_knowledge:
+            query_embedding = await llm_service.generate_embedding(search_query)
+
+        product_cards: List[ProductCard] = []
+        distances: List[float] = []
+        best_distance: Optional[float] = None
+        dist_map: Dict[str, float] = {}
+        if use_products and query_embedding is not None:
+            product_cards, distances, best_distance, dist_map = await self.smart_product_search(
+                query=search_query,
+                query_embedding=query_embedding,
+                limit=10,
+                run_id=run_id,
+                extracted_code=nlu_product_code,
+            )
+
+        kb_sources: List[KnowledgeSource] = []
+        if use_knowledge and query_embedding is not None:
+            if is_policy_intent or is_complex:
+                max_sub_questions = int(getattr(settings, "RAG_DECOMPOSE_MAX_SUBQUESTIONS", 5))
+                knowledge_result = await self._knowledge_pipeline.retrieve(
+                    ctx=ctx,
+                    knowledge_query_text=search_query,
+                    knowledge_embedding=query_embedding,
+                    is_complex=is_complex,
+                    is_question_like=is_question_like,
+                    is_policy_intent=is_policy_intent,
+                    policy_topic_count=policy_topic_count,
+                    max_sub_questions=max_sub_questions,
+                    run_id=run_id,
+                )
+                kb_sources = knowledge_result.knowledge_sources
+                debug_meta["knowledge_decompose_used"] = knowledge_result.decomposition_used
+                debug_meta["knowledge_decompose_reason"] = knowledge_result.decomposition_reason
+            else:
+                kb_sources, _ = await self._knowledge_pipeline.search_knowledge(
+                    query_text=search_query,
+                    query_embedding=query_embedding,
+                    limit=5,
+                    run_id=run_id,
+                )
 
         sources: List[KnowledgeSource] = []
         
         # 3. Intent Logic (Using NLU results)
-        intent = str(nlu_data.get("intent") or "knowledge_query").strip().lower()
-        show_products_flag = bool(nlu_data.get("show_products", False))
         
         # Override show_products_flag if we found an EXACT match (smart search)
         if best_distance is not None and best_distance == 0.0 and product_cards:
@@ -866,12 +1094,61 @@ class ChatService:
             ))
             debug_meta["product_fallback_used"] = True
 
+        # 4b. Cross-sell accessories (e.g., barbell attachments)
+        cross_sell_products: List[ProductCard] = []
+        cross_sell_label: Optional[str] = None
+        cross_sell_used = False
+        if top_products:
+            primary_type = self._infer_primary_jewelry_type(products=top_products, query_text=search_query)
+            cross_sell_query = self._build_cross_sell_query(primary_type or "")
+            cross_sell_label = self._build_cross_sell_label(primary_type or "")
+            if cross_sell_query:
+                cross_embedding = await llm_service.generate_embedding(cross_sell_query)
+                cross_cards, _cross_distances, _cross_best, _cross_map = await self.search_products(
+                    cross_embedding,
+                    limit=12,
+                    run_id=run_id,
+                )
+                exclude_ids = {str(p.id) for p in top_products}
+                cross_sell_products = self._filter_cross_sell_products(
+                    products=cross_cards,
+                    exclude_type=primary_type,
+                    exclude_ids=exclude_ids,
+                    limit=3,
+                )
+                if cross_sell_products:
+                    remaining = max(0, 10 - len(top_products))
+                    added = cross_sell_products[:remaining] if remaining else []
+                    if added:
+                        top_products.extend(added)
+                        accessory_text = "\n".join(
+                            [
+                                f"TYPE: {p.attributes.get('jewelry_type', 'Accessory')}, NAME: {p.name}, SKU: {p.sku}, PRICE: {p.price} {p.currency}"
+                                for p in added
+                            ]
+                        )
+                        sources.append(
+                            KnowledgeSource(
+                                source_id="product_cross_sell",
+                                title="Compatible Accessories",
+                                content_snippet=f"Related accessories customers often pair with these items:\n{accessory_text}",
+                                relevance=0.35,
+                            )
+                        )
+                        debug_meta["cross_sell_used"] = True
+                        cross_sell_used = True
+
         sources.extend(kb_sources)
+
+        max_answer_sources = int(getattr(settings, "RAG_MAX_SOURCES_IN_RESPONSE", 5))
+        sources_for_answer = sources[:max_answer_sources]
+        debug_meta["retrieved_source_count"] = len(sources)
+        debug_meta["answer_source_count"] = len(sources_for_answer)
 
         # 4. Generate Response (Strict RAG)
         reply_data = await self.synthesize_answer(
             question=text,
-            sources=sources,
+            sources=sources_for_answer,
             reply_language=reply_language,
             history=history,
             run_id=run_id
@@ -892,6 +1169,11 @@ class ChatService:
             material = top_products[0].attributes.get('material', '')
             search_term = jewelry_type or material or "similar items"
             follow_up_questions = [f"See more {search_term}"]
+
+        if cross_sell_used and cross_sell_label:
+            accessory_question = f"Show {cross_sell_label}"
+            if accessory_question not in follow_up_questions:
+                follow_up_questions.append(accessory_question)
             
         # Enforce limit of 5
         if len(follow_up_questions) > 5:
@@ -903,7 +1185,7 @@ class ChatService:
             reply_data=reply_data,
             product_carousel=top_products,
             follow_up_questions=follow_up_questions,
-            sources=sources,
+            sources=sources_for_answer,
             debug=debug_meta,
             reply_language=reply_language,
             target_currency=target_currency,

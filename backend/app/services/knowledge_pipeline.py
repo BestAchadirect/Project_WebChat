@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -54,6 +54,7 @@ class KnowledgePipeline:
         tag_join_needed = bool(must_tags or boost_tags)
 
         distance_col = KnowledgeEmbedding.embedding.cosine_distance(query_embedding).label("distance")
+        model = getattr(settings, "KNOWLEDGE_EMBEDDING_MODEL", settings.EMBEDDING_MODEL)
 
         stmt = (
             select(
@@ -68,6 +69,7 @@ class KnowledgePipeline:
             )
             .join(KnowledgeArticle, KnowledgeEmbedding.article_id == KnowledgeArticle.id)
         )
+        stmt = stmt.where(or_(KnowledgeEmbedding.model.is_(None), KnowledgeEmbedding.model == model))
 
         if tag_join_needed:
             stmt = stmt.join(KnowledgeChunk, KnowledgeChunk.id == KnowledgeEmbedding.chunk_id)
@@ -169,80 +171,6 @@ class KnowledgePipeline:
 
         return sources, best_distance
 
-    async def keyword_fallback(self, query_text: str, limit: int = 5) -> List[KnowledgeSource]:
-        stopwords = {
-            "the",
-            "a",
-            "an",
-            "and",
-            "or",
-            "to",
-            "for",
-            "of",
-            "in",
-            "on",
-            "at",
-            "by",
-            "with",
-            "is",
-            "are",
-            "was",
-            "were",
-        }
-        tokens = [t.lower() for t in query_text.replace(",", " ").replace(".", " ").split()]
-        keywords = [t for t in tokens if len(t) >= 3 and t not in stopwords][:6]
-
-        if not keywords:
-            return []
-
-        conditions = [KnowledgeChunk.chunk_text.ilike(f"%{kw}%") for kw in keywords]
-
-        score_expr = None
-        for cond in conditions:
-            term = case((cond, 1), else_=0)
-            score_expr = term if score_expr is None else score_expr + term
-
-        match_count = score_expr.label("match_count") if score_expr is not None else None
-
-        stmt = (
-            select(
-                KnowledgeChunk.id,
-                KnowledgeChunk.chunk_text,
-                KnowledgeArticle.id.label("article_id"),
-                KnowledgeArticle.title,
-                KnowledgeArticle.category,
-                KnowledgeArticle.url,
-                match_count,
-            )
-            .join(KnowledgeArticle, KnowledgeChunk.article_id == KnowledgeArticle.id)
-            .where(or_(*conditions))
-        )
-
-        if match_count is not None:
-            stmt = stmt.order_by(match_count.desc(), KnowledgeChunk.id)
-
-        stmt = stmt.limit(limit)
-
-        result = await self.db.execute(stmt)
-        rows = result.all()
-
-        sources: List[KnowledgeSource] = []
-        for chunk_id, chunk_text, article_id, title, category, url, match_value in rows:
-            relevance = float(match_value or 0) / max(len(keywords), 1)
-            sources.append(
-                KnowledgeSource(
-                    source_id=str(chunk_id),
-                    chunk_id=str(chunk_id),
-                    title=title,
-                    content_snippet=(chunk_text or "")[: settings.RAG_MAX_CHUNK_CHARS_FOR_CONTEXT],
-                    category=category,
-                    relevance=relevance,
-                    url=url,
-                    distance=None,
-                )
-            )
-        return sources
-
     async def _decompose_query(self, *, question: str, run_id: str) -> List[str]:
         system_prompt = (
             "You decompose a complex customer question into short, focused sub-questions that can be answered from a FAQ.\n"
@@ -311,9 +239,6 @@ class KnowledgePipeline:
             boost_tags=None,
             run_id=run_id,
         )
-        if not sources:
-            sources = await self.keyword_fallback(query_text, limit=settings.RAG_RETRIEVE_TOPK_KNOWLEDGE)
-            best = None
         return sources, best
 
     def _distance_stats(
@@ -348,11 +273,6 @@ class KnowledgePipeline:
             boost_tags=None,
             run_id=run_id,
         )
-        if not knowledge_sources_primary:
-            knowledge_sources_primary = await self.keyword_fallback(
-                knowledge_query_text, limit=settings.RAG_RETRIEVE_TOPK_KNOWLEDGE
-            )
-            knowledge_best_primary = None
 
         d1_primary, d10_primary, gap_primary = self._distance_stats(knowledge_sources_primary)
         decompose_weak_thr = float(getattr(settings, "RAG_DECOMPOSE_WEAK_DISTANCE", 0.55))

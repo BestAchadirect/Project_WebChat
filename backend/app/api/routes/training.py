@@ -244,7 +244,7 @@ async def update_chunk(
     
     # Update chunk text, hash and version
     chunk.chunk_text = chunk_in.chunk_text
-    chunk.chunk_hash = hashlib.md5(chunk_in.chunk_text.encode()).hexdigest()
+    chunk.chunk_hash = hashlib.sha256(chunk_in.chunk_text.encode()).hexdigest()
     chunk.version += 1
     
     await db.commit()
@@ -413,6 +413,7 @@ async def test_similarity(
         from sqlalchemy import text
         
         # Query for similar embeddings using cosine distance
+        model = getattr(settings, "KNOWLEDGE_EMBEDDING_MODEL", settings.EMBEDDING_MODEL)
         sql = text("""
             SELECT 
                 ke.chunk_id,
@@ -422,12 +423,14 @@ async def test_similarity(
             FROM knowledge_embeddings ke
             LEFT JOIN knowledge_articles ka ON ke.article_id = ka.id
             WHERE ke.chunk_id IS NOT NULL
+              AND (ke.model IS NULL OR ke.model = :model)
             ORDER BY ke.embedding <=> :query_embedding::vector
             LIMIT :limit
         """)
         
         result = await db.execute(sql, {
             "query_embedding": str(query_embedding),
+            "model": model,
             "limit": request.limit
         })
         rows = result.fetchall()

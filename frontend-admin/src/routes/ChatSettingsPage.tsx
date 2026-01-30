@@ -43,7 +43,7 @@ export const ChatSettingsPage: React.FC = () => {
     const fetchBanners = async () => {
         try {
             setIsBannerLoading(true);
-            const response = await apiClient.get<Banner[]>('/banners', {
+            const response = await apiClient.get<Banner[]>('/banners/', {
                 params: { include_inactive: true }
             });
             setBanners(response.data || []);
@@ -144,7 +144,7 @@ export const ChatSettingsPage: React.FC = () => {
                 is_active: true,
                 sort_order: nextOrder
             };
-            const createResponse = await apiClient.post<Banner>('/banners', createPayload);
+            const createResponse = await apiClient.post<Banner>('/banners/', createPayload);
             const created = createResponse.data;
             setBanners((prev) => [...prev, created]);
             showToast('Banner uploaded', 'success');
@@ -173,7 +173,7 @@ export const ChatSettingsPage: React.FC = () => {
                 is_active: banner.is_active,
                 sort_order: banner.sort_order
             };
-            const response = await apiClient.post<Banner>('/banners', payload);
+            const response = await apiClient.post<Banner>('/banners/', payload);
             const updated = response.data;
             setBanners((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
             showToast('Banner saved', 'success');
@@ -466,7 +466,7 @@ apiBaseUrl: "${widgetApiBaseUrl}"
                                     {sortedBanners.map((banner) => (
                                         <div key={banner.id} className="border border-gray-200 rounded-xl p-4 space-y-3">
                                             <div className="flex items-start gap-4">
-                                                <div className="w-24 h-16 rounded-lg border border-gray-200 overflow-hidden bg-gray-50 flex items-center justify-center">
+                                                <div className="w-24 aspect-[3/2] rounded-lg border border-gray-200 overflow-hidden bg-gray-50 flex items-center justify-center">
                                                     {banner.image_url ? (
                                                         <img
                                                             src={banner.image_url}

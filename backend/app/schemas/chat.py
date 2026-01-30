@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Literal, Optional, List, Dict, Any
+from datetime import datetime
 import uuid
 
 
@@ -100,3 +101,19 @@ class ChatResponse(BaseModel):
     view_button_text: str = "View Product Details"
     material_label: str = "Material"
     jewelry_type_label: str = "Jewelry Type"
+
+
+class ChatHistoryMessage(BaseModel):
+    role: str
+    content: str
+    product_data: Optional[List[Dict[str, Any]]] = None
+    created_at: Optional[datetime] = None
+
+
+class ChatHistoryResponse(BaseModel):
+    conversation_id: int
+    messages: List[ChatHistoryMessage] = []
+
+
+class ActiveConversationResponse(BaseModel):
+    conversation_id: Optional[int] = None

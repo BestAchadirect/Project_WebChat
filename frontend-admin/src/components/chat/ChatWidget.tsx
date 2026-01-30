@@ -36,6 +36,22 @@ interface ChatResponse {
     jewelry_type_label?: string;
 }
 
+interface ChatHistoryMessage {
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    product_data?: ProductCard[] | null;
+    created_at?: string | null;
+}
+
+interface ChatHistoryResponse {
+    conversation_id: number;
+    messages: ChatHistoryMessage[];
+}
+
+interface ActiveConversationResponse {
+    conversation_id: number | null;
+}
+
 interface ProductCard {
     id: string;
     object_id?: string | null;
@@ -69,6 +85,7 @@ interface ChatWidgetProps {
     locale?: string;
     customerName?: string;
     email?: string;
+    customerId?: string | number;
 }
 
 declare global {
@@ -85,6 +102,7 @@ declare global {
             locale?: string;
             customerName?: string;
             email?: string;
+            customerId?: string | number;
         };
     }
 }
@@ -231,11 +249,13 @@ const BannerCarousel: React.FC<{
                                 onClick={() => handleBannerSelect(banner)}
                                 className="w-full text-left transition-all active:scale-[0.99]"
                             >
-                                <img
-                                    src={banner.image_url}
-                                    alt={banner.alt_text || 'Promotional banner'}
-                                    className="w-full h-28 sm:h-32 object-cover"
-                                />
+                                <div className="w-full aspect-[3/1]">
+                                    <img
+                                        src={banner.image_url}
+                                        alt={banner.alt_text || 'Promotional banner'}
+                                        className="w-full h-full object-cover"
+                                    />
+                                </div>
                             </button>
                         </div>
                     ))}
@@ -248,7 +268,7 @@ const BannerCarousel: React.FC<{
                         <button
                             key={banner.id}
                             onClick={() => setCurrentSlide(index)}
-                            className={`h-1.5 rounded-full transition-all ${index === currentSlide ? 'w-6' : 'w-1.5 opacity-30'}`}
+                            className={`h-1.5 rounded-1g transition-all ${index === currentSlide ? 'w-6' : 'w-1.5 opacity-30'}`}
                             style={{
                                 backgroundColor: index === currentSlide ? primaryColor : '#9CA3AF'
                             }}
@@ -356,7 +376,7 @@ const ProductCarousel: React.FC<{
                             </div>
                             <div className="flex flex-col items-end">
                                 <span className="text-[10px] uppercase font-bold text-gray-400 leading-none mb-1">Stock</span>
-                                <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${p.stock_status?.toLowerCase() === 'in stock' || !p.stock_status ? 'text-green-700 bg-green-100' : 'text-red-700 bg-red-100'}`}>
+                                <span className={`text-xs font-bold px-2 py-0.5 rounded-1g ${p.stock_status?.toLowerCase() === 'in stock' || !p.stock_status ? 'text-green-700 bg-green-100' : 'text-red-700 bg-red-100'}`}>
                                     {p.stock_status || 'Checking...'}
                                 </span>
                             </div>
@@ -392,7 +412,8 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     apiBaseUrl,
     locale,
     customerName,
-    email
+    email,
+    customerId
 }) => {
     // Colors from the design
     const colors = {
@@ -400,6 +421,17 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         mediumBlue: '#214166',
         lightBlue: '#96D0E6',
         white: '#FFFFFF',
+    };
+
+    // Generate or retrieve Guest ID
+    const getGuestUserId = () => {
+        let userId = localStorage.getItem('genai_user_id') || localStorage.getItem('chat_user_id');
+        if (!userId) {
+            userId = `guest_${Math.random().toString(36).substr(2, 9)}`;
+            localStorage.setItem('genai_user_id', userId);
+            localStorage.setItem('chat_user_id', userId);
+        }
+        return userId;
     };
 
     // Effective config
@@ -416,9 +448,18 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         locale: locale || window.genaiConfig?.locale || 'en-US',
         customerName: customerName || window.genaiConfig?.customerName,
         email: email || window.genaiConfig?.email,
+        customerId: customerId ?? window.genaiConfig?.customerId,
         displayCurrency: window.genaiConfig?.displayCurrency || 'USD',
         thbToUsdRate: window.genaiConfig?.thbToUsdRate,
     };
+
+    const resolvedUserId = (() => {
+        const configured = config.customerId;
+        if (configured !== undefined && configured !== null && String(configured).trim() !== '') {
+            return `magento_${configured}`;
+        }
+        return getGuestUserId();
+    })();
 
     const [isOpen, setIsOpen] = useState(false);
     const [activeTab, setActiveTab] = useState<'home' | 'chat'>('home');
@@ -430,25 +471,117 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         const parsed = raw ? Number(raw) : NaN;
         return Number.isFinite(parsed) ? parsed : null;
     });
+    const [activeUserId, setActiveUserId] = useState(resolvedUserId);
     const [banners, setBanners] = useState<BannerItem[]>([]);
     const [isBannerLoading, setIsBannerLoading] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const chatScrollRef = useRef<HTMLDivElement>(null);
+    const isAtBottomRef = useRef(true);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+    const hasHydratedRef = useRef(false);
 
     // Auto-scroll to bottom
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
+        messagesEndRef.current?.scrollIntoView({ behavior });
+    };
+
+    const updateScrollState = () => {
+        const container = chatScrollRef.current;
+        if (!container) return;
+        const threshold = 80;
+        const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        const atBottom = distanceFromBottom <= threshold;
+        isAtBottomRef.current = atBottom;
+        setShowScrollToLatest(!atBottom);
+    };
+
+    const loadConversationHistory = async () => {
+        try {
+            if (!resolvedUserId) return;
+            const activeEndpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/chat/active` : '/chat/active';
+            const { data: active } = await apiClient.get<ActiveConversationResponse>(activeEndpoint, {
+                params: {
+                    user_id: resolvedUserId,
+                    conversation_id: conversationId ?? undefined,
+                },
+            });
+
+            if (!active.conversation_id) {
+                setConversationId(null);
+                setMessages([]);
+                localStorage.removeItem('genai_conversation_id');
+                localStorage.removeItem('chat_conversation_id');
+                return;
+            }
+
+            const activeId = active.conversation_id;
+            if (activeId !== conversationId) {
+                setConversationId(activeId);
+                localStorage.setItem('genai_conversation_id', String(activeId));
+                localStorage.setItem('chat_conversation_id', String(activeId));
+            }
+
+            const historyEndpoint = config.apiBaseUrl
+                ? `${config.apiBaseUrl}/chat/history/${activeId}`
+                : `/chat/history/${activeId}`;
+            const { data: history } = await apiClient.get<ChatHistoryResponse>(historyEndpoint, {
+                params: {
+                    user_id: resolvedUserId,
+                    limit: 50,
+                },
+            });
+
+            const hydrated: Message[] = (history.messages || []).map((msg) => ({
+                role: msg.role,
+                content: msg.content,
+                productCarousel: Array.isArray(msg.product_data) ? msg.product_data : undefined,
+            }));
+            setMessages(hydrated);
+        } catch (error) {
+            console.error('Failed to load conversation history:', error);
+        }
     };
 
     useEffect(() => {
-        scrollToBottom();
-    }, [messages, isOpen, isLoading]);
+        if (!isOpen || activeTab !== 'chat') return;
+        if (isAtBottomRef.current) {
+            requestAnimationFrame(() => scrollToBottom());
+        } else {
+            requestAnimationFrame(() => updateScrollState());
+        }
+    }, [messages, isOpen, isLoading, activeTab]);
+
+    useEffect(() => {
+        if (activeTab !== 'chat') return;
+        requestAnimationFrame(() => {
+            scrollToBottom('auto');
+            updateScrollState();
+        });
+    }, [activeTab, isOpen]);
+
+    useEffect(() => {
+        if (!isOpen || activeTab !== 'chat') return;
+        if (hasHydratedRef.current) return;
+        hasHydratedRef.current = true;
+        void loadConversationHistory();
+    }, [isOpen, activeTab, resolvedUserId, config.apiBaseUrl]);
+
+    useEffect(() => {
+        if (resolvedUserId === activeUserId) return;
+        setActiveUserId(resolvedUserId);
+        setConversationId(null);
+        setMessages([]);
+        localStorage.removeItem('genai_conversation_id');
+        localStorage.removeItem('chat_conversation_id');
+        hasHydratedRef.current = false;
+    }, [resolvedUserId, activeUserId]);
 
     useEffect(() => {
         const fetchBanners = async () => {
             try {
                 setIsBannerLoading(true);
-                const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/banners` : '/banners';
+                const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/banners/` : '/banners/';
                 const { data } = await apiClient.get<BannerItem[]>(endpoint);
                 const sorted = Array.isArray(data)
                     ? [...data].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
@@ -485,17 +618,6 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         }
     }, [input]);
 
-    // Generate or retrieve Guest ID
-    const getUserId = () => {
-        let userId = localStorage.getItem('genai_user_id') || localStorage.getItem('chat_user_id');
-        if (!userId) {
-            userId = `guest_${Math.random().toString(36).substr(2, 9)}`;
-            localStorage.setItem('genai_user_id', userId);
-            localStorage.setItem('chat_user_id', userId);
-        }
-        return userId;
-    };
-
     const sendMessage = async (textOverride?: string) => {
         const textToSend = textOverride || input;
         if (!textToSend.trim() || isLoading) return;
@@ -512,7 +634,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
         try {
             const payload = {
-                user_id: getUserId(),
+                user_id: resolvedUserId,
                 message: textToSend,
                 conversation_id: conversationId,
                 locale: config.locale,
@@ -671,7 +793,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                         <div className="flex-1 overflow-y-auto scrollbar-custom p-6 animate-fade-in-up pb-10">
                             {/* Sliding Banner Carousel */}
                             {isBannerLoading ? (
-                                <div className="mb-8 h-28 sm:h-32 rounded-2xl bg-gray-100 animate-pulse"></div>
+                                <div className="mb-8 w-full aspect-[4/1] rounded-2xl bg-gray-100 animate-pulse"></div>
                             ) : (
                                 <BannerCarousel
                                     banners={banners}
@@ -704,11 +826,15 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                     {/* Chat Tab */}
                     {activeTab === 'chat' && (
                         <div className="flex-1 flex flex-col overflow-hidden animate-fade-in bg-white h-full relative">
-                            <div className="flex-1 overflow-y-auto p-4 scrollbar-custom pb-24">
+                            <div
+                                ref={chatScrollRef}
+                                onScroll={updateScrollState}
+                                className="flex-1 overflow-y-auto p-4 scrollbar-custom pb-24"
+                            >
 
                                 {messages.length === 0 && (
                                     <div className="flex justify-start mb-6 animate-fade-in-up">
-                                        <div className="bg-gray-50 border border-gray-100 p-4 rounded-none shadow-sm max-w-[85%] text-sm font-medium text-gray-700 leading-relaxed">
+                                        <div className="bg-gray-50 border border-gray-100 p-4 rounded-lg shadow-sm max-w-[85%] text-sm font-medium text-gray-700 leading-relaxed">
                                             <p>{config.welcomeMessage}</p>
                                         </div>
                                     </div>
@@ -717,7 +843,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                     <div key={idx} className={`flex flex-col mb-4 animate-fade-in-up ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                                         <div className="max-w-[85%]">
                                             <div
-                                                className={`px-4 py-3 rounded-none text-sm font-medium leading-relaxed ${msg.role === 'user'
+                                                className={`px-4 py-3 rounded-lg text-sm font-medium leading-relaxed ${msg.role === 'user'
                                                     ? 'text-white shadow-md'
                                                     : msg.role === 'system'
                                                         ? 'bg-red-50 text-red-600 border border-red-100'
@@ -775,7 +901,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
                                 {isLoading && (
                                     <div className="flex justify-start mb-4 animate-fade-in">
-                                        <div className="bg-gray-50 border border-gray-100 px-4 py-3 rounded-none flex space-x-1.5 items-center h-[40px] shadow-sm">
+                                        <div className="bg-gray-50 border border-gray-100 px-4 py-3 rounded-lg flex space-x-1.5 items-center h-[40px] shadow-sm">
                                             <span className="w-1.5 h-1.5 bg-gray-300 rounded-full typing-dot"></span>
                                             <span className="w-1.5 h-1.5 bg-gray-300 rounded-full typing-dot"></span>
                                             <span className="w-1.5 h-1.5 bg-gray-300 rounded-full typing-dot"></span>
@@ -784,6 +910,31 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                 )}
                                 <div ref={messagesEndRef} />
                             </div>
+
+                            {showScrollToLatest && (
+                                <button
+                                    type="button"
+                                    onClick={() => scrollToBottom()}
+                                    aria-label="Back to latest conversation"
+                                    title="Back to latest"
+                                    className="absolute bottom-24 right-4 z-20 inline-flex items-center justify-center rounded-full bg-white text-gray-700 shadow-md border border-gray-200 w-9 h-9 hover:bg-gray-50"
+                                >
+                                    <svg
+                                        width="18"
+                                        height="18"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="2"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        aria-hidden="true"
+                                    >
+                                        <path d="M12 5v14" />
+                                        <path d="m19 12-7 7-7-7" />
+                                    </svg>
+                                </button>
+                            )}
 
                             {/* Input Group (Deep Chat Style) */}
                             <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 flex flex-col pt-2 pb-3 px-4 shadow-[0_-10px_30px_rgba(0,0,0,0.03)] z-10">

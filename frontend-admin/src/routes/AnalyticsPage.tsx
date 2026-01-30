@@ -68,6 +68,7 @@ export const AnalyticsPage: React.FC = () => {
     const [isStatsLoading, setIsStatsLoading] = useState(true);
     const [isLogsLoading, setIsLogsLoading] = useState(true);
     const [period, setPeriod] = useState<Period>('week');
+    const [expandedConversations, setExpandedConversations] = useState<Record<string, boolean>>({});
 
     const dateRange = useMemo(() => {
         if (period === 'all') return { start: undefined, end: undefined };
@@ -114,6 +115,10 @@ export const AnalyticsPage: React.FC = () => {
         fetchStats();
         fetchLogs();
     }, [period]);
+
+    const toggleConversation = (id: string) => {
+        setExpandedConversations((prev) => ({ ...prev, [id]: !prev[id] }));
+    };
 
     const activityBuckets = useMemo(() => buildActivityBuckets(logs, period), [logs, period]);
     const maxActivity = Math.max(...activityBuckets.map((bucket) => bucket.count), 0);
@@ -214,34 +219,80 @@ export const AnalyticsPage: React.FC = () => {
                 ) : (
                     <div className="divide-y divide-gray-200">
                         {recentLogs.map((log) => {
-                            const lastMessage = log.messages[log.messages.length - 1];
+                            const messages = Array.isArray(log.messages) ? log.messages : [];
+                            const lastMessage = messages[messages.length - 1];
+                            const isExpanded = Boolean(expandedConversations[log.id]);
                             return (
-                                <div key={log.id} className="py-4 flex items-start justify-between gap-4">
-                                    <div className="flex-1">
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-sm font-semibold text-gray-900">
-                                                Session {log.sessionId}
-                                            </span>
-                                            {log.userId && (
-                                                <span className="text-xs text-gray-500">User {log.userId}</span>
+                                <div key={log.id} className="py-4 hover:bg-gray-50">
+                                    <div className="flex items-start justify-between gap-4 px-2">
+                                        <div className="flex-1 select-text">
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-sm font-semibold text-gray-900">
+                                                    Session {log.sessionId}
+                                                </span>
+                                                {log.userId && (
+                                                    <span className="text-xs text-gray-500">User {log.userId}</span>
+                                                )}
+                                            </div>
+                                            <div className="text-xs text-gray-500 mt-1">
+                                                {new Date(log.startedAt).toLocaleString()}
+                                            </div>
+                                            {lastMessage && (
+                                                <div className="mt-2 text-sm text-gray-700 line-clamp-2">
+                                                    <span className="font-medium capitalize">{lastMessage.role}:</span>{' '}
+                                                    {lastMessage.content}
+                                                </div>
                                             )}
                                         </div>
-                                        <div className="text-xs text-gray-500 mt-1">
-                                            {new Date(log.startedAt).toLocaleString()}
-                                        </div>
-                                        {lastMessage && (
-                                            <div className="mt-2 text-sm text-gray-700 line-clamp-2">
-                                                <span className="font-medium capitalize">{lastMessage.role}:</span>{' '}
-                                                {lastMessage.content}
+                                        <div className="flex items-center gap-3 text-right">
+                                            <div>
+                                                <div className="text-lg font-semibold text-gray-900">
+                                                    {log.messageCount}
+                                                </div>
+                                                <div className="text-xs text-gray-500">messages</div>
                                             </div>
-                                        )}
-                                    </div>
-                                    <div className="text-right">
-                                        <div className="text-lg font-semibold text-gray-900">
-                                            {log.messageCount}
+                                            <button
+                                                type="button"
+                                                onClick={() => toggleConversation(log.id)}
+                                                aria-expanded={isExpanded}
+                                                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-gray-200 text-gray-500 hover:bg-white hover:text-gray-700"
+                                                title={isExpanded ? 'Collapse conversation' : 'Expand conversation'}
+                                            >
+                                                <svg
+                                                    className={`h-4 w-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                                                    viewBox="0 0 20 20"
+                                                    fill="currentColor"
+                                                    aria-hidden="true"
+                                                >
+                                                    <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
+                                                </svg>
+                                            </button>
                                         </div>
-                                        <div className="text-xs text-gray-500">messages</div>
                                     </div>
+
+                                    {isExpanded && (
+                                        <div className="pb-4 px-2">
+                                            <div className="rounded-lg border border-gray-200 bg-gray-50">
+                                                <div className="divide-y divide-gray-200">
+                                                    {messages.map((msg) => (
+                                                        <div key={msg.id} className="px-3 py-2">
+                                                            <div className="text-[11px] uppercase text-gray-400">
+                                                                {msg.role} | {new Date(msg.timestamp).toLocaleString()}
+                                                            </div>
+                                                            <div className="text-sm text-gray-700 whitespace-pre-wrap mt-1">
+                                                                {msg.content}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                    {messages.length === 0 && (
+                                                        <div className="px-3 py-3 text-sm text-gray-500">
+                                                            No messages available for this session.
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             );
                         })}
