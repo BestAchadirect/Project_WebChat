@@ -107,6 +107,10 @@ Admin: `http://localhost:5173`
 - Convert display currency using `CURRENCY_RATES_JSON` where rates mean: `1 USD = X units`.
 - Manual migration (Supabase SQL editor): `backend/sql/migrations/2025_12_19_products_currency_usd.sql`
 
+## Product tuning
+
+The only active product tuning knob is `PRODUCT_DISTANCE_THRESHOLD` (controls how strict vector product matching is in chat). Other older tuning settings were removed.
+
 ## Test suites (API must be running)
 
 - Product carousel: `python backend/scripts/run_product_carousel_test_suite.py --suite backend/tests/product_carousel_test.json`

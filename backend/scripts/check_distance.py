@@ -7,7 +7,6 @@ sys.path.append(os.getcwd())
 
 from app.services.llm_service import llm_service
 from app.db.session import AsyncSessionLocal
-from app.services.product_pipeline import ProductPipeline
 from app.core.config import settings
 
 async def check():
@@ -18,13 +17,6 @@ async def check():
     emb = await llm_service.generate_embedding(query)
     
     async with AsyncSessionLocal() as db:
-        pipeline = ProductPipeline(
-            search_products=None, 
-            search_products_by_exact_sku=None, 
-            infer_jewelry_type_filter=None, 
-            log_event=lambda **kwargs: print(f"Log: {kwargs}")
-        )
-        
         # We need to manually call the search logic or use the service if manageable.
         # But ChatService.search_products is what we want.
         # Let's import ChatService instead.

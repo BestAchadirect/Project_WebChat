@@ -28,11 +28,7 @@ class Settings(BaseSettings):
     VECTOR_DIMENSIONS: int = 1536  # for text-embedding-3-small
     KNOWLEDGE_DISTANCE_THRESHOLD: float = 0.40
     PRODUCT_DISTANCE_THRESHOLD: float = 0.35
-    PRODUCT_SEARCH_TOPK: int = 10
-    PRODUCT_SEARCH_DISTANCE_THRESHOLD: float = 0.35
     PRODUCT_EMBEDDING_MODEL: str = "text-embedding-3-small"
-    PRODUCT_DISTANCE_STRICT: float = 0.35
-    PRODUCT_DISTANCE_LOOSE: float = 0.45
     PRICE_DISPLAY_CURRENCY: str = "USD"
     THB_TO_USD_RATE: float = 1.0
     BASE_CURRENCY: str = "USD"
@@ -40,16 +36,6 @@ class Settings(BaseSettings):
     NLU_MODEL: str = "gpt-4o-mini"
     NLU_MAX_TOKENS: int = 250
 
-    # Routing UX (smalltalk / low-signal)
-    SMALLTALK_ENABLED: bool = True
-    SMALLTALK_MODE: str = "static"  # static | llm
-    SMALLTALK_MODEL: str = "gpt-4o-mini"
-    GENERAL_CHAT_MODEL: str = "gpt-4o-mini"
-    GENERAL_CHAT_MAX_TOKENS: int = 250
-    CONTEXTUAL_REPLY_ENABLED: bool = True
-    CONTEXTUAL_REPLY_MODEL: str = "gpt-4o-mini"
-    CONTEXTUAL_REPLY_MAX_TOKENS: int = 120
-    CONTEXTUAL_REPLY_TEMPERATURE: float = 0.3
     UI_LOCALIZATION_ENABLED: bool = True
     UI_LOCALIZATION_MODEL: str = "gpt-4o-mini"
     UI_LOCALIZATION_MAX_TOKENS: int = 220
@@ -73,23 +59,14 @@ class Settings(BaseSettings):
 
     # RAG pipeline (routing should not depend on distance thresholds)
     RAG_RETRIEVE_TOPK_KNOWLEDGE: int = 30
-    RAG_RETRIEVE_TOPK_PRODUCT: int = 20
     RAG_MAX_CHUNK_CHARS_FOR_CONTEXT: int = 1200
     RAG_ANSWER_MODEL: str = "gpt-4o-mini"
-    RAG_VERIFY_MODEL: str = "gpt-4o-mini"
     RAG_DECOMPOSE_MODEL: str = "gpt-4o-mini"
     RAG_DECOMPOSE_MAX_SUBQUESTIONS: int = 8
     RAG_DECOMPOSE_WEAK_DISTANCE: float = 0.55
     RAG_DECOMPOSE_GAP_THRESHOLD: float = 0.06
-    RAG_MAX_SUB_QUESTIONS: int = 4
     RAG_PER_QUERY_KEEP: int = 1
-    RAG_VERIFY_MAX_KNOWLEDGE_CHUNKS: int = 12
 
-    # Retrieval planner (LLM, almost-always)
-    PLANNER_ENABLED: bool = True
-    PLANNER_MODEL: str = "gpt-4o-mini"
-    PLANNER_MAX_TOKENS: int = 200
-    PLANNER_MIN_CONFIDENCE: float = 0.6
 
     # Semantic cache (pgvector)
     SEMANTIC_CACHE_ENABLED: bool = True

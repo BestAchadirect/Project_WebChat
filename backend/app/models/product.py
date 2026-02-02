@@ -47,28 +47,8 @@ class Product(Base):
     search_hash = Column(String, nullable=True)
     search_keywords = Column(ARRAY(String), default=list, nullable=False)
 
-    # Common product attribute columns (optional; also mirrored in attributes JSONB)
-    jewelry_type = Column(String, nullable=True, index=True)
-    material = Column(String, nullable=True, index=True)
-    length = Column(String, nullable=True)
-    size = Column(String, nullable=True)
-    cz_color = Column(String, nullable=True)
-    design = Column(String, nullable=True)
-    crystal_color = Column(String, nullable=True)
-    color = Column(String, nullable=True)
-    gauge = Column(String, nullable=True)
-    size_in_pack = Column(Integer, nullable=True)
-    rack = Column(String, nullable=True)
-    height = Column(String, nullable=True)
-    packing_option = Column(String, nullable=True)
-    pincher_size = Column(String, nullable=True)
-    ring_size = Column(String, nullable=True)
-    quantity_in_bulk = Column(Integer, nullable=True)
-    opal_color = Column(String, nullable=True)
-    threading = Column(String, nullable=True)
-    outer_diameter = Column(String, nullable=True)
-    pearl_color = Column(String, nullable=True)
-    
+    # Common product attributes are stored in JSONB and the EAV tables.
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -12,6 +12,7 @@ from app.core.logging import get_logger
 from app.core.config import settings
 from app.models.chat import AppUser, Conversation, Message, MessageRole
 from app.models.product import Product, ProductEmbedding
+from app.models.product_attribute import AttributeDefinition, ProductAttributeValue
 from app.models.qa_log import QALog, QAStatus
 from app.prompts.system_prompts import (
     rag_answer_prompt,
@@ -20,10 +21,9 @@ from app.prompts.system_prompts import (
 )
 from app.schemas.chat import ChatContext, ChatRequest, ChatResponse, KnowledgeSource, ProductCard, RouteDecision
 from app.services.llm_service import llm_service
-from app.services.product_pipeline import ProductPipeline
 from app.services.knowledge_pipeline import KnowledgePipeline
-from app.services.verifier_service import VerifierService
 from app.services.currency_service import currency_service
+from app.services.eav_service import eav_service
 from app.services.response_renderer import ResponseRenderer
 from app.services.semantic_cache_service import semantic_cache_service
 from app.utils.debug_log import debug_log as _debug_log
@@ -36,14 +36,7 @@ class ChatService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        self._product_pipeline = ProductPipeline(
-            search_products=self.search_products,
-            search_products_by_exact_sku=self._search_products_by_exact_sku,
-            infer_jewelry_type_filter=self._infer_jewelry_type_filter,
-            log_event=self._log_event,
-        )
         self._knowledge_pipeline = KnowledgePipeline(db=self.db, log_event=self._log_event)
-        self._verifier_service = VerifierService(log_event=self._log_event)
         self._response_renderer = ResponseRenderer()
 
 
@@ -64,6 +57,19 @@ class ChatService:
         if not value:
             return ""
         return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+    @staticmethod
+    def _merge_product_attrs(
+        base_attrs: Optional[Dict[str, Any]],
+        eav_attrs: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        attrs = dict(base_attrs or {})
+        if eav_attrs:
+            for key, value in eav_attrs.items():
+                if value is None:
+                    continue
+                attrs[key] = value
+        return attrs
 
     def _infer_primary_jewelry_type(
         self,
@@ -417,19 +423,22 @@ class ChatService:
 
     async def _get_product_category_overview(self, limit: int = 6) -> List[str]:
         stmt = (
-            select(Product.jewelry_type, func.count(Product.id))
+            select(ProductAttributeValue.value, func.count(func.distinct(ProductAttributeValue.product_id)))
+            .join(AttributeDefinition, ProductAttributeValue.attribute_id == AttributeDefinition.id)
+            .join(Product, Product.id == ProductAttributeValue.product_id)
+            .where(AttributeDefinition.name == "jewelry_type")
             .where(Product.is_active.is_(True))
-            .where(Product.jewelry_type.isnot(None))
-            .group_by(Product.jewelry_type)
-            .order_by(func.count(Product.id).desc())
+            .where(ProductAttributeValue.value.isnot(None))
+            .group_by(ProductAttributeValue.value)
+            .order_by(func.count(func.distinct(ProductAttributeValue.product_id)).desc())
             .limit(limit)
         )
         result = await self.db.execute(stmt)
         rows = result.all()
         categories: List[str] = []
-        for name, _count in rows:
-            if name:
-                categories.append(str(name).strip())
+        for value, _count in rows:
+            if value:
+                categories.append(str(value).strip())
         return categories
 
     async def _search_products_by_exact_sku(
@@ -448,24 +457,10 @@ class ChatService:
         )
         result = await self.db.execute(stmt)
         products = result.scalars().all()
+        attr_map = await eav_service.get_product_attributes(self.db, [p.id for p in products])
         cards: List[ProductCard] = []
         for p in products:
-            cards.append(
-                ProductCard(
-                    id=p.id,
-                    object_id=p.object_id,
-                    sku=p.sku,
-                    legacy_sku=p.legacy_sku or [],
-                    name=p.name,
-                    description=p.description,
-                    price=p.price,
-                    currency=p.currency,
-                    stock_status=p.stock_status,
-                    image_url=p.image_url,
-                    product_url=p.product_url,
-                    attributes=p.attributes or {},
-                )
-            )
+            cards.append(self._product_to_card(p, attr_map.get(p.id)))
         return cards
 
     def _log_event(self, *, run_id: str, location: str, data: Dict[str, Any]) -> None:
@@ -701,7 +696,8 @@ class ChatService:
             
             if sku_product:
                 logger.info(f"Smart Search: Found exact SKU match for '{clean_cand}'")
-                card = self._product_to_card(sku_product)
+                attr_map = await eav_service.get_product_attributes(self.db, [sku_product.id])
+                card = self._product_to_card(sku_product, attr_map.get(sku_product.id))
                 return [card], [0.0], 0.0, {str(sku_product.id): 0.0}
                 
             # 2. Exact Master Code / Product Name Match
@@ -719,7 +715,8 @@ class ChatService:
                 variants_result = await self.db.execute(variants_stmt)
                 variants = variants_result.scalars().all()
                 
-                cards = [self._product_to_card(p) for p in variants]
+                attr_map = await eav_service.get_product_attributes(self.db, [p.id for p in variants])
+                cards = [self._product_to_card(p, attr_map.get(p.id)) for p in variants]
                 if len(cards) > limit * 2:
                     cards = cards[:limit * 2]
                     
@@ -730,16 +727,12 @@ class ChatService:
         # 3. Fallback to Vector Search
         return await self.search_products(query_embedding, limit, run_id)
 
-    def _product_to_card(self, product: Product) -> ProductCard:
-        attrs = dict(product.attributes or {})
-        if product.jewelry_type and "jewelry_type" not in attrs:
-            attrs["jewelry_type"] = product.jewelry_type
-        if product.material and "material" not in attrs:
-            attrs["material"] = product.material
-        if product.gauge and "gauge" not in attrs:
-            attrs["gauge"] = product.gauge
-        if product.threading and "threading" not in attrs:
-            attrs["threading"] = product.threading
+    def _product_to_card(
+        self,
+        product: Product,
+        eav_attrs: Optional[Dict[str, Any]] = None,
+    ) -> ProductCard:
+        attrs = self._merge_product_attrs(product.attributes, eav_attrs)
         return ProductCard(
             id=product.id,
             object_id=product.object_id,
@@ -768,51 +761,38 @@ class ChatService:
         distance_col = ProductEmbedding.embedding.cosine_distance(query_embedding).label("distance")
 
         model = getattr(settings, "PRODUCT_EMBEDDING_MODEL", settings.EMBEDDING_MODEL)
-        probe_stmt = (
-            select(ProductEmbedding.product_id, distance_col)
+        subq = (
+            select(
+                ProductEmbedding.product_id.label("product_id"),
+                distance_col,
+            )
             .join(Product, Product.id == ProductEmbedding.product_id)
             .where(Product.is_active.is_(True))
             .where(or_(ProductEmbedding.model.is_(None), ProductEmbedding.model == model))
             .order_by(distance_col)
             .limit(limit)
+            .subquery()
         )
-        probe_result = await self.db.execute(probe_stmt)
-        probe_rows: Sequence[Any] = probe_result.all()
+        stmt = (
+            select(Product, subq.c.distance)
+            .join(subq, Product.id == subq.c.product_id)
+            .order_by(subq.c.distance)
+        )
+        result = await self.db.execute(stmt)
+        rows: Sequence[Any] = result.all()
 
-        if not probe_rows:
+        if not rows:
             return [], [], None, {}
 
-        distances = [float(row.distance) for row in probe_rows]
+        distances = [float(distance) for _product, distance in rows]
         best_distance = distances[0] if distances else None
-        product_id_order = [row.product_id for row in probe_rows]
-        distance_by_id = {str(row.product_id): float(row.distance) for row in probe_rows}
+        distance_by_id = {str(product.id): float(distance) for product, distance in rows}
 
-        # Fetch full product data after probe to keep the probe fast
-        products_stmt = select(Product).where(Product.id.in_(product_id_order))
-        products_result = await self.db.execute(products_stmt)
-        products_by_id = {p.id: p for p in products_result.scalars().all()}
+        attr_map = await eav_service.get_product_attributes(self.db, [product.id for product, _distance in rows])
 
         product_cards: List[ProductCard] = []
-        for idx, pid in enumerate(product_id_order):
-            product = products_by_id.get(pid)
-            if not product:
-                continue
-            product_cards.append(
-                ProductCard(
-                    id=product.id,
-                    object_id=product.object_id,
-                    sku=product.sku,
-                    legacy_sku=product.legacy_sku or [],
-                    name=product.name,
-                    description=product.description,
-                    price=product.price,
-                    currency=product.currency,
-                    stock_status=product.stock_status,
-                    image_url=product.image_url,
-                    product_url=product.product_url,
-                    attributes=product.attributes or {},
-                )
-            )
+        for idx, (product, distance) in enumerate(rows):
+            product_cards.append(self._product_to_card(product, attr_map.get(product.id)))
 
             # #region agent log
             if run_id and idx < 3:
@@ -828,7 +808,7 @@ class ChatService:
                                 "rank": idx + 1,
                                 "product_id": str(product.id),
                                 "name": product.name,
-                                "distance": distances[idx] if idx < len(distances) else None,
+                                "distance": float(distance),
                                 "threshold": settings.PRODUCT_DISTANCE_THRESHOLD,
                             },
                             "timestamp": int(time.time() * 1000),
@@ -1012,6 +992,40 @@ class ChatService:
         if use_products or use_knowledge:
             query_embedding = await llm_service.generate_embedding(search_query)
 
+        if query_embedding is not None:
+            debug_meta["semantic_cache_hit"] = False
+            cache_hit = await semantic_cache_service.get_hit(
+                self.db,
+                query_embedding=query_embedding,
+                reply_language=reply_language,
+                target_currency=target_currency,
+            )
+            if cache_hit:
+                debug_meta["semantic_cache_hit"] = True
+                debug_meta["semantic_cache_distance"] = cache_hit.distance
+                cached = cache_hit.entry.response_json or {}
+                response = ChatResponse(
+                    conversation_id=conversation.id,
+                    reply_text=str(cached.get("reply_text", "")),
+                    carousel_msg=str(cached.get("carousel_msg", "")),
+                    product_carousel=[ProductCard(**p) for p in cached.get("product_carousel", [])],
+                    follow_up_questions=list(cached.get("follow_up_questions", []) or []),
+                    intent=str(cached.get("intent", "rag_strict")),
+                    sources=[KnowledgeSource(**s) for s in cached.get("sources", [])],
+                    debug=debug_meta,
+                    view_button_text=str(cached.get("view_button_text", "View Product Details")),
+                    material_label=str(cached.get("material_label", "Material")),
+                    jewelry_type_label=str(cached.get("jewelry_type_label", "Jewelry Type")),
+                )
+                token_usage = llm_service.consume_token_usage()
+                return await self._finalize_response(
+                    conversation_id=conversation.id,
+                    user_text=text,
+                    response=response,
+                    token_usage=token_usage,
+                    channel=channel,
+                )
+
         product_cards: List[ProductCard] = []
         distances: List[float] = []
         best_distance: Optional[float] = None
@@ -1192,6 +1206,30 @@ class ChatService:
             user_text=text,
             apply_polish=False,
         )
+
+        if response.sources:
+            payload = {
+                "reply_text": response.reply_text,
+                "carousel_msg": response.carousel_msg or "",
+                "product_carousel": [p.dict() for p in response.product_carousel],
+                "follow_up_questions": list(response.follow_up_questions or []),
+                "intent": response.intent,
+                "sources": [s.dict() for s in response.sources],
+                "view_button_text": response.view_button_text,
+                "material_label": response.material_label,
+                "jewelry_type_label": response.jewelry_type_label,
+            }
+            for p in payload["product_carousel"]:
+                if p.get("id"):
+                    p["id"] = str(p["id"])
+            await semantic_cache_service.save_hit(
+                self.db,
+                query_text=search_query,
+                query_embedding=query_embedding or [],
+                response_json=payload,
+                reply_language=reply_language,
+                target_currency=target_currency,
+            )
 
         token_usage = llm_service.consume_token_usage()
         return await self._finalize_response(

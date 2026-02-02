@@ -1,4 +1,5 @@
 from .product import Product, ProductEmbedding
+from .product_attribute import AttributeDefinition, ProductAttributeValue
 from .product_group import ProductGroup
 from .knowledge import (
     KnowledgeArticle,
