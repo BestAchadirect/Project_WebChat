@@ -4,7 +4,7 @@ import hashlib
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, desc, func, or_, cast, String
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db
@@ -92,6 +92,13 @@ async def list_chunks(
     db: AsyncSession = Depends(get_db)
 ):
     """List all knowledge chunks with optional filtering."""
+    search_uuid: Optional[UUID] = None
+    if search:
+        try:
+            search_uuid = UUID(search.strip())
+        except ValueError:
+            search_uuid = None
+
     query = select(KnowledgeChunk).options(
         selectinload(KnowledgeChunk.article)
     ).order_by(KnowledgeChunk.article_id, KnowledgeChunk.chunk_index)
@@ -99,15 +106,21 @@ async def list_chunks(
     if article_id:
         query = query.where(KnowledgeChunk.article_id == article_id)
     
-    if search:
-        query = query.where(KnowledgeChunk.chunk_text.ilike(f"%{search}%"))
+    if search_uuid:
+        query = query.where(KnowledgeChunk.id == search_uuid)
+    elif search:
+        search_like = f"%{search}%"
+        query = query.where(KnowledgeChunk.chunk_text.ilike(search_like))
     
     # Get total count
     count_query = select(func.count()).select_from(KnowledgeChunk)
     if article_id:
         count_query = count_query.where(KnowledgeChunk.article_id == article_id)
-    if search:
-        count_query = count_query.where(KnowledgeChunk.chunk_text.ilike(f"%{search}%"))
+    if search_uuid:
+        count_query = count_query.where(KnowledgeChunk.id == search_uuid)
+    elif search:
+        search_like = f"%{search}%"
+        count_query = count_query.where(KnowledgeChunk.chunk_text.ilike(search_like))
     
     count_result = await db.execute(count_query)
     total = count_result.scalar() or 0
@@ -134,6 +147,13 @@ async def list_articles_with_chunks(
     db: AsyncSession = Depends(get_db)
 ):
     """List all articles with their chunks grouped together."""
+    search_uuid: Optional[UUID] = None
+    if search:
+        try:
+            search_uuid = UUID(search.strip())
+        except ValueError:
+            search_uuid = None
+
     # Get all articles with chunks
     query = select(KnowledgeArticle).options(
         selectinload(KnowledgeArticle.chunks)
@@ -149,8 +169,11 @@ async def list_articles_with_chunks(
         chunks = article.chunks
         
         # Filter chunks if search query provided
-        if search:
-            chunks = [c for c in chunks if search.lower() in c.chunk_text.lower()]
+        if search_uuid:
+            chunks = [c for c in chunks if c.id == search_uuid]
+        elif search:
+            search_lower = search.lower()
+            chunks = [c for c in chunks if search_lower in c.chunk_text.lower()]
         
         if not chunks:
             continue

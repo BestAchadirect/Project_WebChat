@@ -82,6 +82,7 @@ interface ChatWidgetProps {
     welcomeMessage?: string;
     faqSuggestions?: string[]; // New prop for Flex Message chips
     apiBaseUrl?: string;
+    reportUrl?: string;
     locale?: string;
     customerName?: string;
     email?: string;
@@ -97,6 +98,7 @@ declare global {
             faqSuggestions?: string[];
             apiBaseUrl?: string;
             apiUrl?: string;
+            reportUrl?: string;
             displayCurrency?: string;
             thbToUsdRate?: number;
             locale?: string;
@@ -410,6 +412,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     welcomeMessage,
     faqSuggestions,
     apiBaseUrl,
+    reportUrl,
     locale,
     customerName,
     email,
@@ -445,6 +448,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             "What materials do you use?"
         ],
         apiBaseUrl: (apiBaseUrl || window.genaiConfig?.apiBaseUrl || window.genaiConfig?.apiUrl || '').trim().replace(/\/+$/, ''),
+        reportUrl: (reportUrl || window.genaiConfig?.reportUrl || '').trim(),
         locale: locale || window.genaiConfig?.locale || 'en-US',
         customerName: customerName || window.genaiConfig?.customerName,
         email: email || window.genaiConfig?.email,
@@ -478,6 +482,46 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     const chatScrollRef = useRef<HTMLDivElement>(null);
     const isAtBottomRef = useRef(true);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const [selectedImage, setSelectedImage] = useState<File | null>(null);
+    const [selectedImageUrl, setSelectedImageUrl] = useState<string | null>(null);
+
+    const handleReportClick = () => {
+        if (config.reportUrl) {
+            window.open(config.reportUrl, '_blank', 'noopener,noreferrer');
+            return;
+        }
+        setActiveTab('chat');
+        setInput('Report: ');
+        setTimeout(() => textareaRef.current?.focus(), 0);
+    };
+
+    const handleImageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        if (!file.type.startsWith('image/')) {
+            alert('Please select an image file.');
+            if (fileInputRef.current) fileInputRef.current.value = '';
+            return;
+        }
+        setSelectedImage(file);
+    };
+
+    const clearSelectedImage = () => {
+        setSelectedImage(null);
+        setSelectedImageUrl(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
+    useEffect(() => {
+        if (!selectedImage) {
+            setSelectedImageUrl(null);
+            return;
+        }
+        const url = URL.createObjectURL(selectedImage);
+        setSelectedImageUrl(url);
+        return () => URL.revokeObjectURL(url);
+    }, [selectedImage]);
     const [showScrollToLatest, setShowScrollToLatest] = useState(false);
     const hasHydratedRef = useRef(false);
 
@@ -938,12 +982,12 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
                             {/* Input Group (Deep Chat Style) */}
                             <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 flex flex-col pt-2 pb-3 px-4 shadow-[0_-10px_30px_rgba(0,0,0,0.03)] z-10">
-                                <div className="flex items-center gap-3">
-                                    <textarea
-                                        ref={textareaRef}
-                                        value={input}
-                                        onChange={(e) => setInput(e.target.value)}
-                                        onKeyDown={handleKeyPress}
+                            <div className="flex items-center gap-3">
+                                <textarea
+                                    ref={textareaRef}
+                                    value={input}
+                                    onChange={(e) => setInput(e.target.value)}
+                                    onKeyDown={handleKeyPress}
                                         placeholder="Enter your message..."
                                         rows={1}
                                         className="flex-1 bg-transparent border-none py-3 focus:outline-none resize-none max-h-[100px] scrollbar-custom text-sm font-medium text-gray-700"
@@ -959,6 +1003,42 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                             <path d="M5.78393 10.7733L3.47785 6.16113C2.36853 3.9425 1.81387 2.83318 2.32353 2.32353C2.83318 1.81387 3.9425 2.36853 6.16113 3.47785L19.5769 10.1857C21.138 10.9663 21.9185 11.3566 21.9185 11.9746C21.9185 12.5926 21.138 12.9829 19.5769 13.7634L6.16113 20.4713C3.9425 21.5806 2.83318 22.1353 2.32353 21.6256C1.81387 21.116 2.36853 20.0067 3.47785 17.788L5.78522 13.1733H12.6367C13.2995 13.1733 13.8367 12.636 13.8367 11.9733C13.8367 11.3105 13.2995 10.7733 12.6367 10.7733H5.78393Z" fill="currentColor" />
                                         </svg>
                                     </button>
+                                </div>
+                                <div className="mt-2 flex items-center gap-3 text-xs text-gray-500">
+                                    <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-gray-600 hover:text-gray-800">
+                                        <input
+                                            ref={fileInputRef}
+                                            type="file"
+                                            accept="image/*"
+                                            className="hidden"
+                                            onChange={handleImageChange}
+                                        />
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                            <path d="M4 7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V7Z" stroke="currentColor" strokeWidth="1.5" />
+                                            <path d="M8 14l2.5-2.5a1 1 0 0 1 1.4 0L16 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                            <circle cx="9" cy="9" r="1.5" fill="currentColor" />
+                                        </svg>
+                                        Upload photo
+                                    </label>
+                                    {selectedImageUrl && (
+                                        <div className="flex items-center gap-2">
+                                            <img
+                                                src={selectedImageUrl}
+                                                alt="Selected upload"
+                                                className="h-10 w-10 rounded-lg object-cover border border-gray-200"
+                                            />
+                                            <div className="max-w-[140px] truncate text-gray-600">
+                                                {selectedImage?.name}
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={clearSelectedImage}
+                                                className="text-xs font-semibold text-red-500 hover:text-red-600"
+                                            >
+                                                Remove
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>
@@ -988,6 +1068,16 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                 <path d="M20.4001 5.1223V15.9045C20.4001 16.3308 20.2566 16.6912 19.9697 16.9856C19.6828 17.28 19.3316 17.4272 18.916 17.4272H6.49717L3.6001 20.3996V5.1223C3.6001 4.69595 3.74356 4.33558 4.03048 4.04119C4.31741 3.7468 4.66864 3.59961 5.08417 3.59961H18.916C19.3316 3.59961 19.6828 3.7468 19.9697 4.04119C20.2566 4.33558 20.4001 4.69595 20.4001 5.1223Z" fill="currentColor" />
                             </svg>
                             <span className="text-[10px] font-black uppercase tracking-widest mt-6">Chat</span>
+                        </button>
+                        <button
+                            onClick={handleReportClick}
+                            className="group flex flex-col items-center gap-1.5 transition-all p-2 rounded-xl active:scale-95 text-gray-300 hover:text-gray-400"
+                        >
+                            <div className="p-1.5 rounded-lg transition-colors"></div>
+                            <svg className="absolute" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M6 4h9l3 3v13H6V4Zm8 1.5V8h2.5L14 5.5ZM8 11h8v1.5H8V11Zm0 4h8v1.5H8V15Z" fill="currentColor" />
+                            </svg>
+                            <span className="text-[10px] font-black uppercase tracking-widest mt-6">Report</span>
                         </button>
                     </div>
                 )}

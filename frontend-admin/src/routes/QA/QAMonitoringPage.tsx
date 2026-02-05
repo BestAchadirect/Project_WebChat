@@ -81,6 +81,12 @@ export const QAMonitoringPage: React.FC = () => {
         setExpandedSources((prev) => ({ ...prev, [id]: !prev[id] }));
     };
 
+    const openChunkInDocumentControl = (chunkId: string) => {
+        const url = `/dashboard/knowledge/documents-control?chunkId=${encodeURIComponent(chunkId)}`;
+        window.open(url, '_blank', 'noopener,noreferrer');
+    };
+
+
     const getStats = (items: QALog[]) => {
         const total = items.length;
         const success = items.filter((log) => log.status === 'success').length;
@@ -357,14 +363,17 @@ export const QAMonitoringPage: React.FC = () => {
                                                         </div>
                                                     </div>
                                                 )}
-                                                {expandedSources[log.id] && log.sources && log.sources.length > 0 && (
+                                                    {expandedSources[log.id] && log.sources && log.sources.length > 0 && (
                                                     <div className="mt-3 rounded-lg border border-gray-200 bg-white shadow-sm">
                                                         <div className="border-b border-gray-100 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600">
                                                             Sources
                                                         </div>
                                                         <ul className="divide-y divide-gray-100">
                                                             {log.sources.map((source, index) => (
-                                                                <li key={`${log.id}-source-${index}`} className="px-3 py-2 text-xs text-gray-700">
+                                                                <li
+                                                                    key={`${log.id}-source-${index}`}
+                                                                    className={`px-3 py-2 text-xs text-gray-700 ${index === 0 ? 'bg-green-50' : ''}`}
+                                                                >
                                                                     <div className="flex items-center justify-between gap-2">
                                                                         <div className="flex flex-col gap-1">
                                                                             <span className="font-medium">
@@ -372,9 +381,23 @@ export const QAMonitoringPage: React.FC = () => {
                                                                                     ? source.title
                                                                                     : 'Untitled source'}
                                                                             </span>
-                                                                            {typeof source?.source_id === 'string' && source.source_id.trim() ? (
-                                                                                <span className="text-[11px] text-gray-400">ID: {source.source_id}</span>
-                                                                            ) : null}
+                                                                            <div className="flex flex-wrap items-center gap-2">
+                                                                                {typeof source?.chunk_id === 'string' && source.chunk_id.trim() ? (
+                                                                                    <span className="text-[11px] text-gray-400">Chunk ID: {source.chunk_id}</span>
+                                                                                ) : typeof source?.source_id === 'string' && source.source_id.trim() ? (
+                                                                                    <span className="text-[11px] text-gray-400">Source ID: {source.source_id}</span>
+                                                                                ) : null}
+                                                                                {typeof source?.chunk_id === 'string' && source.chunk_id.trim() ? (
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        onClick={() => openChunkInDocumentControl(source.chunk_id)}
+                                                                                        className="text-[11px] text-primary-600 hover:text-primary-700 underline"
+                                                                                        title="Open in Document Control"
+                                                                                    >
+                                                                                        Open chunk
+                                                                                    </button>
+                                                                                ) : null}
+                                                                            </div>
                                                                         </div>
                                                                         {typeof source?.relevance === 'number' ? (
                                                                             <span className="text-gray-400">rel {source.relevance.toFixed(3)}</span>

@@ -603,7 +603,12 @@ class ChatService:
             question=user_text,
             answer=response.reply_text,
             sources=[
-                {"source_id": s.source_id, "title": s.title, "relevance": s.relevance}
+                {
+                    "source_id": s.source_id,
+                    "chunk_id": s.chunk_id,
+                    "title": s.title,
+                    "relevance": s.relevance,
+                }
                 for s in response.sources
             ],
             status=qa_status,
