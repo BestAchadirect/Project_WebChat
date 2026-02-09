@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Literal, Optional, List, Dict, Any
+from datetime import datetime
 import uuid
 
 
@@ -27,7 +28,6 @@ class KnowledgeSource(BaseModel):
     relevance: float
     url: Optional[str] = None
     distance: Optional[float] = None
-    rerank_score: Optional[float] = Field(default=None, exclude=True)
     query_hint: Optional[str] = Field(default=None, exclude=True)
 
 
@@ -92,8 +92,28 @@ class ParsedQuery(BaseModel):
 class ChatResponse(BaseModel):
     conversation_id: int
     reply_text: str
+    carousel_msg: Optional[str] = None
     product_carousel: List[ProductCard] = []
     follow_up_questions: List[str] = []
     intent: str = "retrieval_router"
     sources: List[KnowledgeSource] = []
     debug: Dict[str, Any] = Field(default_factory=dict)
+    view_button_text: str = "View Product Details"
+    material_label: str = "Material"
+    jewelry_type_label: str = "Jewelry Type"
+
+
+class ChatHistoryMessage(BaseModel):
+    role: str
+    content: str
+    product_data: Optional[List[Dict[str, Any]]] = None
+    created_at: Optional[datetime] = None
+
+
+class ChatHistoryResponse(BaseModel):
+    conversation_id: int
+    messages: List[ChatHistoryMessage] = []
+
+
+class ActiveConversationResponse(BaseModel):
+    conversation_id: Optional[int] = None

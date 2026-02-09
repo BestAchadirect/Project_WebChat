@@ -11,7 +11,7 @@ from uuid import uuid4, UUID
 from datetime import datetime
 from fastapi import UploadFile, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, update, delete
+from sqlalchemy import select, func, and_, update, delete, or_
 from sqlalchemy.orm import selectinload
 
 from app.models.product import Product, ProductEmbedding
@@ -28,6 +28,7 @@ from app.models.knowledge import (
 from app.models.product_upload import ProductUpload, ProductUploadStatus
 from app.services.llm_service import llm_service
 from app.services.task_service import task_service
+from app.services.eav_service import eav_service
 from app.models.task import TaskType, TaskStatus
 from app.core.logging import get_logger
 from app.core.config import settings
@@ -419,6 +420,8 @@ class DataImportService:
         stats = {"created": 0, "updated": 0, "errors": 0}
         products_to_embed = []
         group_cache: Dict[str, UUID] = {}
+        pending_eav_rows: List[Tuple[UUID, str, Any]] = []
+        pending_new_eav: List[Tuple[Product, Dict[str, Any]]] = []
 
         try:
             await self._update_product_upload_status(db, upload_record.id, ProductUploadStatus.PROCESSING)
@@ -494,14 +497,9 @@ class DataImportService:
                             val = val.strip()
                             if not val:
                                 continue
-                        if key in {"size_in_pack", "quantity_in_bulk"}:
-                            parsed_int = self._parse_int(val)
-                            if parsed_int is not None:
-                                attributes[key] = parsed_int
-                        else:
-                            normalized = self._normalize_attribute_value(key, val)
-                            if normalized is not None:
-                                attributes[key] = normalized
+                        normalized = self._normalize_attribute_value(key, val)
+                        if normalized is not None:
+                            attributes[key] = normalized
 
                     for key in ATTRIBUTE_COLUMNS:
                         if key in attributes:
@@ -590,13 +588,6 @@ class DataImportService:
                             "legacy_sku": legacy_skus,
                         }
 
-                        # Mirror common attributes into dedicated columns (if present in DB)
-                        for k in ATTRIBUTE_COLUMNS:
-                            if k in {"size_in_pack", "quantity_in_bulk"}:
-                                update_fields[k] = self._parse_int(effective_attributes.get(k))
-                            else:
-                                update_fields[k] = effective_attributes.get(k)
-
                         if image_url is not None:
                             update_fields["image_url"] = image_url
                         if product_url is not None:
@@ -615,6 +606,10 @@ class DataImportService:
 
                         for field, value in update_fields.items():
                             setattr(existing_product, field, value)
+
+                        if effective_attributes:
+                            for key, value in effective_attributes.items():
+                                pending_eav_rows.append((existing_product.id, key, value))
 
                         if changed_fields:
                             db.add(
@@ -654,17 +649,33 @@ class DataImportService:
                             new_product.is_featured = is_featured
                         if priority is not None:
                             new_product.priority = priority
-                        for k in ATTRIBUTE_COLUMNS:
-                            if k in {"size_in_pack", "quantity_in_bulk"}:
-                                setattr(new_product, k, self._parse_int(attributes.get(k)))
-                            else:
-                                setattr(new_product, k, attributes.get(k))
                         db.add(new_product)
+                        if attributes:
+                            pending_new_eav.append((new_product, attributes))
                         stats["created"] += 1
                         products_to_embed.append(new_product)
                 except Exception as row_error:
                     logger.error(f"Error importing row {row}: {row_error}")
                     stats["errors"] += 1
+
+            if pending_new_eav:
+                await db.flush()
+                for product, attrs in pending_new_eav:
+                    for key, value in attrs.items():
+                        pending_eav_rows.append((product.id, key, value))
+
+            if pending_eav_rows:
+                metrics = await eav_service.bulk_upsert_product_attribute_rows(
+                    db,
+                    rows=pending_eav_rows,
+                )
+                logger.info(
+                    "EAV import upsert: rows_total=%s unique_pairs=%s insert_rows=%s drop_empty=%s",
+                    metrics.get("rows_total"),
+                    metrics.get("unique_pairs"),
+                    metrics.get("insert_rows"),
+                    metrics.get("drop_empty"),
+                )
 
             await db.commit()
 
@@ -948,6 +959,8 @@ class DataImportService:
                 )
                 await task_service.update_task_status(db, task.id, TaskStatus.RUNNING)
 
+                model = getattr(settings, "KNOWLEDGE_EMBEDDING_MODEL", settings.EMBEDDING_MODEL)
+
                 # Find chunks for these articles that need embeddings
                 # We simply select chunks and check their embedding relationship
                 # Or for simplicity, select chunks created recently?
@@ -975,6 +988,8 @@ class DataImportService:
                 
                 logger.info(f"Found {total} chunks to process")
                 
+                chunks_to_embed: List[KnowledgeChunk] = []
+
                 for chunk in chunks_to_process:
                     # Check for REUSE
                     # Find ANY existing embedding with same chunk_hash
@@ -984,6 +999,7 @@ class DataImportService:
                         select(KnowledgeEmbedding)
                         .join(KnowledgeChunk, KnowledgeEmbedding.chunk_id == KnowledgeChunk.id)
                         .where(KnowledgeChunk.chunk_hash == chunk.chunk_hash)
+                        .where(or_(KnowledgeEmbedding.model.is_(None), KnowledgeEmbedding.model == model))
                         .limit(1)
                     )
                     reuse_res = await db.execute(reuse_stmt)
@@ -996,30 +1012,39 @@ class DataImportService:
                             chunk_id=chunk.id,
                             chunk_text=chunk.chunk_text,
                             embedding=existing_emb.embedding, # Copy vector
-                            model=existing_emb.model,
+                            model=model,
                             version=chunk.version
                         )
                         db.add(new_emb)
+                        processed += 1
                     else:
-                        # Generate
-                        vector = await llm_service.generate_embedding(chunk.chunk_text)
+                        chunks_to_embed.append(chunk)
+
+                if processed:
+                    await db.commit()
+                    progress = int(processed / total * 100)
+                    await task_service.update_task_status(db, task.id, TaskStatus.RUNNING, progress=progress)
+
+                # Batch embed remaining chunks
+                batch_size = 50
+                for start in range(0, len(chunks_to_embed), batch_size):
+                    batch = chunks_to_embed[start:start + batch_size]
+                    vectors = await llm_service.generate_embeddings_batch([c.chunk_text for c in batch])
+                    for chunk, vector in zip(batch, vectors):
                         new_emb = KnowledgeEmbedding(
                             article_id=chunk.article_id,
                             chunk_id=chunk.id,
                             chunk_text=chunk.chunk_text,
                             embedding=vector,
-                            model="text-embedding-3-small", 
+                            model=model,
                             version=chunk.version
                         )
                         db.add(new_emb)
-                    
-                    processed += 1
-                    if processed % 10 == 0:
-                        await db.commit() # Commit periodically
-                        progress = int(processed / total * 100)
-                        await task_service.update_task_status(db, task.id, TaskStatus.RUNNING, progress=progress)
+                    processed += len(batch)
+                    await db.commit()
+                    progress = int(processed / total * 100)
+                    await task_service.update_task_status(db, task.id, TaskStatus.RUNNING, progress=progress)
 
-                await db.commit()
                 await task_service.update_task_status(db, task.id, TaskStatus.COMPLETED, progress=100)
                 
                 if upload_session_id:

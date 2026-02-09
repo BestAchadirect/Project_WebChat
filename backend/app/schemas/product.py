@@ -39,13 +39,13 @@ class Product(BaseModel):
     crystal_color: Optional[str] = None
     color: Optional[str] = None
     gauge: Optional[str] = None
-    size_in_pack: Optional[int] = None
+    size_in_pack: Optional[str] = None
     rack: Optional[str] = None
     height: Optional[str] = None
     packing_option: Optional[str] = None
     pincher_size: Optional[str] = None
     ring_size: Optional[str] = None
-    quantity_in_bulk: Optional[int] = None
+    quantity_in_bulk: Optional[str] = None
     opal_color: Optional[str] = None
     threading: Optional[str] = None
     outer_diameter: Optional[str] = None
@@ -67,17 +67,21 @@ class ProductUpdate(BaseModel):
     crystal_color: Optional[str] = None
     color: Optional[str] = None
     gauge: Optional[str] = None
-    size_in_pack: Optional[int] = None
+    size_in_pack: Optional[str] = None
     rack: Optional[str] = None
     height: Optional[str] = None
     packing_option: Optional[str] = None
     pincher_size: Optional[str] = None
     ring_size: Optional[str] = None
-    quantity_in_bulk: Optional[int] = None
+    quantity_in_bulk: Optional[str] = None
     opal_color: Optional[str] = None
     threading: Optional[str] = None
     outer_diameter: Optional[str] = None
     pearl_color: Optional[str] = None
+
+class ProductBulkUpdateRequest(BaseModel):
+    product_ids: List[UUID]
+    updates: ProductUpdate
 
 class ProductCarouselItem(BaseModel):
     """Product item for carousel display."""

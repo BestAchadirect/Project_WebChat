@@ -7,15 +7,19 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from app.db.session import engine
 from sqlalchemy import text
 from app.api.routes.health import router as health_router
 from app.api.routes.chat import router as chat_router
+from app.api.routes.chat_setting import router as chat_setting_router
 from app.api.routes.data_import import router as data_import_router
 from app.api.routes.tasks import router as tasks_router
 from app.api.routes.training import router as knowledge_router, qa_router
 from app.api.routes.products import router as products_router
+from app.api.routes.analytics import router as analytics_router
+from app.api.routes.banner import router as banner_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -45,6 +49,11 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="GenAI SaaS API", lifespan=lifespan)
 
+# Serve uploaded assets (e.g. banner images)
+uploads_path = Path(settings.UPLOAD_DIR).resolve()
+uploads_path.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(uploads_path)), name="uploads")
+
 # Set all CORS enabled origins
 allowed_origins = ["http://localhost:5173", "http://localhost:8080", "http://localhost:3000"]
 if settings.ALLOWED_ORIGINS and settings.ALLOWED_ORIGINS != "*":
@@ -64,11 +73,14 @@ app.add_middleware(
 # Include routers with proper prefixes
 app.include_router(health_router, tags=["Health"])
 app.include_router(chat_router, prefix=f"{settings.API_V1_STR}/chat", tags=["Chat"])
+app.include_router(chat_setting_router, prefix=f"{settings.API_V1_STR}/settings/chat", tags=["Settings"])
 app.include_router(data_import_router, prefix=f"{settings.API_V1_STR}/import", tags=["Import"])
 app.include_router(tasks_router, prefix=f"{settings.API_V1_STR}/tasks", tags=["Tasks"])
 app.include_router(knowledge_router, prefix=f"{settings.API_V1_STR}/dashboard/knowledge", tags=["Knowledge"])
 app.include_router(qa_router, prefix=f"{settings.API_V1_STR}/dashboard/qa", tags=["QA"])
 app.include_router(products_router, prefix=f"{settings.API_V1_STR}/products", tags=["Products"])
+app.include_router(analytics_router, prefix=f"{settings.API_V1_STR}/analytics", tags=["Analytics"])
+app.include_router(banner_router, prefix=f"{settings.API_V1_STR}/banners", tags=["Banners"])
 
 @app.get("/health")
 async def health_check():

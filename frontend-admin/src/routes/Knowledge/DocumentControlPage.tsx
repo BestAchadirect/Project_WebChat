@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { chunksApi, Chunk, ArticleChunkGroup, SimilarityResult } from '../../api/training';
 
 export const DocumentControlPage: React.FC = () => {
+    const [highlightChunkId, setHighlightChunkId] = useState<string | null>(null);
     const [articles, setArticles] = useState<ArticleChunkGroup[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
@@ -25,8 +26,28 @@ export const DocumentControlPage: React.FC = () => {
     const [totalChunks, setTotalChunks] = useState(0);
 
     useEffect(() => {
-        loadArticles();
+        const params = new URLSearchParams(window.location.search);
+        const chunkId = params.get('chunkId');
+        if (chunkId) {
+            setHighlightChunkId(chunkId);
+            setSearchQuery(chunkId);
+            loadArticles(chunkId);
+        } else {
+            loadArticles();
+        }
     }, []);
+
+    useEffect(() => {
+        if (!highlightChunkId || articles.length === 0) return;
+        for (const article of articles) {
+            const match = article.chunks.find((c) => c.id === highlightChunkId);
+            if (match) {
+                setSelectedChunk(match);
+                setEditedText(match.chunk_text);
+                break;
+            }
+        }
+    }, [articles, highlightChunkId]);
 
     const loadArticles = async (search?: string) => {
         try {
@@ -231,7 +252,7 @@ export const DocumentControlPage: React.FC = () => {
                 <div className="flex gap-2 flex-1">
                     <input
                         type="text"
-                        placeholder="Search chunks..."
+                        placeholder="Search chunks (text or chunk ID)..."
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
@@ -389,7 +410,12 @@ export const DocumentControlPage: React.FC = () => {
                                             {article.chunks.map((chunk) => (
                                                 <div
                                                     key={chunk.id}
-                                                    className={`list-group-item flex items-start gap-3 p-4 cursor-pointer transition-all hover:bg-gray-50 ${selectedChunk?.id === chunk.id ? 'bg-primary-50 border-l-4 border-primary-500' : ''
+                                                    className={`list-group-item flex items-start gap-3 p-4 cursor-pointer transition-all hover:bg-gray-50 ${
+                                                        selectedChunk?.id === chunk.id
+                                                            ? 'bg-primary-50 border-l-4 border-primary-500'
+                                                            : highlightChunkId === chunk.id
+                                                                ? 'bg-yellow-50 border-l-4 border-yellow-400'
+                                                                : ''
                                                         }`}
                                                 >
                                                     <input

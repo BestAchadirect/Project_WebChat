@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from datetime import datetime
 from uuid import UUID
 from app.models.qa_log import QAStatus
@@ -12,6 +12,8 @@ class QALogResponse(BaseModel):
     sources: List[Any] = []
     status: QAStatus
     error_message: Optional[str] = None
+    token_usage: Optional[Dict[str, Any]] = None
+    channel: Optional[str] = None
     created_at: datetime
     
     class Config:

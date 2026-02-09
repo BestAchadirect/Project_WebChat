@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -12,7 +12,6 @@ from app.core.logging import get_logger
 from app.models.knowledge import KnowledgeArticle, KnowledgeChunk, KnowledgeChunkTag, KnowledgeEmbedding
 from app.schemas.chat import ChatContext, KnowledgeSource
 from app.services.llm_service import llm_service
-from app.services.rerank_service import rerank_service
 from app.utils.debug_log import debug_log as _debug_log
 
 LogEventFn = Callable[..., None]
@@ -31,26 +30,6 @@ class KnowledgeRetrievalResult:
     decomposition_reason: str
     decomposition_knowledge_best: Optional[float]
     decomposition_gap: Optional[float]
-
-
-@dataclass
-class RerankResult:
-    reranked_top: List[KnowledgeSource]
-    rerank_used: bool
-    rerank_reason: str
-    rerank_duration_ms: int
-    rerank_timed_out: bool
-    rerank_status: str
-    candidates_count: int
-    d1: Optional[float]
-    d10: Optional[float]
-    gap: Optional[float]
-
-
-@dataclass
-class KnowledgePipelineResult:
-    retrieval: KnowledgeRetrievalResult
-    rerank: RerankResult
 
 
 class KnowledgePipeline:
@@ -75,6 +54,7 @@ class KnowledgePipeline:
         tag_join_needed = bool(must_tags or boost_tags)
 
         distance_col = KnowledgeEmbedding.embedding.cosine_distance(query_embedding).label("distance")
+        model = getattr(settings, "KNOWLEDGE_EMBEDDING_MODEL", settings.EMBEDDING_MODEL)
 
         stmt = (
             select(
@@ -89,6 +69,7 @@ class KnowledgePipeline:
             )
             .join(KnowledgeArticle, KnowledgeEmbedding.article_id == KnowledgeArticle.id)
         )
+        stmt = stmt.where(or_(KnowledgeEmbedding.model.is_(None), KnowledgeEmbedding.model == model))
 
         if tag_join_needed:
             stmt = stmt.join(KnowledgeChunk, KnowledgeChunk.id == KnowledgeEmbedding.chunk_id)
@@ -190,80 +171,6 @@ class KnowledgePipeline:
 
         return sources, best_distance
 
-    async def keyword_fallback(self, query_text: str, limit: int = 5) -> List[KnowledgeSource]:
-        stopwords = {
-            "the",
-            "a",
-            "an",
-            "and",
-            "or",
-            "to",
-            "for",
-            "of",
-            "in",
-            "on",
-            "at",
-            "by",
-            "with",
-            "is",
-            "are",
-            "was",
-            "were",
-        }
-        tokens = [t.lower() for t in query_text.replace(",", " ").replace(".", " ").split()]
-        keywords = [t for t in tokens if len(t) >= 3 and t not in stopwords][:6]
-
-        if not keywords:
-            return []
-
-        conditions = [KnowledgeChunk.chunk_text.ilike(f"%{kw}%") for kw in keywords]
-
-        score_expr = None
-        for cond in conditions:
-            term = case((cond, 1), else_=0)
-            score_expr = term if score_expr is None else score_expr + term
-
-        match_count = score_expr.label("match_count") if score_expr is not None else None
-
-        stmt = (
-            select(
-                KnowledgeChunk.id,
-                KnowledgeChunk.chunk_text,
-                KnowledgeArticle.id.label("article_id"),
-                KnowledgeArticle.title,
-                KnowledgeArticle.category,
-                KnowledgeArticle.url,
-                match_count,
-            )
-            .join(KnowledgeArticle, KnowledgeChunk.article_id == KnowledgeArticle.id)
-            .where(or_(*conditions))
-        )
-
-        if match_count is not None:
-            stmt = stmt.order_by(match_count.desc(), KnowledgeChunk.id)
-
-        stmt = stmt.limit(limit)
-
-        result = await self.db.execute(stmt)
-        rows = result.all()
-
-        sources: List[KnowledgeSource] = []
-        for chunk_id, chunk_text, article_id, title, category, url, match_value in rows:
-            relevance = float(match_value or 0) / max(len(keywords), 1)
-            sources.append(
-                KnowledgeSource(
-                    source_id=str(chunk_id),
-                    chunk_id=str(chunk_id),
-                    title=title,
-                    content_snippet=(chunk_text or "")[: settings.RAG_MAX_CHUNK_CHARS_FOR_CONTEXT],
-                    category=category,
-                    relevance=relevance,
-                    url=url,
-                    distance=None,
-                )
-            )
-        return sources
-
     async def _decompose_query(self, *, question: str, run_id: str) -> List[str]:
         system_prompt = (
             "You decompose a complex customer question into short, focused sub-questions that can be answered from a FAQ.\n"
@@ -284,6 +191,7 @@ class KnowledgePipeline:
                 model=settings.RAG_DECOMPOSE_MODEL or settings.OPENAI_MODEL,
                 temperature=0.0,
                 max_tokens=300,
+                usage_kind="rag_decompose",
             )
             raw = data.get("sub_questions", [])
             if not isinstance(raw, list):
@@ -331,9 +239,6 @@ class KnowledgePipeline:
             boost_tags=None,
             run_id=run_id,
         )
-        if not sources:
-            sources = await self.keyword_fallback(query_text, limit=settings.RAG_RETRIEVE_TOPK_KNOWLEDGE)
-            best = None
         return sources, best
 
     def _distance_stats(
@@ -346,144 +251,6 @@ class KnowledgePipeline:
         d10 = distances[9] if len(distances) >= 10 else None
         gap = (d10 - d1) if (d10 is not None and d1 is not None) else None
         return d1, d10, gap
-
-    def _should_rerank(
-        self,
-        *,
-        candidates_count: int,
-        d1: Optional[float],
-        d10: Optional[float],
-        is_policy_intent: bool,
-    ) -> Tuple[bool, str]:
-        api_key = getattr(settings, "COHERE_API_KEY", None)
-        if not api_key:
-            return False, "no_api_key"
-        top_n = int(getattr(settings, "RAG_RERANK_TOPN", 5))
-        if candidates_count <= top_n:
-            return False, "candidates_leq_topn"
-        min_candidates = int(getattr(settings, "RERANK_MIN_CANDIDATES", 12))
-        if candidates_count < min_candidates:
-            return False, "below_min_candidates"
-        gap = (d10 - d1) if (d10 is not None and d1 is not None) else None
-        if is_policy_intent:
-            return True, "policy_intent"
-        weak_thr = float(getattr(settings, "RERANK_WEAK_D1_THRESHOLD", 0.45))
-        if d1 is not None and d1 >= weak_thr:
-            return True, "weak_top"
-        gap_thr = float(getattr(settings, "RERANK_GAP_THRESHOLD", 0.06))
-        if gap is not None and gap < gap_thr:
-            return True, "ambiguous_gap"
-        return False, "confident_retrieval"
-
-    def _select_top_candidates(
-        self, *, candidates: List[KnowledgeSource], query: str, top_n: int
-    ) -> List[KnowledgeSource]:
-        selected = candidates[:top_n]
-        for c in selected:
-            c.query_hint = query
-        return selected
-
-    async def _rerank_knowledge_with_cohere(
-        self,
-        *,
-        query: str,
-        candidates: List[KnowledgeSource],
-        run_id: str,
-    ) -> Tuple[List[KnowledgeSource], Dict[str, Any]]:
-        if not candidates:
-            return [], {"status": "empty", "used": False}
-
-        max_chars = settings.RAG_MAX_DOC_CHARS_FOR_RERANK
-        documents: List[str] = []
-        for c in candidates[: settings.RAG_RETRIEVE_TOPK_KNOWLEDGE]:
-            doc = f"{c.title}\n{c.category or ''}\n{(c.content_snippet or '')[:max_chars]}"
-            documents.append(doc[:max_chars])
-
-        rerank_results = await rerank_service.rerank(
-            query=query,
-            documents=documents,
-            top_n=settings.RAG_RERANK_TOPN,
-            model=settings.RAG_COHERE_RERANK_MODEL,
-        )
-
-        if not rerank_results:
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.rag.rerank.cohere",
-                data={
-                    "skipped_or_failed": True,
-                    "reason": "no_results",
-                    "selected_ids": [c.source_id for c in candidates[: settings.RAG_RERANK_TOPN]],
-                },
-            )
-            selected = candidates[: settings.RAG_RERANK_TOPN]
-            for c in selected:
-                c.query_hint = query
-            return selected, {"status": "skipped_or_failed", "used": True}
-
-        top_scores = [float(r.relevance_score) for r in rerank_results[: settings.RAG_RERANK_TOPN]]
-        above_count = sum(1 for s in top_scores if s >= settings.RAG_RERANK_MIN_SCORE)
-        gate_fallback = above_count < settings.RAG_RERANK_MIN_SCORE_COUNT
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.rag.rerank.gate",
-            data={
-                "min_score": settings.RAG_RERANK_MIN_SCORE,
-                "min_score_count": settings.RAG_RERANK_MIN_SCORE_COUNT,
-                "above_count": above_count,
-                "top_scores": top_scores,
-                "decision": "fallback_to_distance" if gate_fallback else "accept_rerank",
-            },
-        )
-        if gate_fallback:
-            selected = candidates[: settings.RAG_RERANK_TOPN]
-            for c in selected:
-                c.query_hint = query
-            return selected, {"status": "gate_fallback", "used": True}
-
-        selected: List[KnowledgeSource] = []
-        used_keys: set[str] = set()
-
-        def _key(c: KnowledgeSource) -> str:
-            return c.chunk_id or c.source_id
-
-        strong_hits = [r for r in rerank_results if float(r.relevance_score) >= settings.RAG_RERANK_MIN_SCORE]
-        if not strong_hits:
-            strong_hits = rerank_results[:1]
-
-        for r in strong_hits[: settings.RAG_RERANK_TOPN]:
-            if 0 <= r.index < len(candidates):
-                c = candidates[r.index]
-                c.rerank_score = float(r.relevance_score)
-                c.query_hint = query
-                k = _key(c)
-                if k in used_keys:
-                    continue
-                selected.append(c)
-                used_keys.add(k)
-
-        for c in candidates:
-            if len(selected) >= settings.RAG_RERANK_TOPN:
-                break
-            k = _key(c)
-            if k in used_keys:
-                continue
-            c.query_hint = query
-            selected.append(c)
-            used_keys.add(k)
-
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.rag.rerank.cohere",
-            data={
-                "accepted": True,
-                "top": [
-                    {"source_id": s.source_id, "rerank_score": s.rerank_score}
-                    for s in selected[: settings.RAG_RERANK_TOPN]
-                ],
-            },
-        )
-        return selected, {"status": "accepted", "used": True}
 
     async def retrieve(
         self,
@@ -506,11 +273,6 @@ class KnowledgePipeline:
             boost_tags=None,
             run_id=run_id,
         )
-        if not knowledge_sources_primary:
-            knowledge_sources_primary = await self.keyword_fallback(
-                knowledge_query_text, limit=settings.RAG_RETRIEVE_TOPK_KNOWLEDGE
-            )
-            knowledge_best_primary = None
 
         d1_primary, d10_primary, gap_primary = self._distance_stats(knowledge_sources_primary)
         decompose_weak_thr = float(getattr(settings, "RAG_DECOMPOSE_WEAK_DISTANCE", 0.55))
@@ -579,8 +341,6 @@ class KnowledgePipeline:
                 chosen = new if new.distance < existing.distance else existing
 
             other = new if chosen is existing else existing
-            if getattr(chosen, "rerank_score", None) is None and getattr(other, "rerank_score", None) is not None:
-                chosen.rerank_score = other.rerank_score
             if getattr(chosen, "query_hint", None) is None and getattr(other, "query_hint", None) is not None:
                 chosen.query_hint = other.query_hint
             return chosen
@@ -663,107 +423,4 @@ class KnowledgePipeline:
             decomposition_reason=decompose_reason,
             decomposition_knowledge_best=knowledge_best_primary,
             decomposition_gap=gap_primary,
-        )
-
-    async def run(
-        self,
-        *,
-        ctx: ChatContext,
-        knowledge_query_text: str,
-        knowledge_embedding: Optional[List[float]],
-        is_complex: bool,
-        is_question_like: bool,
-        is_policy_intent: bool,
-        policy_topic_count: int,
-        max_sub_questions: int,
-        run_id: str,
-    ) -> KnowledgePipelineResult:
-        retrieval = await self.retrieve(
-            ctx=ctx,
-            knowledge_query_text=knowledge_query_text,
-            knowledge_embedding=knowledge_embedding,
-            is_complex=is_complex,
-            is_question_like=is_question_like,
-            is_policy_intent=is_policy_intent,
-            policy_topic_count=policy_topic_count,
-            max_sub_questions=max_sub_questions,
-            run_id=run_id,
-        )
-        rerank = await self.rerank(
-            knowledge_sources=retrieval.knowledge_sources,
-            knowledge_query_text=knowledge_query_text,
-            is_policy_intent=is_policy_intent,
-            run_id=run_id,
-        )
-        return KnowledgePipelineResult(retrieval=retrieval, rerank=rerank)
-
-    async def rerank(
-        self,
-        *,
-        knowledge_sources: List[KnowledgeSource],
-        knowledge_query_text: str,
-        is_policy_intent: bool,
-        run_id: str,
-    ) -> RerankResult:
-        d1, d10, gap = self._distance_stats(knowledge_sources)
-        candidates_count = len(knowledge_sources)
-        should_rerank, rerank_reason = self._should_rerank(
-            candidates_count=candidates_count,
-            d1=d1,
-            d10=d10,
-            is_policy_intent=is_policy_intent,
-        )
-        rerank_duration_ms = 0
-        rerank_timed_out = False
-        rerank_status = "skipped"
-        rerank_used = False
-        if should_rerank:
-            start = time.perf_counter()
-            reranked_top, rerank_meta = await self._rerank_knowledge_with_cohere(
-                query=knowledge_query_text,
-                candidates=knowledge_sources,
-                run_id=run_id,
-            )
-            rerank_duration_ms = int((time.perf_counter() - start) * 1000)
-            rerank_status = str(rerank_meta.get("status", "unknown"))
-            rerank_timed_out = rerank_status == "skipped_or_failed"
-            rerank_used = True
-        else:
-            reranked_top = self._select_top_candidates(
-                candidates=knowledge_sources,
-                query=knowledge_query_text,
-                top_n=int(getattr(settings, "RAG_RERANK_TOPN", 5)),
-            )
-
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.rag.rerank.summary",
-            data={
-                "rerank_used": should_rerank,
-                "rerank_reason": rerank_reason,
-                "rerank_duration_ms": rerank_duration_ms,
-                "rerank_timed_out": rerank_timed_out,
-                "rerank_status": rerank_status,
-                "candidates_count": candidates_count,
-                "d1": d1,
-                "d10": d10,
-                "gap": gap,
-                "min_candidates": int(getattr(settings, "RERANK_MIN_CANDIDATES", 12)),
-                "gap_threshold": float(getattr(settings, "RERANK_GAP_THRESHOLD", 0.06)),
-                "weak_d1_threshold": float(getattr(settings, "RERANK_WEAK_D1_THRESHOLD", 0.45)),
-                "policy_intent": is_policy_intent,
-            },
-        )
-
-        return RerankResult(
-            reranked_top=reranked_top,
-            rerank_used=rerank_used,
-            rerank_reason=rerank_reason,
-            rerank_duration_ms=rerank_duration_ms,
-            rerank_timed_out=rerank_timed_out,
-            rerank_status=rerank_status,
-            candidates_count=candidates_count,
-            d1=d1,
-            d10=d10,
-            gap=gap,
         )

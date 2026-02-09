@@ -1,0 +1,201 @@
+{
+  "meta": {
+    "suite_name": "Complex Routing + RAG + Product Tests",
+    "version": "1.0",
+    "notes": [
+      "Targets early product exits, mixed intent handling, planner/verifier failures, and heuristic brittleness.",
+      "Use expected.route as your assertion target; expected.must_include checks are optional but helpful."
+    ]
+  },
+  "defaults": {
+    "language": "en",
+    "currency": "USD",
+    "country": "TH",
+    "channel": "web"
+  },
+  "cases": [
+    {
+      "id": "MIXED_001_product_plus_shipping_policy",
+      "title": "SKU present + shipping policy question (should NOT early-exit product-only)",
+      "input": {
+        "conversation_id": "t_mixed_001",
+        "message": "Do you have SKU BDJ-1023 in stock? Also how long is shipping to Bangkok and what’s your return policy if it arrives damaged?",
+        "user": { "currency": "THB", "country": "TH" }
+      },
+      "expected": {
+        "route": "mixed",
+        "must_include": ["shipping", "return", "damage", "Bangkok", "BDJ-1023"],
+        "must_not": ["I’m not sure I understand"],
+        "product_carousel": { "min_items": 1 }
+      }
+    },
+    {
+      "id": "MIXED_002_product_distance_gate_should_not_block_policy",
+      "title": "Product query + policy question but product embedding distance is bad (still answer policy)",
+      "input": {
+        "conversation_id": "t_mixed_002",
+        "message": "I think the SKU is BJD-9999 (not sure). Can you tell me your minimum order and whether you ship internationally?",
+        "user": { "currency": "USD", "country": "US" }
+      },
+      "expected": {
+        "route": "knowledge_or_mixed",
+        "must_include": ["minimum order", "ship", "international"],
+        "product_carousel": { "min_items": 0 }
+      }
+    },
+    {
+      "id": "HEUR_001_short_reply_ok_should_not_smalltalk",
+      "title": "Short reply 'ok' after user asked policy previously (context test)",
+      "input": {
+        "conversation_id": "t_heur_001",
+        "history": [
+          { "role": "user", "content": "What is your refund policy?" },
+          { "role": "assistant", "content": "We offer refunds within X days..." }
+        ],
+        "message": "ok",
+        "user": { "currency": "THB", "country": "TH" }
+      },
+      "expected": {
+        "route": "followup",
+        "must_not": ["smalltalk_only", "product_only"],
+        "must_include": ["anything else", "help"]
+      }
+    },
+    {
+      "id": "HEUR_002_ambiguous_help_should_clarify_not_misroute",
+      "title": "Ambiguous 'help' should clarify, not misroute to store/policy/product",
+      "input": {
+        "conversation_id": "t_heur_002",
+        "message": "help",
+        "user": { "currency": "THB", "country": "TH" }
+      },
+      "expected": {
+        "route": "clarify",
+        "must_include": ["products", "shipping", "order", "contact"]
+      }
+    },
+    {
+      "id": "KNOW_001_contact_question_should_trigger_knowledge",
+      "title": "Contact question should route to knowledge (classic past failure)",
+      "input": {
+        "conversation_id": "t_know_001",
+        "message": "How can I contact Acha?",
+        "user": { "currency": "THB", "country": "TH" }
+      },
+      "expected": {
+        "route": "knowledge",
+        "must_include": ["contact", "email", "phone", "line", "whatsapp"],
+        "must_not": ["rephrase", "not sure I understand"]
+      }
+    },
+    {
+      "id": "RAG_001_multi_topic_complex_query_decomposition",
+      "title": "Complex multi-topic query should decompose and retrieve coverage",
+      "input": {
+        "conversation_id": "t_rag_001",
+        "message": "I want to buy titanium belly rings in bulk. What’s the MOQ, payment methods, shipping cost estimate to Thailand, and do you offer discounts for 500+ pcs?",
+        "user": { "currency": "THB", "country": "TH" }
+      },
+      "expected": {
+        "route": "knowledge_or_mixed",
+        "must_include": ["MOQ", "payment", "shipping", "discount", "Thailand"],
+        "follow_up_questions": { "min_items": 1 }
+      }
+    },
+    {
+      "id": "PROD_001_pure_product_query_should_product_route",
+      "title": "Pure product lookup",
+      "input": {
+        "conversation_id": "t_prod_001",
+        "message": "Show me BDJ-1023",
+        "user": { "currency": "USD", "country": "US" }
+      },
+      "expected": {
+        "route": "product",
+        "product_carousel": { "min_items": 1 }
+      }
+    },
+    {
+      "id": "PROD_002_product_with_specs_question_should_mixed",
+      "title": "Product + spec question (material, gauge) should be mixed",
+      "input": {
+        "conversation_id": "t_prod_002",
+        "message": "For BDJ-1023, what material is it and what gauge is the bar? Also can I get it in gold color?",
+        "user": { "currency": "USD", "country": "US" }
+      },
+      "expected": {
+        "route": "mixed",
+        "must_include": ["material", "gauge", "gold"],
+        "product_carousel": { "min_items": 1 }
+      }
+    },
+    {
+      "id": "CURR_001_currency_conversion_request",
+      "title": "User wants price in their currency (conversion feature)",
+      "input": {
+        "conversation_id": "t_curr_001",
+        "message": "If the item is $12.50 each, how much is that in THB? I need 200 pcs.",
+        "user": { "currency": "THB", "country": "TH" }
+      },
+      "expected": {
+        "route": "calculation_or_mixed",
+        "must_include": ["THB", "200"],
+        "must_not": ["cannot convert"]
+      }
+    },
+    {
+      "id": "PLANNER_001_planner_overconfident_wrong_intent",
+      "title": "Tricky: product words used in non-product context",
+      "input": {
+        "conversation_id": "t_plan_001",
+        "message": "I got charged twice for my order. Can you help me with payment issues?",
+        "user": { "currency": "THB", "country": "TH" }
+      },
+      "expected": {
+        "route": "knowledge",
+        "must_include": ["payment", "charged", "support"]
+      }
+    },
+    {
+      "id": "VERIFY_001_verifier_slice_limit_missing_part",
+      "title": "Verifier sees limited chunks; should admit missing parts + ask follow-up",
+      "input": {
+        "conversation_id": "t_verify_001",
+        "message": "Explain your full warranty terms, return window, and exact customs handling steps for EU and Thailand shipments.",
+        "user": { "currency": "EUR", "country": "DE" }
+      },
+      "expected": {
+        "route": "partial_answer_or_clarify",
+        "must_include": ["warranty", "return", "customs"],
+        "follow_up_questions": { "min_items": 1 }
+      }
+    },
+    {
+      "id": "EDGE_001_typos_sku_plus_policy",
+      "title": "SKU typo + policy should still work",
+      "input": {
+        "conversation_id": "t_edge_001",
+        "message": "Do you have BDI-1023? If not, what’s your exchange policy?",
+        "user": { "currency": "THB", "country": "TH" }
+      },
+      "expected": {
+        "route": "mixed_or_knowledge",
+        "must_include": ["exchange", "policy"],
+        "product_carousel": { "min_items": 0 }
+      }
+    },
+    {
+      "id": "EDGE_002_smalltalk_then_question",
+      "title": "Smalltalk + store question should be mixed (not smalltalk-only)",
+      "input": {
+        "conversation_id": "t_edge_002",
+        "message": "Hey! hope you're well. By the way, do you ship to Phuket and how long does it take?",
+        "user": { "currency": "THB", "country": "TH" }
+      },
+      "expected": {
+        "route": "knowledge_or_mixed",
+        "must_include": ["ship", "Phuket", "how long"]
+      }
+    }
+  ]
+}

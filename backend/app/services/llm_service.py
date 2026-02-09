@@ -1,12 +1,14 @@
 import json
 import time
 import hashlib
+from contextlib import contextmanager
+from contextvars import ContextVar
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 from openai import AsyncOpenAI
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.prompts.system_prompts import ui_localization_prompt, currency_intent_prompt
+from app.prompts.system_prompts import ui_localization_prompt, unified_nlu_prompt
 
 logger = get_logger(__name__)
 
@@ -73,6 +75,67 @@ class _TextCache:
             self._data.popitem(last=False)
 
 
+class TokenTracker:
+    def __init__(self) -> None:
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_tokens = 0
+        self.total_cached_prompt_tokens = 0
+        self.calls: List[Dict[str, Any]] = []
+
+    @staticmethod
+    def _get_value(source: Any, key: str, default: Any = None) -> Any:
+        if source is None:
+            return default
+        if isinstance(source, dict):
+            return source.get(key, default)
+        return getattr(source, key, default)
+
+    def add_usage(self, *, kind: str, model: str, usage: Any = None, cached: bool = False) -> None:
+        prompt_tokens = int(self._get_value(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(self._get_value(usage, "completion_tokens", 0) or 0)
+        total_tokens = self._get_value(usage, "total_tokens", None)
+        if total_tokens is None:
+            total_tokens = prompt_tokens + completion_tokens
+        total_tokens = int(total_tokens or 0)
+
+        details = self._get_value(usage, "prompt_tokens_details", None)
+        cached_tokens = self._get_value(details, "cached_tokens", None)
+        if cached_tokens is not None:
+            cached_tokens = int(cached_tokens or 0)
+
+        call: Dict[str, Any] = {
+            "kind": kind,
+            "model": model,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+        if cached:
+            call["cached"] = True
+        if cached_tokens is not None:
+            call["cached_prompt_tokens"] = cached_tokens
+
+        self.calls.append(call)
+        self.total_prompt_tokens += prompt_tokens
+        self.total_completion_tokens += completion_tokens
+        self.total_tokens += total_tokens
+        if cached_tokens is not None:
+            self.total_cached_prompt_tokens += cached_tokens
+
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "total_prompt_tokens": self.total_prompt_tokens,
+            "total_completion_tokens": self.total_completion_tokens,
+            "total_tokens": self.total_tokens,
+            "cached_prompt_tokens": self.total_cached_prompt_tokens,
+            "by_call": list(self.calls),
+        }
+
+
+_token_tracker: ContextVar[Optional[TokenTracker]] = ContextVar("token_tracker", default=None)
+
+
 class LLMService:
     """Service for interacting with OpenAI LLM and embeddings."""
     
@@ -105,6 +168,33 @@ class LLMService:
         )
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         return f"ui:{digest}"
+
+    @contextmanager
+    def track_tokens(self) -> TokenTracker:
+        tracker = TokenTracker()
+        token = _token_tracker.set(tracker)
+        try:
+            yield tracker
+        finally:
+            _token_tracker.reset(token)
+
+    def begin_token_tracking(self) -> TokenTracker:
+        tracker = TokenTracker()
+        _token_tracker.set(tracker)
+        return tracker
+
+    def consume_token_usage(self) -> Optional[Dict[str, Any]]:
+        tracker = _token_tracker.get()
+        _token_tracker.set(None)
+        if tracker is None:
+            return None
+        return tracker.summary()
+
+    def _record_usage(self, *, kind: str, model: str, usage: Any = None, cached: bool = False) -> None:
+        tracker = _token_tracker.get()
+        if tracker is None:
+            return
+        tracker.add_usage(kind=kind, model=model, usage=usage, cached=cached)
     
     async def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a text."""
@@ -112,11 +202,18 @@ class LLMService:
             cache_key = self._embedding_cache_key(text)
             cached = self._embedding_cache.get(cache_key)
             if cached is not None:
+                self._record_usage(
+                    kind="embedding_cache",
+                    model=self.embedding_model,
+                    usage=None,
+                    cached=True,
+                )
                 return cached
             response = await self.client.embeddings.create(
                 model=self.embedding_model,
                 input=text
             )
+            self._record_usage(kind="embedding", model=self.embedding_model, usage=response.usage)
             embedding = response.data[0].embedding
             self._embedding_cache.set(cache_key, embedding)
             return embedding
@@ -131,6 +228,7 @@ class LLMService:
                 model=self.embedding_model,
                 input=texts
             )
+            self._record_usage(kind="embedding_batch", model=self.embedding_model, usage=response.usage)
             return [item.embedding for item in response.data]
         except Exception as e:
             logger.error(f"Error generating batch embeddings: {e}")
@@ -142,14 +240,21 @@ class LLMService:
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         model: Optional[str] = None,
+        usage_kind: Optional[str] = None,
     ) -> str:
         """Generate a chat response using the LLM."""
         try:
+            use_model = model or self.model
             response = await self.client.chat.completions.create(
-                model=model or self.model,
+                model=use_model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens
+            )
+            self._record_usage(
+                kind=usage_kind or "chat_completion",
+                model=use_model,
+                usage=response.usage,
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -162,69 +267,100 @@ class LLMService:
         model: Optional[str] = None,
         temperature: float = 0.0,
         max_tokens: Optional[int] = 300,
+        usage_kind: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate strict JSON output using response_format=json_object."""
+        use_model = model or self.model
         response = await self.client.chat.completions.create(
-            model=model or self.model,
+            model=use_model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             response_format={"type": "json_object"},
         )
+        self._record_usage(
+            kind=usage_kind or "chat_json",
+            model=use_model,
+            usage=response.usage,
+        )
         content = response.choices[0].message.content or "{}"
         return json.loads(content)
     
-    async def plan_retrieval(
+    async def run_nlu(
         self,
         *,
         user_message: str,
+        history: Optional[List[Dict[str, str]]] = None,
         locale: Optional[str] = None,
+        supported_currencies: Optional[List[str]] = None,
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Return a retrieval plan for the user message (strict JSON)."""
-        system_prompt = (
-            "You are a retrieval planner for an e-commerce chatbot.\n"
-            "Your job is to interpret the user message and return a STRICT JSON plan.\n\n"
-            "Return JSON with keys:\n"
-            "- task: one of [\"product_search\", \"shipping_region\", \"policy\", \"contact\", \"general\", \"mixed\"]\n"
-            "- is_smalltalk: true/false (greeting/thanks/social)\n"
-            "- is_meta_question: true/false (about the assistant, how it works, AI/human)\n"
-            "- is_catalog_browse: true/false (asks to browse categories / what products you have)\n"
-            "- kb_query: short query string for knowledge base lookup (empty if not needed)\n"
-            "- product_query: short query string for product search (empty if not needed)\n"
-            "- entities: object with keys like country, state, sku, jewelry_type, gauge, material, budget\n"
-            "- needs_clarification: true/false\n"
-            "- clarifying_question: string (required if needs_clarification)\n"
-            "- confidence: number 0 to 1\n\n"
-            "Rules:\n"
-            "- If is_smalltalk=true, task must be general and needs_clarification=false.\n"
-            "- If is_meta_question=true, task must be general and needs_clarification=false.\n"
-            "- If is_catalog_browse=true, task should be product_search and needs_clarification=true with a short category question.\n"
-            "- If the user asks about shipping region (e.g., \"sell in US\"), use task=shipping_region and kb_query about shipping/availability.\n"
-            "- If the user wants recommendations or items, use task=product_search and product_query.\n"
-            "- If the user asks about refunds, payment, MOQ, or policies, use task=policy and kb_query.\n"
-            "- If the user asks for phone, email, or WhatsApp, use task=contact and kb_query.\n"
-            "- Use task=mixed if both product and policy are clearly requested.\n"
-            "- Do NOT echo the user message as clarifying_question.\n"
-            "- Ask only ONE clarifying question if needed.\n"
-        )
-
+        """Return a unified NLU analysis for the user message (strict JSON)."""
+        system_prompt = unified_nlu_prompt(supported_currencies)
         messages = [{"role": "system", "content": system_prompt}]
         if locale:
             messages.append({"role": "system", "content": f"Locale: {locale}"})
+        
+        if history:
+            messages.extend(history)
+            
         messages.append({"role": "user", "content": user_message})
 
-        use_model = model or getattr(settings, "PLANNER_MODEL", None) or self.model
-        token_limit = max_tokens or int(getattr(settings, "PLANNER_MAX_TOKENS", 200))
+        use_model = model or getattr(settings, "NLU_MODEL", None) or self.model
+        token_limit = max_tokens or int(getattr(settings, "NLU_MAX_TOKENS", 250))
 
-        data = await self.generate_chat_json(
-            messages=messages,
-            model=use_model,
-            temperature=0.0,
-            max_tokens=token_limit,
+        try:
+            return await self.generate_chat_json(
+                messages=messages,
+                model=use_model,
+                temperature=0.0,
+                max_tokens=token_limit,
+                usage_kind="nlu",
+            )
+        except Exception as e:
+            logger.error(f"NLU analysis failed: {e}")
+            return {}
+
+    async def translate_product_descriptions(
+        self,
+        *,
+        descriptions: List[str],
+        reply_language: str,
+        model: Optional[str] = None,
+    ) -> List[str]:
+        """Translate a batch of product descriptions into the target language."""
+        if not descriptions or not reply_language:
+            return descriptions
+
+        # Use a high-density JSON prompt for batch translation
+        system = (
+            f"You are a professional translator. Translate the provided list of English product descriptions into {reply_language}.\n"
+            "Return ONLY a JSON object with a 'translations' key containing the list of translated strings.\n"
+            "Keep technical terms (SKU, diameter, etc.) as is if appropriate for the destination language."
         )
-        return data
+        user = json.dumps({"descriptions": descriptions}, ensure_ascii=True)
+        
+        use_model = model or getattr(settings, "UI_LOCALIZATION_MODEL", None) or self.model
+        
+        try:
+            data = await self.generate_chat_json(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                model=use_model,
+                temperature=0.0,
+                max_tokens=1000, # Allow more for batch
+                usage_kind="product_translation",
+            )
+            translated = data.get("translations", [])
+            if isinstance(translated, list) and len(translated) == len(descriptions):
+                return [str(t).strip() for t in translated]
+            return descriptions
+        except Exception as e:
+            logger.error(f"Batch description translation failed: {e}")
+            return descriptions
 
     async def localize_ui_strings(
         self,
@@ -240,14 +376,20 @@ class LLMService:
         if not reply_language:
             return items
 
+        use_model = model or getattr(settings, "UI_LOCALIZATION_MODEL", None) or self.model
         cache_key = self._ui_cache_key(reply_language, items)
         cached = self._ui_text_cache.get(cache_key)
         if cached is not None:
+            self._record_usage(
+                kind="ui_localization_cache",
+                model=use_model,
+                usage=None,
+                cached=True,
+            )
             return cached
 
         system = ui_localization_prompt(reply_language)
         user = f"Strings JSON:\n{json.dumps(items, ensure_ascii=True)}"
-        use_model = model or getattr(settings, "UI_LOCALIZATION_MODEL", None) or self.model
         token_limit = max_tokens or int(getattr(settings, "UI_LOCALIZATION_MAX_TOKENS", 220))
         temp = temperature
         if temp is None:
@@ -262,6 +404,7 @@ class LLMService:
                 model=use_model,
                 temperature=float(temp),
                 max_tokens=token_limit,
+                usage_kind="ui_localization",
             )
         except Exception as e:
             logger.error(f"UI localization failed: {e}")
@@ -280,35 +423,6 @@ class LLMService:
 
         self._ui_text_cache.set(cache_key, localized)
         return localized
-
-    async def detect_currency_intent(
-        self,
-        *,
-        user_message: str,
-        locale: Optional[str] = None,
-        supported_currencies: Optional[List[str]] = None,
-        model: Optional[str] = None,
-        max_tokens: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        system_prompt = currency_intent_prompt(supported_currencies or [])
-        messages = [{"role": "system", "content": system_prompt}]
-        if locale:
-            messages.append({"role": "system", "content": f"Locale: {locale}"})
-        messages.append({"role": "user", "content": user_message})
-
-        use_model = model or getattr(settings, "CURRENCY_INTENT_MODEL", None) or self.model
-        token_limit = max_tokens or int(getattr(settings, "CURRENCY_INTENT_MAX_TOKENS", 80))
-
-        try:
-            return await self.generate_chat_json(
-                messages=messages,
-                model=use_model,
-                temperature=0.0,
-                max_tokens=token_limit,
-            )
-        except Exception as e:
-            logger.error(f"Currency intent detection failed: {e}")
-            return {}
 
 # Singleton instance
 llm_service = LLMService()

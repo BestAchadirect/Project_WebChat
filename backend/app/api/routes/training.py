@@ -1,15 +1,16 @@
-from typing import List, Optional
+from typing import List, Optional, Any
 from uuid import UUID
 import hashlib
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, desc, func, or_, cast, String
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db
 from app.models.qa_log import QALog
 from app.models.knowledge import KnowledgeChunk, KnowledgeArticle, KnowledgeEmbedding
+from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.training import (
     QALogResponse, ChunkResponse, ChunkUpdate, ChunkListResponse,
     ArticleGroupedResponse, ArticleChunkGroup,
@@ -17,6 +18,7 @@ from app.schemas.training import (
     SimilarityTestRequest, SimilarityTestResponse, SimilarityResult
 )
 from app.services.embedding import EmbeddingService
+from app.services.chat_service import ChatService
 from app.core.config import settings
 
 router = APIRouter()
@@ -37,6 +39,20 @@ async def list_qa_logs(
         
     result = await db.execute(query)
     return result.scalars().all()
+
+
+@qa_router.post("/test-chat", response_model=ChatResponse)
+async def qa_test_chat(
+    request: ChatRequest,
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    service = ChatService(db)
+    try:
+        return await service.process_chat(request, channel="qa_console")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Helper function to build chunk response with metadata ---
@@ -76,6 +92,13 @@ async def list_chunks(
     db: AsyncSession = Depends(get_db)
 ):
     """List all knowledge chunks with optional filtering."""
+    search_uuid: Optional[UUID] = None
+    if search:
+        try:
+            search_uuid = UUID(search.strip())
+        except ValueError:
+            search_uuid = None
+
     query = select(KnowledgeChunk).options(
         selectinload(KnowledgeChunk.article)
     ).order_by(KnowledgeChunk.article_id, KnowledgeChunk.chunk_index)
@@ -83,15 +106,21 @@ async def list_chunks(
     if article_id:
         query = query.where(KnowledgeChunk.article_id == article_id)
     
-    if search:
-        query = query.where(KnowledgeChunk.chunk_text.ilike(f"%{search}%"))
+    if search_uuid:
+        query = query.where(KnowledgeChunk.id == search_uuid)
+    elif search:
+        search_like = f"%{search}%"
+        query = query.where(KnowledgeChunk.chunk_text.ilike(search_like))
     
     # Get total count
     count_query = select(func.count()).select_from(KnowledgeChunk)
     if article_id:
         count_query = count_query.where(KnowledgeChunk.article_id == article_id)
-    if search:
-        count_query = count_query.where(KnowledgeChunk.chunk_text.ilike(f"%{search}%"))
+    if search_uuid:
+        count_query = count_query.where(KnowledgeChunk.id == search_uuid)
+    elif search:
+        search_like = f"%{search}%"
+        count_query = count_query.where(KnowledgeChunk.chunk_text.ilike(search_like))
     
     count_result = await db.execute(count_query)
     total = count_result.scalar() or 0
@@ -118,6 +147,13 @@ async def list_articles_with_chunks(
     db: AsyncSession = Depends(get_db)
 ):
     """List all articles with their chunks grouped together."""
+    search_uuid: Optional[UUID] = None
+    if search:
+        try:
+            search_uuid = UUID(search.strip())
+        except ValueError:
+            search_uuid = None
+
     # Get all articles with chunks
     query = select(KnowledgeArticle).options(
         selectinload(KnowledgeArticle.chunks)
@@ -133,8 +169,11 @@ async def list_articles_with_chunks(
         chunks = article.chunks
         
         # Filter chunks if search query provided
-        if search:
-            chunks = [c for c in chunks if search.lower() in c.chunk_text.lower()]
+        if search_uuid:
+            chunks = [c for c in chunks if c.id == search_uuid]
+        elif search:
+            search_lower = search.lower()
+            chunks = [c for c in chunks if search_lower in c.chunk_text.lower()]
         
         if not chunks:
             continue
@@ -228,7 +267,7 @@ async def update_chunk(
     
     # Update chunk text, hash and version
     chunk.chunk_text = chunk_in.chunk_text
-    chunk.chunk_hash = hashlib.md5(chunk_in.chunk_text.encode()).hexdigest()
+    chunk.chunk_hash = hashlib.sha256(chunk_in.chunk_text.encode()).hexdigest()
     chunk.version += 1
     
     await db.commit()
@@ -397,6 +436,7 @@ async def test_similarity(
         from sqlalchemy import text
         
         # Query for similar embeddings using cosine distance
+        model = getattr(settings, "KNOWLEDGE_EMBEDDING_MODEL", settings.EMBEDDING_MODEL)
         sql = text("""
             SELECT 
                 ke.chunk_id,
@@ -406,12 +446,14 @@ async def test_similarity(
             FROM knowledge_embeddings ke
             LEFT JOIN knowledge_articles ka ON ke.article_id = ka.id
             WHERE ke.chunk_id IS NOT NULL
+              AND (ke.model IS NULL OR ke.model = :model)
             ORDER BY ke.embedding <=> :query_embedding::vector
             LIMIT :limit
         """)
         
         result = await db.execute(sql, {
             "query_embedding": str(query_embedding),
+            "model": model,
             "limit": request.limit
         })
         rows = result.fetchall()

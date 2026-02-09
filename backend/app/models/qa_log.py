@@ -20,6 +20,8 @@ class QALog(Base):
     question = Column(String, nullable=False)
     answer = Column(String, nullable=True)
     sources = Column(JSONB, default=list) # List of sources cited
+    token_usage = Column(JSONB, nullable=True)
+    channel = Column(String(32), nullable=True)
     
     status = Column(Enum(QAStatus), default=QAStatus.SUCCESS, nullable=False)
     error_message = Column(String, nullable=True)

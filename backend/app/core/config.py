@@ -1,6 +1,4 @@
 from pathlib import Path
-from typing import Optional
-
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -30,29 +28,14 @@ class Settings(BaseSettings):
     VECTOR_DIMENSIONS: int = 1536  # for text-embedding-3-small
     KNOWLEDGE_DISTANCE_THRESHOLD: float = 0.40
     PRODUCT_DISTANCE_THRESHOLD: float = 0.35
-    PRODUCT_SEARCH_TOPK: int = 10
-    PRODUCT_SEARCH_DISTANCE_THRESHOLD: float = 0.35
     PRODUCT_EMBEDDING_MODEL: str = "text-embedding-3-small"
-    PRODUCT_DISTANCE_STRICT: float = 0.35
-    PRODUCT_DISTANCE_LOOSE: float = 0.45
     PRICE_DISPLAY_CURRENCY: str = "USD"
     THB_TO_USD_RATE: float = 1.0
     BASE_CURRENCY: str = "USD"
     CURRENCY_RATES_JSON: str = "{}"
-    CURRENCY_INTENT_ENABLED: bool = True
-    CURRENCY_INTENT_MODEL: str = "gpt-4o-mini"
-    CURRENCY_INTENT_MAX_TOKENS: int = 80
+    NLU_MODEL: str = "gpt-4o-mini"
+    NLU_MAX_TOKENS: int = 250
 
-    # Routing UX (smalltalk / low-signal)
-    SMALLTALK_ENABLED: bool = True
-    SMALLTALK_MODE: str = "static"  # static | llm
-    SMALLTALK_MODEL: str = "gpt-4o-mini"
-    GENERAL_CHAT_MODEL: str = "gpt-4o-mini"
-    GENERAL_CHAT_MAX_TOKENS: int = 250
-    CONTEXTUAL_REPLY_ENABLED: bool = True
-    CONTEXTUAL_REPLY_MODEL: str = "gpt-4o-mini"
-    CONTEXTUAL_REPLY_MAX_TOKENS: int = 120
-    CONTEXTUAL_REPLY_TEMPERATURE: float = 0.3
     UI_LOCALIZATION_ENABLED: bool = True
     UI_LOCALIZATION_MODEL: str = "gpt-4o-mini"
     UI_LOCALIZATION_MAX_TOKENS: int = 220
@@ -62,10 +45,12 @@ class Settings(BaseSettings):
     CHAT_LANGUAGE_MODE: str = "auto"  # auto | locale | fixed
     DEFAULT_LOCALE: str = "en-US"
     FIXED_REPLY_LANGUAGE: str = "en-US"
-    LANGUAGE_DETECT_MODEL: str = "gpt-4o-mini"
-    LANGUAGE_DETECT_MAX_TOKENS: int = 40
     PRODUCT_WEAK_DISTANCE: float = 0.55
     KNOWLEDGE_WEAK_DISTANCE: float = 0.60
+
+    # Conversation lifecycle
+    CONVERSATION_IDLE_TIMEOUT_MINUTES: int = 30
+    CONVERSATION_HARD_CAP_HOURS: int = 24
 
     # Answer polishing (rewrite-only, optional)
     ANSWER_POLISHER_ENABLED: bool = False
@@ -74,31 +59,19 @@ class Settings(BaseSettings):
 
     # RAG pipeline (routing should not depend on distance thresholds)
     RAG_RETRIEVE_TOPK_KNOWLEDGE: int = 30
-    RAG_RETRIEVE_TOPK_PRODUCT: int = 20
-    RAG_RERANK_TOPN: int = 5
-    RAG_COHERE_RERANK_MODEL: str = "rerank-english-v3.0"
-    COHERE_API_KEY: Optional[str] = None
-    RAG_RERANK_MIN_SCORE: float = 0.05
-    RAG_RERANK_MIN_SCORE_COUNT: int = 2
-    RAG_MAX_DOC_CHARS_FOR_RERANK: int = 700
-    RERANK_MIN_CANDIDATES: int = 12
-    RERANK_GAP_THRESHOLD: float = 0.06
-    RERANK_WEAK_D1_THRESHOLD: float = 0.45
     RAG_MAX_CHUNK_CHARS_FOR_CONTEXT: int = 1200
-    RAG_VERIFY_MODEL: str = "gpt-4o-mini"
+    RAG_ANSWER_MODEL: str = "gpt-4o-mini"
     RAG_DECOMPOSE_MODEL: str = "gpt-4o-mini"
     RAG_DECOMPOSE_MAX_SUBQUESTIONS: int = 8
     RAG_DECOMPOSE_WEAK_DISTANCE: float = 0.55
     RAG_DECOMPOSE_GAP_THRESHOLD: float = 0.06
-    RAG_MAX_SUB_QUESTIONS: int = 4
     RAG_PER_QUERY_KEEP: int = 1
-    RAG_VERIFY_MAX_KNOWLEDGE_CHUNKS: int = 12
 
-    # Retrieval planner (LLM, almost-always)
-    PLANNER_ENABLED: bool = True
-    PLANNER_MODEL: str = "gpt-4o-mini"
-    PLANNER_MAX_TOKENS: int = 200
-    PLANNER_MIN_CONFIDENCE: float = 0.6
+
+    # Semantic cache (pgvector)
+    SEMANTIC_CACHE_ENABLED: bool = True
+    SEMANTIC_CACHE_THRESHOLD: float = 0.96
+    SEMANTIC_CACHE_TTL_DAYS: int = 7
 
     # Logging
     LOG_DIR: str = "logs"

@@ -1,10 +1,10 @@
 from typing import List, Optional, Dict, Any
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
-from pgvector.sqlalchemy import Vector
 from app.models.knowledge import KnowledgeArticle, KnowledgeEmbedding, KnowledgeChunk
 from app.services.llm_service import llm_service
 from app.core.logging import get_logger
+from app.core.config import settings
 
 logger = get_logger(__name__)
 
@@ -36,6 +36,7 @@ class RAGService:
             
             # Perform vector similarity search
             # Using cosine distance (1 - cosine_similarity)
+            model = getattr(settings, "KNOWLEDGE_EMBEDDING_MODEL", settings.EMBEDDING_MODEL)
             stmt = (
                 select(
                     KnowledgeEmbedding,
@@ -43,6 +44,7 @@ class RAGService:
                     KnowledgeEmbedding.embedding.cosine_distance(query_embedding).label("distance")
                 )
                 .join(KnowledgeArticle, KnowledgeEmbedding.article_id == KnowledgeArticle.id)
+                .where(or_(KnowledgeEmbedding.model.is_(None), KnowledgeEmbedding.model == model))
                 .order_by("distance")
                 .limit(limit)
             )

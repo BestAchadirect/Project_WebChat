@@ -4,7 +4,12 @@ import apiClient from '../../api/client';
 interface Message {
     role: 'user' | 'assistant' | 'system';
     content: string;
+    carouselMsg?: string;
     productCarousel?: ProductCard[];
+    viewButtonText?: string;
+    materialLabel?: string;
+    jewelryTypeLabel?: string;
+    followUpQuestions?: string[];  // Add follow-up questions support
 }
 
 interface KnowledgeSource {
@@ -21,9 +26,30 @@ interface KnowledgeSource {
 interface ChatResponse {
     conversation_id: number;
     reply_text: string;
+    carousel_msg?: string;
     product_carousel: ProductCard[];
+    follow_up_questions: string[];
     intent: string;
     sources?: KnowledgeSource[];
+    view_button_text?: string;
+    material_label?: string;
+    jewelry_type_label?: string;
+}
+
+interface ChatHistoryMessage {
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    product_data?: ProductCard[] | null;
+    created_at?: string | null;
+}
+
+interface ChatHistoryResponse {
+    conversation_id: number;
+    messages: ChatHistoryMessage[];
+}
+
+interface ActiveConversationResponse {
+    conversation_id: number | null;
 }
 
 interface ProductCard {
@@ -41,6 +67,14 @@ interface ProductCard {
     attributes?: Record<string, any>;
 }
 
+interface BannerItem {
+    id: number;
+    image_url: string;
+    link_url?: string | null;
+    alt_text?: string | null;
+    sort_order?: number;
+}
+
 interface ChatWidgetProps {
     isInline?: boolean;
     title?: string;
@@ -48,9 +82,11 @@ interface ChatWidgetProps {
     welcomeMessage?: string;
     faqSuggestions?: string[]; // New prop for Flex Message chips
     apiBaseUrl?: string;
+    reportUrl?: string;
     locale?: string;
     customerName?: string;
     email?: string;
+    customerId?: string | number;
 }
 
 declare global {
@@ -62,11 +98,13 @@ declare global {
             faqSuggestions?: string[];
             apiBaseUrl?: string;
             apiUrl?: string;
+            reportUrl?: string;
             displayCurrency?: string;
             thbToUsdRate?: number;
             locale?: string;
             customerName?: string;
             email?: string;
+            customerId?: string | number;
         };
     }
 }
@@ -74,42 +112,186 @@ declare global {
 // Custom styles for animations that Tailwind doesn't have out of the box
 const customStyles = `
 @keyframes pulse-shadow {
-    0% { box-shadow: 0 0 0 0 rgba(33, 65, 102, 0.7); }
-    70% { box-shadow: 0 0 0 10px rgba(33, 65, 102, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(33, 65, 102, 0); }
+    0% { box-shadow: 0 0 0 0 rgba(12, 32, 56, 0.4); }
+    70% { box-shadow: 0 0 0 15px rgba(12, 32, 56, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(12, 32, 56, 0); }
+}
+@keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+@keyframes fade-in-up {
+    from { opacity: 0; transform: translateY(15px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@keyframes bounce-slow {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-5px); }
 }
 .pulse-animation {
-    animation: pulse-shadow 2s infinite;
+    animation: pulse-shadow 3s infinite;
 }
-.typing-dot {
-    animation: typing 1.4s infinite ease-in-out both;
+.animate-fade-in {
+    animation: fade-in 0.4s ease-out forwards;
 }
-.typing-dot:nth-child(1) { animation-delay: 0s; }
-.typing-dot:nth-child(2) { animation-delay: 0.2s; }
-.typing-dot:nth-child(3) { animation-delay: 0.4s; }
-@keyframes typing {
-    0%, 100% { transform: scale(0.7); opacity: 0.5; }
-    50% { transform: scale(1); opacity: 1; }
+.animate-fade-in-up {
+    animation: fade-in-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
-/* Custom scrollbar */
+.animate-bounce-slow {
+    animation: bounce-slow 2.5s infinite ease-in-out;
+}
 .scrollbar-custom::-webkit-scrollbar {
-    width: 6px;
+    width: 4px;
 }
 .scrollbar-custom::-webkit-scrollbar-track {
-    background: rgba(150, 208, 230, 0.1);
+    background: transparent;
 }
 .scrollbar-custom::-webkit-scrollbar-thumb {
-    background-color: rgba(33, 65, 102, 0.3);
-    border-radius: 20px;
+    background: #E2E8F0;
+    border-radius: 10px;
 }
+.scrollbar-custom::-webkit-scrollbar-thumb:hover {
+    background: #CBD5E0;
+}
+.scrollbar-hide::-webkit-scrollbar {
+    display: none;
+}
+.scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+.typing-dot {
+    animation: typing 1.4s infinite;
+}
+@keyframes typing {
+    0%, 100% { opacity: 0.3; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.1); }
+}
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
 `;
+
+// Banner Carousel Component
+const BannerCarousel: React.FC<{
+    banners: BannerItem[];
+    primaryColor: string;
+    onBannerClick: () => void;
+}> = ({ banners, primaryColor, onBannerClick }) => {
+    const [currentSlide, setCurrentSlide] = useState(0);
+    const [touchStart, setTouchStart] = useState(0);
+    const [touchEnd, setTouchEnd] = useState(0);
+    const hasMultiple = banners.length > 1;
+
+    useEffect(() => {
+        setCurrentSlide(0);
+    }, [banners.length]);
+
+    const handleTouchStart = (e: React.TouchEvent) => {
+        setTouchStart(e.targetTouches[0].clientX);
+    };
+
+    const handleTouchMove = (e: React.TouchEvent) => {
+        setTouchEnd(e.targetTouches[0].clientX);
+    };
+
+    const handleTouchEnd = () => {
+        if (!touchStart || !touchEnd) return;
+
+        const distance = touchStart - touchEnd;
+        const isLeftSwipe = distance > 50;
+        const isRightSwipe = distance < -50;
+
+        if (isLeftSwipe && currentSlide < banners.length - 1) {
+            setCurrentSlide(currentSlide + 1);
+        }
+        if (isRightSwipe && currentSlide > 0) {
+            setCurrentSlide(currentSlide - 1);
+        }
+
+        setTouchStart(0);
+        setTouchEnd(0);
+    };
+
+    useEffect(() => {
+        if (!hasMultiple) return;
+        const timer = setInterval(() => {
+            setCurrentSlide((prev) => (prev + 1) % banners.length);
+        }, 5000);
+        return () => clearInterval(timer);
+    }, [hasMultiple, banners.length]);
+
+    if (banners.length === 0) {
+        return null;
+    }
+
+    const handleBannerSelect = (banner: BannerItem) => {
+        if (banner.link_url) {
+            window.open(banner.link_url, '_blank', 'noopener,noreferrer');
+            return;
+        }
+        onBannerClick();
+    };
+
+    return (
+        <div className="mb-8">
+            <div
+                className="relative overflow-hidden rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.06)] border border-gray-50"
+                onTouchStart={handleTouchStart}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
+            >
+                <div
+                    className="flex transition-transform duration-500 ease-out"
+                    style={{ transform: `translateX(-${currentSlide * 100}%)` }}
+                >
+                    {banners.map((banner) => (
+                        <div key={banner.id} className="w-full flex-shrink-0 bg-white">
+                            <button
+                                type="button"
+                                onClick={() => handleBannerSelect(banner)}
+                                className="w-full text-left transition-all active:scale-[0.99]"
+                            >
+                                <div className="w-full aspect-[3/1]">
+                                    <img
+                                        src={banner.image_url}
+                                        alt={banner.alt_text || 'Promotional banner'}
+                                        className="w-full h-full object-cover"
+                                    />
+                                </div>
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {hasMultiple && (
+                <div className="flex justify-center gap-2 mt-3">
+                    {banners.map((banner, index) => (
+                        <button
+                            key={banner.id}
+                            onClick={() => setCurrentSlide(index)}
+                            className={`h-1.5 rounded-1g transition-all ${index === currentSlide ? 'w-6' : 'w-1.5 opacity-30'}`}
+                            style={{
+                                backgroundColor: index === currentSlide ? primaryColor : '#9CA3AF'
+                            }}
+                            aria-label={`Go to slide ${index + 1}`}
+                        />
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
 
 const ProductCarousel: React.FC<{
     items: ProductCard[];
     primaryColor: string;
     displayCurrency: string;
+    viewButtonText?: string;
+    materialLabel?: string;
+    jewelryTypeLabel?: string;
     thbToUsdRate?: number;
-}> = ({ items, primaryColor, displayCurrency, thbToUsdRate }) => {
+}> = ({ items, primaryColor, displayCurrency, viewButtonText, materialLabel, jewelryTypeLabel, thbToUsdRate }) => {
     if (!items || items.length === 0) return null;
 
     const formatPrice = (p: ProductCard) => {
@@ -130,37 +312,93 @@ const ProductCarousel: React.FC<{
         <div className="mt-3">
             <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-custom">
                 {items.map((p) => (
-                    <a
+                    <div
                         key={p.id}
-                        href={p.product_url || '#'}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="min-w-[220px] max-w-[220px] bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md transition-shadow"
+                        className="min-w-[240px] max-w-[240px] bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md transition-shadow flex flex-col"
                     >
-                        <div className="h-[120px] bg-gray-50 flex items-center justify-center overflow-hidden">
+                        {/* 1. Header for Image */}
+                        <div className="h-[160px] bg-gray-50 flex items-center justify-center overflow-hidden border-b border-gray-50 group/img">
                             {p.image_url ? (
-                                <img src={p.image_url} alt={p.name} className="h-full w-full object-cover" />
+                                <a
+                                    href={p.image_url.replace('/wholesale1_t/', '/wholesale1_b/')}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="w-full h-full flex items-center justify-center cursor-zoom-in"
+                                    title="Click to view full image"
+                                >
+                                    <img src={p.image_url} alt={p.name} className="h-full w-full object-contain transition-transform group-hover/img:scale-105" />
+                                </a>
                             ) : (
-                                <div className="text-xs text-gray-400">No image</div>
+                                <div className="text-sm text-gray-400 font-medium">No image available</div>
                             )}
                         </div>
-                        <div className="p-3">
-                            <div className="text-sm font-semibold text-gray-900 line-clamp-2">{p.name}</div>
-                            <div className="mt-1 text-xs text-gray-500">{p.sku}</div>
+
+                        {/* 2. Body for Product name, SKU, Description */}
+                        <div className="p-3 flex-1">
+                            <h4 className="text-base font-bold text-gray-900 line-clamp-2 uppercase leading-tight mb-1" title={p.name}>
+                                {p.name}
+                            </h4>
+                            <div className="text-xs font-mono text-gray-500 uppercase flex items-center gap-1.5 mb-2">
+                                <span className="px-1.5 py-0.5 bg-gray-100 rounded text-[10px] font-black text-gray-600">SKU</span>
+                                <span className="font-bold tracking-wider">{p.sku}</span>
+                                {p.attributes?.master_code && (
+                                    <>
+                                        <span className="text-gray-300">|</span>
+                                        <span className="font-medium">{p.attributes.master_code}</span>
+                                    </>
+                                )}
+                            </div>
                             {p.description && (
-                                <div className="mt-1 text-xs text-gray-500 line-clamp-2">{p.description}</div>
-                            )}
-                            <div className="mt-2 flex items-center justify-between">
-                                <div className="text-sm font-semibold text-gray-900">{formatPrice(p)}</div>
-                                <div
-                                    className="px-2 py-1 rounded-lg text-xs font-medium text-white"
-                                    style={{ backgroundColor: primaryColor }}
-                                >
-                                    View
+                                <div className="text-sm text-gray-600 italic leading-snug">
+                                    {p.description}
                                 </div>
+                            )}
+
+                            {(p.attributes?.material || p.attributes?.jewelry_type) && (
+                                <div className="mt-3 pt-3 border-t border-gray-50 flex flex-wrap gap-2 text-xs uppercase font-bold tracking-wider">
+                                    {p.attributes.material && (
+                                        <div className="bg-gray-100 text-gray-600 px-2.5 py-1.5 rounded-md">
+                                            {materialLabel || "Material"}: {p.attributes.material}
+                                        </div>
+                                    )}
+                                    {p.attributes.jewelry_type && (
+                                        <div className="bg-[#96D0E6]/20 text-[#214166] px-2.5 py-1.5 rounded-md">
+                                            {jewelryTypeLabel || "Jewelry Type"}: {p.attributes.jewelry_type}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* 3. Sub body for Price and Stock number */}
+                        <div className="px-3 py-2 bg-gray-50/50 border-t border-gray-100 flex items-center justify-between">
+                            <div className="flex flex-col">
+                                <span className="text-[10px] uppercase font-bold text-gray-400 leading-none mb-1">Price</span>
+                                <span className="text-base font-black text-gray-900 leading-none">{formatPrice(p)}</span>
+                            </div>
+                            <div className="flex flex-col items-end">
+                                <span className="text-[10px] uppercase font-bold text-gray-400 leading-none mb-1">Stock</span>
+                                <span className={`text-xs font-bold px-2 py-0.5 rounded-1g ${p.stock_status?.toLowerCase() === 'in stock' || !p.stock_status ? 'text-green-700 bg-green-100' : 'text-red-700 bg-red-100'}`}>
+                                    {p.stock_status || 'Checking...'}
+                                </span>
                             </div>
                         </div>
-                    </a>
+
+                        {/* 4. Buttons for View the link */}
+                        {p.product_url && (
+                            <div className="p-2 bg-white">
+                                <a
+                                    href={p.product_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="block w-full text-center py-2 rounded-lg text-sm font-bold text-white transition-all transform active:scale-95 shadow-sm hover:brightness-110"
+                                    style={{ backgroundColor: primaryColor }}
+                                >
+                                    {viewButtonText || "View Product Details"}
+                                </a>
+                            </div>
+                        )}
+                    </div>
                 ))}
             </div>
         </div>
@@ -174,9 +412,11 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     welcomeMessage,
     faqSuggestions,
     apiBaseUrl,
+    reportUrl,
     locale,
     customerName,
-    email
+    email,
+    customerId
 }) => {
     // Colors from the design
     const colors = {
@@ -184,6 +424,17 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         mediumBlue: '#214166',
         lightBlue: '#96D0E6',
         white: '#FFFFFF',
+    };
+
+    // Generate or retrieve Guest ID
+    const getGuestUserId = () => {
+        let userId = localStorage.getItem('genai_user_id') || localStorage.getItem('chat_user_id');
+        if (!userId) {
+            userId = `guest_${Math.random().toString(36).substr(2, 9)}`;
+            localStorage.setItem('genai_user_id', userId);
+            localStorage.setItem('chat_user_id', userId);
+        }
+        return userId;
     };
 
     // Effective config
@@ -197,14 +448,25 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             "What materials do you use?"
         ],
         apiBaseUrl: (apiBaseUrl || window.genaiConfig?.apiBaseUrl || window.genaiConfig?.apiUrl || '').trim().replace(/\/+$/, ''),
+        reportUrl: (reportUrl || window.genaiConfig?.reportUrl || '').trim(),
         locale: locale || window.genaiConfig?.locale || 'en-US',
         customerName: customerName || window.genaiConfig?.customerName,
         email: email || window.genaiConfig?.email,
+        customerId: customerId ?? window.genaiConfig?.customerId,
         displayCurrency: window.genaiConfig?.displayCurrency || 'USD',
         thbToUsdRate: window.genaiConfig?.thbToUsdRate,
     };
 
+    const resolvedUserId = (() => {
+        const configured = config.customerId;
+        if (configured !== undefined && configured !== null && String(configured).trim() !== '') {
+            return `magento_${configured}`;
+        }
+        return getGuestUserId();
+    })();
+
     const [isOpen, setIsOpen] = useState(false);
+    const [activeTab, setActiveTab] = useState<'home' | 'chat'>('home');
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -213,17 +475,184 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         const parsed = raw ? Number(raw) : NaN;
         return Number.isFinite(parsed) ? parsed : null;
     });
+    const [activeUserId, setActiveUserId] = useState(resolvedUserId);
+    const [banners, setBanners] = useState<BannerItem[]>([]);
+    const [isBannerLoading, setIsBannerLoading] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const chatScrollRef = useRef<HTMLDivElement>(null);
+    const isAtBottomRef = useRef(true);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const [selectedImage, setSelectedImage] = useState<File | null>(null);
+    const [selectedImageUrl, setSelectedImageUrl] = useState<string | null>(null);
 
-    // Auto-scroll to bottom
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const handleReportClick = () => {
+        if (config.reportUrl) {
+            window.open(config.reportUrl, '_blank', 'noopener,noreferrer');
+            return;
+        }
+        setActiveTab('chat');
+        setInput('Report: ');
+        setTimeout(() => textareaRef.current?.focus(), 0);
+    };
+
+    const handleImageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        if (!file.type.startsWith('image/')) {
+            alert('Please select an image file.');
+            if (fileInputRef.current) fileInputRef.current.value = '';
+            return;
+        }
+        setSelectedImage(file);
+    };
+
+    const clearSelectedImage = () => {
+        setSelectedImage(null);
+        setSelectedImageUrl(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
     useEffect(() => {
-        scrollToBottom();
-    }, [messages, isOpen, isLoading]);
+        if (!selectedImage) {
+            setSelectedImageUrl(null);
+            return;
+        }
+        const url = URL.createObjectURL(selectedImage);
+        setSelectedImageUrl(url);
+        return () => URL.revokeObjectURL(url);
+    }, [selectedImage]);
+    const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+    const hasHydratedRef = useRef(false);
+
+    // Auto-scroll to bottom
+    const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
+        messagesEndRef.current?.scrollIntoView({ behavior });
+    };
+
+    const updateScrollState = () => {
+        const container = chatScrollRef.current;
+        if (!container) return;
+        const threshold = 80;
+        const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        const atBottom = distanceFromBottom <= threshold;
+        isAtBottomRef.current = atBottom;
+        setShowScrollToLatest(!atBottom);
+    };
+
+    const loadConversationHistory = async () => {
+        try {
+            if (!resolvedUserId) return;
+            const activeEndpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/chat/active` : '/chat/active';
+            const { data: active } = await apiClient.get<ActiveConversationResponse>(activeEndpoint, {
+                params: {
+                    user_id: resolvedUserId,
+                    conversation_id: conversationId ?? undefined,
+                },
+            });
+
+            if (!active.conversation_id) {
+                setConversationId(null);
+                setMessages([]);
+                localStorage.removeItem('genai_conversation_id');
+                localStorage.removeItem('chat_conversation_id');
+                return;
+            }
+
+            const activeId = active.conversation_id;
+            if (activeId !== conversationId) {
+                setConversationId(activeId);
+                localStorage.setItem('genai_conversation_id', String(activeId));
+                localStorage.setItem('chat_conversation_id', String(activeId));
+            }
+
+            const historyEndpoint = config.apiBaseUrl
+                ? `${config.apiBaseUrl}/chat/history/${activeId}`
+                : `/chat/history/${activeId}`;
+            const { data: history } = await apiClient.get<ChatHistoryResponse>(historyEndpoint, {
+                params: {
+                    user_id: resolvedUserId,
+                    limit: 50,
+                },
+            });
+
+            const hydrated: Message[] = (history.messages || []).map((msg) => ({
+                role: msg.role,
+                content: msg.content,
+                productCarousel: Array.isArray(msg.product_data) ? msg.product_data : undefined,
+            }));
+            setMessages(hydrated);
+        } catch (error) {
+            console.error('Failed to load conversation history:', error);
+        }
+    };
+
+    useEffect(() => {
+        if (!isOpen || activeTab !== 'chat') return;
+        if (isAtBottomRef.current) {
+            requestAnimationFrame(() => scrollToBottom());
+        } else {
+            requestAnimationFrame(() => updateScrollState());
+        }
+    }, [messages, isOpen, isLoading, activeTab]);
+
+    useEffect(() => {
+        if (activeTab !== 'chat') return;
+        requestAnimationFrame(() => {
+            scrollToBottom('auto');
+            updateScrollState();
+        });
+    }, [activeTab, isOpen]);
+
+    useEffect(() => {
+        if (!isOpen || activeTab !== 'chat') return;
+        if (hasHydratedRef.current) return;
+        hasHydratedRef.current = true;
+        void loadConversationHistory();
+    }, [isOpen, activeTab, resolvedUserId, config.apiBaseUrl]);
+
+    useEffect(() => {
+        if (resolvedUserId === activeUserId) return;
+        setActiveUserId(resolvedUserId);
+        setConversationId(null);
+        setMessages([]);
+        localStorage.removeItem('genai_conversation_id');
+        localStorage.removeItem('chat_conversation_id');
+        hasHydratedRef.current = false;
+    }, [resolvedUserId, activeUserId]);
+
+    useEffect(() => {
+        const fetchBanners = async () => {
+            try {
+                setIsBannerLoading(true);
+                const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/banners/` : '/banners/';
+                const { data } = await apiClient.get<BannerItem[]>(endpoint);
+                const sorted = Array.isArray(data)
+                    ? [...data].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+                    : [];
+                setBanners(sorted);
+            } catch (error) {
+                console.error('Failed to load banners:', error);
+                setBanners([]);
+            } finally {
+                setIsBannerLoading(false);
+            }
+        };
+
+        fetchBanners();
+    }, [config.apiBaseUrl]);
+
+    // Body scroll lock on mobile when open
+    useEffect(() => {
+        if (isOpen && window.innerWidth < 768) {
+            document.body.style.overflow = 'hidden';
+        } else {
+            document.body.style.overflow = '';
+        }
+        return () => {
+            document.body.style.overflow = '';
+        };
+    }, [isOpen]);
 
     // Adjust textarea height
     useEffect(() => {
@@ -232,17 +661,6 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
         }
     }, [input]);
-
-    // Generate or retrieve Guest ID
-    const getUserId = () => {
-        let userId = localStorage.getItem('genai_user_id') || localStorage.getItem('chat_user_id');
-        if (!userId) {
-            userId = `guest_${Math.random().toString(36).substr(2, 9)}`;
-            localStorage.setItem('genai_user_id', userId);
-            localStorage.setItem('chat_user_id', userId);
-        }
-        return userId;
-    };
 
     const sendMessage = async (textOverride?: string) => {
         const textToSend = textOverride || input;
@@ -260,7 +678,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
         try {
             const payload = {
-                user_id: getUserId(),
+                user_id: resolvedUserId,
                 message: textToSend,
                 conversation_id: conversationId,
                 locale: config.locale,
@@ -268,7 +686,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                 email: config.email
             };
 
-            const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/chat` : '/chat';
+            const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/chat/` : '/chat/';
             const { data } = await apiClient.post<ChatResponse>(endpoint, payload);
 
             setConversationId(data.conversation_id);
@@ -278,7 +696,12 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                 const assistantMessage: Message = {
                     role: 'assistant',
                     content: data.reply_text,
+                    carouselMsg: data.carousel_msg,
                     productCarousel: data.product_carousel || [],
+                    viewButtonText: data.view_button_text,
+                    materialLabel: data.material_label,
+                    jewelryTypeLabel: data.jewelry_type_label,
+                    followUpQuestions: data.follow_up_questions || [],
                 };
                 const updated: Message[] = [...prev, assistantMessage];
                 return updated;
@@ -310,7 +733,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     // Determine container classes
     const containerClasses = isInline
         ? `absolute bottom-6 right-6 z-10 w-[380px] h-[600px] transition-all duration-300 ease-in-out transform ${isOpen ? 'translate-y-0 opacity-100 pointer-events-auto' : 'translate-y-5 opacity-0 pointer-events-none'}`
-        : `fixed bottom-[100px] right-[30px] z-[1000] w-[380px] h-[600px] transition-all duration-300 ease-in-out transform ${isOpen ? 'translate-y-0 opacity-100 pointer-events-auto' : 'translate-y-5 opacity-0 pointer-events-none'}`;
+        : `fixed inset-0 z-[1000] md:inset-auto md:bottom-[100px] md:right-[30px] md:w-[380px] md:h-[600px] transition-all duration-300 ease-in-out transform ${isOpen ? 'translate-y-0 opacity-100 pointer-events-auto' : 'translate-y-full md:translate-y-5 opacity-0 pointer-events-none'}`;
 
     return (
         <div style={{ fontFamily: "'Poppins', sans-serif" }}>
@@ -319,17 +742,17 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             {/* Toggle Button */}
             {!isInline && (
                 <div
-                    onClick={() => setIsOpen(true)}
-                    className={`fixed bottom-[30px] right-[30px] w-[60px] h-[60px] rounded-full text-white flex items-center justify-center cursor-pointer shadow-lg z-[1001] transition-all duration-300 hover:scale-105 ${!isOpen ? 'pulse-animation' : ''}`}
+                    onClick={() => setIsOpen(!isOpen)}
+                    className={`fixed bottom-[30px] right-[30px] w-[64px] h-[64px] rounded-full text-white flex items-center justify-center cursor-pointer z-[1001] transition-all duration-500 ease-[cubic-bezier(0.19,1,0.22,1)] hover:scale-110 active:scale-95 shadow-[0_10px_25px_rgba(0,0,0,0.15)] hover:shadow-[0_15px_35px_rgba(0,0,0,0.2)] ${!isOpen ? 'pulse-animation' : ''}`}
                     style={{ backgroundColor: config.primaryColor }}
                 >
                     {isOpen ? (
-                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        <svg className="w-6 h-6 animate-fade-in" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
                         </svg>
                     ) : (
-                        <svg className="w-[30px] h-[30px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                        <svg className="w-8 h-8 animate-fade-in" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 2C6.477 2 2 6.133 2 11.235c0 2.898 1.442 5.467 3.684 7.218l-1.121 3.51a.501.501 0 0 0 .762.555l4.352-2.825c.749.197 1.528.307 2.323.307 5.523 0 10-4.133 10-9.235S17.523 2 12 2zm0 16.47c-.714 0-1.411-.088-2.072-.255a.5.5 0 0 0-.411.084l-2.678 1.737.705-2.203a.5.5 0 0 0-.166-.499C5.353 15.79 4 13.633 4 11.235 4 7.245 7.589 4 12 4s8 3.245 8 7.235-3.589 7.235-8 7.235z" />
                         </svg>
                     )}
                 </div>
@@ -339,66 +762,104 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             {isInline && !isOpen && (
                 <div
                     onClick={() => setIsOpen(true)}
-                    className={`absolute bottom-6 right-6 w-[60px] h-[60px] rounded-full text-white flex items-center justify-center cursor-pointer shadow-lg z-10 transition-all duration-300 hover:scale-105 pulse-animation`}
+                    className={`absolute bottom-6 right-6 w-[64px] h-[64px] rounded-full text-white flex items-center justify-center cursor-pointer shadow-[0_10px_25px_rgba(0,0,0,0.1)] z-10 transition-all duration-300 hover:scale-110 active:scale-95 pulse-animation`}
                     style={{ backgroundColor: config.primaryColor }}
                 >
-                    <svg className="w-[30px] h-[30px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                    <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 2C6.477 2 2 6.133 2 11.235c0 2.898 1.442 5.467 3.684 7.218l-1.121 3.51a.501.501 0 0 0 .762.555l4.352-2.825c.749.197 1.528.307 2.323.307 5.523 0 10-4.133 10-9.235S17.523 2 12 2zm0 16.47c-.714 0-1.411-.088-2.072-.255a.5.5 0 0 0-.411.084l-2.678 1.737.705-2.203a.5.5 0 0 0-.166-.499C5.353 15.79 4 13.633 4 11.235 4 7.245 7.589 4 12 4s8 3.245 8 7.235-3.589 7.235-8 7.235z" />
                     </svg>
                 </div>
             )}
 
             {/* Chat Container */}
-            <div className={`${containerClasses} bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-[#96D0E6]/30`}>
+            {/* Chat Container */}
+            <div className={`${containerClasses} bg-[#FCFCFE] rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-gray-100`}>
                 {/* Header */}
-                <div className="p-4 text-white border-b-2 border-[#96D0E6]" style={{ backgroundColor: colors.darkBlue }}>
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center">
-                            <div className="w-10 h-10 rounded-full bg-[#96D0E6] flex items-center justify-center">
-                                {/* Jewelry Icon */}
-                                <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                    <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke={colors.darkBlue} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                    <path d="M12 16C14.2091 16 16 14.2091 16 12C16 9.79086 14.2091 8 12 8C9.79086 8 8 9.79086 8 12C8 14.2091 9.79086 16 12 16Z" fill={colors.darkBlue} stroke={colors.darkBlue} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                    <path d="M12 5V3" stroke={colors.darkBlue} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                    <path d="M19 12H21" stroke={colors.darkBlue} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                    <path d="M12 19V21" stroke={colors.darkBlue} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                    <path d="M3 12H5" stroke={colors.darkBlue} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                <div
+                    className="relative px-4 py-3 sm:px-5 sm:py-4 text-white overflow-hidden shadow-sm"
+                    style={{ backgroundColor: config.primaryColor }}
+                >
+                    <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-white/15 blur-2xl"></div>
+                    <div className="absolute -left-8 -bottom-8 h-24 w-24 rounded-full bg-white/10 blur-2xl"></div>
+                    <div className="flex items-center justify-between relative z-10">
+                        {activeTab === 'chat' ? (
+                            <button
+                                onClick={() => setActiveTab('home')}
+                                className="flex items-center gap-2 text-white/90 hover:text-white transition-colors bg-white/15 px-3 py-1.5 rounded-lg text-sm font-semibold"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+                                    <path d="M12.9995 17.7115L5.28809 10L12.9995 2.28857L14.1198 3.40878L7.52829 10L14.1198 16.5913L12.9995 17.7115Z" />
                                 </svg>
+                                <span>Go back</span>
+                            </button>
+                        ) : (
+                            <div className="flex items-center">
+                                <div className="w-10 h-10 rounded-lg bg-white/20 flex items-center justify-center overflow-hidden border border-white/10 shadow-inner">
+                                    <img
+                                        src="https://www.achadirect.com/media/logo/default/logo-sq.png"
+                                        alt="AchaDirect"
+                                        className="w-full h-full object-cover"
+                                        onError={(e) => {
+                                            (e.target as HTMLImageElement).src = "https://ui-avatars.com/api/?name=AD&background=ffffff&color=0c2038";
+                                        }}
+                                    />
+                                </div>
+                                <div className="ml-3">
+                                    <div className="text-white/80 text-[10px] uppercase font-bold tracking-widest mb-0.5">Acha Direct</div>
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></span>
+                                        <span className="text-xs font-medium text-white/90">Online now</span>
+                                    </div>
+                                </div>
                             </div>
-                            <div className="ml-3">
-                                <h3 className="font-semibold text-lg">{config.title}</h3>
-                                <p className="text-xs text-[#96D0E6]">Wholesale Support</p>
-                            </div>
+                        )}
+                        <div className="flex items-center gap-2">
+                            <button className="text-white/80 hover:text-white transition-colors p-2 rounded-lg">
+                                <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                                    <path d="M11.5 4C11.5 4.82843 10.8284 5.5 10 5.5C9.17157 5.5 8.5 4.82843 8.5 4C8.5 3.17157 9.17157 2.5 10 2.5C10.8284 2.5 11.5 3.17157 11.5 4Z" />
+                                    <path d="M11.5 10C11.5 10.8284 10.8284 11.5 10 11.5C9.17157 11.5 8.5 10.8284 8.5 10C8.5 9.17157 8.5 8.5 10 8.5C10.8284 8.5 11.5 9.17157 11.5 10Z" />
+                                    <path d="M10 17.5C10.8284 17.5 11.5 16.8284 11.5 16C11.5 15.1716 10.8284 14.5 10 14.5C9.17157 14.5 8.5 15.1716 8.5 16C8.5 16.8284 9.17157 17.5 10 17.5Z" />
+                                </svg>
+                            </button>
+                            <button onClick={() => setIsOpen(false)} className="text-white/80 hover:text-white transition-colors bg-white/15 hover:bg-white/25 p-2 rounded-lg">
+                                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.6} d="M19 9l-7 7-7-7" />
+                                </svg>
+                            </button>
                         </div>
-                        <button onClick={() => setIsOpen(false)} className="text-[#96D0E6] hover:text-white transition-colors">
-                            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                        </button>
                     </div>
                 </div>
 
-                {/* Messages */}
-                <div className="flex-1 overflow-y-auto p-6 bg-[#f9fbfd] scrollbar-custom pb-20">
-                    {/* Initial Welcome Message */}
-                    <div className="flex justify-start mb-4 animate-fade-in-up">
-                        <div className="bg-[#96D0E6] text-[#0C2038] px-4 py-3 rounded-2xl rounded-bl-sm shadow-sm max-w-[85%]">
-                            <p>{config.welcomeMessage}</p>
-                        </div>
-                    </div>
-                    {/* FAQ Suggestions - Now using dynamic config */}
-                    {messages.length === 0 && config.faqSuggestions.length > 0 && (
-                        <div className="flex justify-start mb-4 animate-fade-in-up" style={{ animationDelay: '0.1s' }}>
-                            <div className="bg-[#96D0E6] text-[#0C2038] px-4 py-3 rounded-2xl rounded-bl-sm shadow-sm max-w-[85%]">
-                                <p className="mb-2 text-sm font-medium">Quick suggestions:</p>
-                                <div className="flex flex-wrap gap-2 mt-2">
+                {/* Main View Container */}
+                <div className="relative flex-1 bg-white overflow-hidden flex flex-col shadow-inner z-20">
+                    {/* Home Tab */}
+                    {activeTab === 'home' && (
+                        <div className="flex-1 overflow-y-auto scrollbar-custom p-6 animate-fade-in-up pb-10">
+                            {/* Sliding Banner Carousel */}
+                            {isBannerLoading ? (
+                                <div className="mb-8 w-full aspect-[4/1] rounded-2xl bg-gray-100 animate-pulse"></div>
+                            ) : (
+                                <BannerCarousel
+                                    banners={banners}
+                                    primaryColor={config.primaryColor}
+                                    onBannerClick={() => setActiveTab('chat')}
+                                />
+                            )}
+
+                            {/* Suggestions Slider */}
+                            <div className="mt-4">
+                                <h5 className="text-[10px] uppercase font-black text-gray-300 tracking-[0.2em] px-1 mb-3">Quick Links</h5>
+                                <div className="space-y-2 px-1">
                                     {config.faqSuggestions.map((faq, idx) => (
                                         <button
                                             key={idx}
-                                            onClick={() => sendMessage(faq)}
-                                            className="px-3 py-1 bg-[#96D0E6]/20 hover:bg-[#96D0E6]/40 text-[#214166] rounded-2xl text-xs font-medium transition-colors border border-[#214166]/10"
+                                            onClick={() => {
+                                                setActiveTab('chat');
+                                                sendMessage(faq);
+                                            }}
+                                            className="w-full text-left px-4 py-3 bg-gray-50/80 hover:bg-gray-100 rounded-xl border border-gray-100 transition-all active:scale-95 shadow-sm"
                                         >
-                                            {faq}
+                                            <span className="text-sm font-bold text-gray-700">{faq}</span>
                                         </button>
                                     ))}
                                 </div>
@@ -406,69 +867,220 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                         </div>
                     )}
 
-                    {messages.map((msg, idx) => (
-                        <div key={idx} className={`flex mb-4 animate-fade-in-up ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div className="max-w-[80%]">
-                                <div
-                                    className={`px-4 py-3 rounded-2xl shadow-sm ${msg.role === 'user'
-                                            ? 'text-white rounded-br-sm'
-                                            : msg.role === 'system'
-                                                ? 'bg-red-50 text-red-600'
-                                                : 'bg-[#96D0E6] text-[#0C2038] rounded-bl-sm'
-                                        }`}
-                                    style={msg.role === 'user' ? { backgroundColor: config.primaryColor } : {}}
-                                >
-                                    {msg.content}
-                                </div>
-                                {msg.role === 'assistant' && msg.productCarousel && msg.productCarousel.length > 0 && (
-                                    <ProductCarousel
-                                        items={msg.productCarousel}
-                                        primaryColor={config.primaryColor}
-                                        displayCurrency={config.displayCurrency}
-                                        thbToUsdRate={config.thbToUsdRate}
-                                    />
-                                )}
-                            </div>
-                        </div>
-                    ))}
+                    {/* Chat Tab */}
+                    {activeTab === 'chat' && (
+                        <div className="flex-1 flex flex-col overflow-hidden animate-fade-in bg-white h-full relative">
+                            <div
+                                ref={chatScrollRef}
+                                onScroll={updateScrollState}
+                                className="flex-1 overflow-y-auto p-4 scrollbar-custom pb-24"
+                            >
 
-                    {isLoading && (
-                        <div className="flex justify-start mb-4 animate-fade-in">
-                            <div className="bg-[#96D0E6] px-4 py-3 rounded-2xl rounded-bl-sm flex space-x-1 items-center h-[46px]">
-                                <span className="w-2 h-2 bg-[#214166] rounded-full typing-dot"></span>
-                                <span className="w-2 h-2 bg-[#214166] rounded-full typing-dot"></span>
-                                <span className="w-2 h-2 bg-[#214166] rounded-full typing-dot"></span>
+                                {messages.length === 0 && (
+                                    <div className="flex justify-start mb-6 animate-fade-in-up">
+                                        <div className="bg-gray-50 border border-gray-100 p-4 rounded-lg shadow-sm max-w-[85%] text-sm font-medium text-gray-700 leading-relaxed">
+                                            <p>{config.welcomeMessage}</p>
+                                        </div>
+                                    </div>
+                                )}
+                                {messages.map((msg, idx) => (
+                                    <div key={idx} className={`flex flex-col mb-4 animate-fade-in-up ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                                        <div className="max-w-[85%]">
+                                            <div
+                                                className={`px-4 py-3 rounded-lg text-sm font-medium leading-relaxed ${msg.role === 'user'
+                                                    ? 'text-white shadow-md'
+                                                    : msg.role === 'system'
+                                                        ? 'bg-red-50 text-red-600 border border-red-100'
+                                                        : 'bg-gray-50 border border-gray-100 text-gray-800'
+                                                    }`}
+                                                style={msg.role === 'user' ? { backgroundColor: config.primaryColor } : {}}
+                                            >
+                                                <div className="whitespace-pre-wrap">{msg.content}</div>
+                                            </div>
+                                        </div>
+
+                                        {msg.role === 'assistant' && msg.carouselMsg && (
+                                            <div className="max-w-[90%] mt-2 px-4 py-2 bg-gray-100/50 text-gray-500 rounded-xl text-[11px] font-bold uppercase tracking-wider border border-gray-100/50">
+                                                {msg.carouselMsg}
+                                            </div>
+                                        )}
+
+                                        {msg.role === 'assistant' && msg.productCarousel && msg.productCarousel.length > 0 && (
+                                            <div className="max-w-full w-full">
+                                                <ProductCarousel
+                                                    items={msg.productCarousel}
+                                                    primaryColor={config.primaryColor}
+                                                    displayCurrency={config.displayCurrency}
+                                                    viewButtonText={msg.viewButtonText}
+                                                    materialLabel={msg.materialLabel}
+                                                    jewelryTypeLabel={msg.jewelryTypeLabel}
+                                                    thbToUsdRate={config.thbToUsdRate}
+                                                />
+                                            </div>
+                                        )}
+
+                                        {/* Follow-up Questions / Quick Reply Slider */}
+                                        {msg.role === 'assistant' && msg.followUpQuestions && msg.followUpQuestions.length > 0 && (
+                                            <div className="w-full mt-3 overflow-hidden">
+                                                <div className="flex gap-2 overflow-x-auto pb-4 px-1 scrollbar-hide">
+                                                    {msg.followUpQuestions.map((question, qIdx) => (
+                                                        <button
+                                                            key={qIdx}
+                                                            onClick={() => sendMessage(question)}
+                                                            className="whitespace-nowrap flex-shrink-0 px-4 py-2 bg-white hover:bg-gray-50 text-gray-700 rounded-full text-xs font-bold transition-all border-2 shadow-sm hover:shadow-md active:scale-95 flex items-center gap-1.5"
+                                                            style={{ borderColor: config.primaryColor }}
+                                                        >
+                                                            <span>{question}</span>
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                                                <path d="M7.5 6.175L8.675 5L13.675 10L8.675 15L7.5 13.825L11.3167 10L7.5 6.175Z" fill="currentColor" />
+                                                            </svg>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+
+
+                                {isLoading && (
+                                    <div className="flex justify-start mb-4 animate-fade-in">
+                                        <div className="bg-gray-50 border border-gray-100 px-4 py-3 rounded-lg flex space-x-1.5 items-center h-[40px] shadow-sm">
+                                            <span className="w-1.5 h-1.5 bg-gray-300 rounded-full typing-dot"></span>
+                                            <span className="w-1.5 h-1.5 bg-gray-300 rounded-full typing-dot"></span>
+                                            <span className="w-1.5 h-1.5 bg-gray-300 rounded-full typing-dot"></span>
+                                        </div>
+                                    </div>
+                                )}
+                                <div ref={messagesEndRef} />
+                            </div>
+
+                            {showScrollToLatest && (
+                                <button
+                                    type="button"
+                                    onClick={() => scrollToBottom()}
+                                    aria-label="Back to latest conversation"
+                                    title="Back to latest"
+                                    className="absolute bottom-24 right-4 z-20 inline-flex items-center justify-center rounded-full bg-white text-gray-700 shadow-md border border-gray-200 w-9 h-9 hover:bg-gray-50"
+                                >
+                                    <svg
+                                        width="18"
+                                        height="18"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="2"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        aria-hidden="true"
+                                    >
+                                        <path d="M12 5v14" />
+                                        <path d="m19 12-7 7-7-7" />
+                                    </svg>
+                                </button>
+                            )}
+
+                            {/* Input Group (Deep Chat Style) */}
+                            <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 flex flex-col pt-2 pb-3 px-4 shadow-[0_-10px_30px_rgba(0,0,0,0.03)] z-10">
+                            <div className="flex items-center gap-3">
+                                <textarea
+                                    ref={textareaRef}
+                                    value={input}
+                                    onChange={(e) => setInput(e.target.value)}
+                                    onKeyDown={handleKeyPress}
+                                        placeholder="Enter your message..."
+                                        rows={1}
+                                        className="flex-1 bg-transparent border-none py-3 focus:outline-none resize-none max-h-[100px] scrollbar-custom text-sm font-medium text-gray-700"
+                                        style={{ padding: '16px 0px' }}
+                                    />
+                                    <button
+                                        onClick={() => sendMessage()}
+                                        disabled={isLoading || !input.trim()}
+                                        className="w-10 h-10 rounded-xl text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95 disabled:opacity-20 disabled:grayscale"
+                                        style={{ backgroundColor: config.primaryColor }}
+                                    >
+                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="rotate-[-10deg]">
+                                            <path d="M5.78393 10.7733L3.47785 6.16113C2.36853 3.9425 1.81387 2.83318 2.32353 2.32353C2.83318 1.81387 3.9425 2.36853 6.16113 3.47785L19.5769 10.1857C21.138 10.9663 21.9185 11.3566 21.9185 11.9746C21.9185 12.5926 21.138 12.9829 19.5769 13.7634L6.16113 20.4713C3.9425 21.5806 2.83318 22.1353 2.32353 21.6256C1.81387 21.116 2.36853 20.0067 3.47785 17.788L5.78522 13.1733H12.6367C13.2995 13.1733 13.8367 12.636 13.8367 11.9733C13.8367 11.3105 13.2995 10.7733 12.6367 10.7733H5.78393Z" fill="currentColor" />
+                                        </svg>
+                                    </button>
+                                </div>
+                                <div className="mt-2 flex items-center gap-3 text-xs text-gray-500">
+                                    <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-gray-600 hover:text-gray-800">
+                                        <input
+                                            ref={fileInputRef}
+                                            type="file"
+                                            accept="image/*"
+                                            className="hidden"
+                                            onChange={handleImageChange}
+                                        />
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                            <path d="M4 7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V7Z" stroke="currentColor" strokeWidth="1.5" />
+                                            <path d="M8 14l2.5-2.5a1 1 0 0 1 1.4 0L16 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                            <circle cx="9" cy="9" r="1.5" fill="currentColor" />
+                                        </svg>
+                                        Upload photo
+                                    </label>
+                                    {selectedImageUrl && (
+                                        <div className="flex items-center gap-2">
+                                            <img
+                                                src={selectedImageUrl}
+                                                alt="Selected upload"
+                                                className="h-10 w-10 rounded-lg object-cover border border-gray-200"
+                                            />
+                                            <div className="max-w-[140px] truncate text-gray-600">
+                                                {selectedImage?.name}
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={clearSelectedImage}
+                                                className="text-xs font-semibold text-red-500 hover:text-red-600"
+                                            >
+                                                Remove
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     )}
-                    <div ref={messagesEndRef} />
                 </div>
 
-                {/* Input Area */}
-                <div className="absolute bottom-0 left-0 right-0 p-4 bg-white border-t border-[#96D0E6]/50">
-                    <div className="relative">
-                        <textarea
-                            ref={textareaRef}
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            onKeyDown={handleKeyPress}
-                            placeholder="Ask anything..."
-                            rows={1}
-                            className="w-full border border-[#96D0E6] rounded-3xl py-3 pl-4 pr-12 focus:outline-none focus:ring-2 focus:border-transparent resize-none max-h-[100px] scrollbar-custom text-sm"
-                            style={{ '--tw-ring-color': config.primaryColor } as React.CSSProperties}
-                        />
+                {/* Bottom Navigation Bar */}
+                {activeTab === 'home' && (
+                    <div className="bg-white border-t border-gray-50 h-[80px] flex items-center justify-around px-8 relative z-30 shadow-[0_-8px_30px_rgb(0,0,0,0.02)]">
                         <button
-                            onClick={() => sendMessage()}
-                            disabled={isLoading || !input.trim()}
-                            className="absolute right-2 bottom-2 w-10 h-10 rounded-full text-white flex items-center justify-center transition-transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
-                            style={{ backgroundColor: config.primaryColor }}
+                            onClick={() => setActiveTab('home')}
+                            className={`group flex flex-col items-center gap-1.5 transition-all p-2 rounded-xl active:scale-95 ${activeTab === 'home' ? '' : 'text-gray-300 hover:text-gray-400'}`}
+                            style={{ color: activeTab === 'home' ? config.primaryColor : undefined }}
                         >
-                            <svg className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path fillRule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clipRule="evenodd" />
+                            <div className={`p-1.5 rounded-lg transition-colors ${activeTab === 'home' ? 'bg-current opacity-10' : ''}`}></div>
+                            <svg className="absolute" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M4.66663 24.5V10.5L14 3.5L23.3333 10.5V24.5H16.3333V16.3333H11.6666V24.5H4.66663Z" fill="currentColor" />
                             </svg>
+                            <span className="text-[10px] font-black uppercase tracking-widest mt-6">Home</span>
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('chat')}
+                            className="group flex flex-col items-center gap-1.5 transition-all p-2 rounded-xl active:scale-95 text-gray-300 hover:text-gray-400"
+                        >
+                            <div className="p-1.5 rounded-lg transition-colors"></div>
+                            <svg className="absolute" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M20.4001 5.1223V15.9045C20.4001 16.3308 20.2566 16.6912 19.9697 16.9856C19.6828 17.28 19.3316 17.4272 18.916 17.4272H6.49717L3.6001 20.3996V5.1223C3.6001 4.69595 3.74356 4.33558 4.03048 4.04119C4.31741 3.7468 4.66864 3.59961 5.08417 3.59961H18.916C19.3316 3.59961 19.6828 3.7468 19.9697 4.04119C20.2566 4.33558 20.4001 4.69595 20.4001 5.1223Z" fill="currentColor" />
+                            </svg>
+                            <span className="text-[10px] font-black uppercase tracking-widest mt-6">Chat</span>
+                        </button>
+                        <button
+                            onClick={handleReportClick}
+                            className="group flex flex-col items-center gap-1.5 transition-all p-2 rounded-xl active:scale-95 text-gray-300 hover:text-gray-400"
+                        >
+                            <div className="p-1.5 rounded-lg transition-colors"></div>
+                            <svg className="absolute" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M6 4h9l3 3v13H6V4Zm8 1.5V8h2.5L14 5.5ZM8 11h8v1.5H8V11Zm0 4h8v1.5H8V15Z" fill="currentColor" />
+                            </svg>
+                            <span className="text-[10px] font-black uppercase tracking-widest mt-6">Report</span>
                         </button>
                     </div>
-                </div>
+                )}
             </div>
         </div>
     );

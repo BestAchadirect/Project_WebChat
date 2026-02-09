@@ -2,30 +2,30 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.config import settings
 from app.models.chat import AppUser, Conversation, Message, MessageRole
 from app.models.product import Product, ProductEmbedding
+from app.models.product_attribute import AttributeDefinition, ProductAttributeValue
+from app.models.qa_log import QALog, QAStatus
 from app.prompts.system_prompts import (
-    contextual_reply_prompt,
-    general_chat_prompt,
-    language_detect_prompt,
     rag_answer_prompt,
-    rag_partial_prompt,
-    smalltalk_prompt,
+    ui_localization_prompt,
+    unified_nlu_prompt,
 )
 from app.schemas.chat import ChatContext, ChatRequest, ChatResponse, KnowledgeSource, ProductCard, RouteDecision
 from app.services.llm_service import llm_service
-from app.services.product_pipeline import ProductPipeline
 from app.services.knowledge_pipeline import KnowledgePipeline
-from app.services.verifier_service import VerifierService
 from app.services.currency_service import currency_service
+from app.services.eav_service import eav_service
 from app.services.response_renderer import ResponseRenderer
+from app.services.semantic_cache_service import semantic_cache_service
 from app.utils.debug_log import debug_log as _debug_log
 
 logger = get_logger(__name__)
@@ -36,200 +36,12 @@ class ChatService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        self._product_pipeline = ProductPipeline(
-            search_products=self.search_products,
-            search_products_by_exact_sku=self._search_products_by_exact_sku,
-            infer_jewelry_type_filter=self._infer_jewelry_type_filter,
-            log_event=self._log_event,
-        )
         self._knowledge_pipeline = KnowledgePipeline(db=self.db, log_event=self._log_event)
-        self._verifier_service = VerifierService(log_event=self._log_event)
         self._response_renderer = ResponseRenderer()
 
-    def _policy_topic_count(self, text: str) -> int:
-        if not text:
-            return 0
-        lowered = text.strip().lower()
-        if not lowered:
-            return 0
-        topics = [
-            "refund",
-            "return",
-            "shipping",
-            "policy",
-            "minimum order",
-            "moq",
-            "customs",
-            "bank transfer",
-            "watermark",
-            "payment",
-            "discount",
-            "credit",
-            "store credit",
-        ]
-        return sum(1 for t in topics if t in lowered)
 
-    def _is_complex_query(self, text: str) -> bool:
-        if not text:
-            return False
-        t = text.strip()
-        if not t:
-            return False
-        if len(t) > 220:
-            return True
-        if t.count("?") >= 2:
-            return True
-        if "\n" in t or re.search(r"(^|\n)\s*[-*]\s+\w+", t):
-            return True
-        if self._policy_topic_count(t) >= 2:
-            return True
-        return False
 
-    def _is_smalltalk(self, text: str) -> bool:
-        if not text:
-            return False
-        t = text.strip().lower()
-        if not t:
-            return False
 
-        smalltalk_phrases = {
-            "hi",
-            "hello",
-            "hey",
-            "yo",
-            "hii",
-            "hiii",
-            "good morning",
-            "good afternoon",
-            "good evening",
-            "thanks",
-            "thank you",
-            "thx",
-            "ok",
-            "okay",
-            "cool",
-            "great",
-            "nice",
-        }
-        if t in smalltalk_phrases:
-            return True
-
-        # Emoji-only / punctuation-only (no letters/digits) and short.
-        if len(t) <= 10 and not re.search(r"[a-z0-9]", t):
-            return True
-
-        # Very short and no product/policy intent.
-        if len(t) <= 6 and not re.search(r"[0-9]", t):
-            if not self._looks_like_product_query(t) and not re.search(r"[?]|refund|shipping|return|policy", t):
-                return True
-
-        return False
-
-    def _is_meta_question(self, text: str) -> bool:
-        if not text:
-            return False
-        t = text.strip().lower()
-        patterns = [
-            r"\b(ai|a\.i\.)\b",
-            r"\bare you (an )?ai\b",
-            r"\bare you (a )?human\b",
-            r"\bwho are you\b",
-            r"\bwhat are you\b",
-            r"\bwhat can you do\b",
-            r"\bhow do you work\b",
-            r"\bwhat model\b",
-        ]
-        if any(re.search(p, t) for p in patterns):
-            # Avoid triggering on product terms like "AI" in SKU etc; require conversational framing.
-            return bool(re.search(r"\b(are you|who|what|how)\b", t))
-        return False
-
-    def _is_general_chat(self, text: str) -> bool:
-        if not text:
-            return False
-        t = text.strip().lower()
-        general_patterns = [
-            r"\bhow are you\b",
-            r"\bwhat'?s up\b",
-            r"\btell me a joke\b",
-            r"\bmake me laugh\b",
-            r"\bfun fact\b",
-            r"\bwhat do you think\b",
-        ]
-        return any(re.search(p, t) for p in general_patterns)
-
-    def _has_store_intent(self, text: str) -> bool:
-        if not text:
-            return False
-        t = text.strip().lower()
-        store_keywords = [
-            "price",
-            "cost",
-            "buy",
-            "order",
-            "wholesale",
-            "moq",
-            "minimum order",
-            "min order",
-            "shipping",
-            "refund",
-            "return",
-            "policy",
-            "sku",
-            "size",
-            "gauge",
-            "material",
-            "color",
-            "recommend",
-            "show me",
-            "find",
-            "search",
-            "customs",
-            "bank transfer",
-            "watermark",
-            "contact",
-            "acha",
-            "products",
-            "product",
-        ]
-        if any(k in t for k in store_keywords):
-            return True
-        # Treat generic "help/support" as store intent when not obviously general chat.
-        if re.search(r"\b(help|support)\b", t) and not self._is_general_chat(t) and not self._is_meta_question(t):
-            return True
-        return False
-
-    def _is_policy_intent(self, text: str) -> bool:
-        return self._policy_topic_count(text) > 0
-
-    def _is_catalog_browse(self, text: str) -> bool:
-        if not text:
-            return False
-        t = text.strip().lower()
-        patterns = [
-            r"\bwhat products do you have\b",
-            r"\bwhat do you sell\b",
-            r"\bwhat do you carry\b",
-            r"\bproduct catalog\b",
-            r"\bbrowse (the )?catalog\b",
-            r"\bshow me (the )?products\b",
-            r"\bproduct categories\b",
-            r"\bwhat categories\b",
-        ]
-        return any(re.search(p, t) for p in patterns)
-
-    def _build_product_clarifier(self, text: str) -> str:
-        t = (text or "").lower()
-        if not re.search(
-            r"\b(barbell|labret|belly|nose|ring|stud|tunnel|plug|nipple|jewelry|earring|septum|industrial)\b",
-            t,
-        ):
-            return "Which category are you interested in (barbells, labrets, belly, or nose)?"
-        if not re.search(r"\b\d{1,2}g\b", t):
-            return "What gauge are you looking for (14g or 16g)?"
-        if not re.search(r"\b(titanium|steel|gold|silver|niobium)\b", t):
-            return "Any material preference (titanium or steel)?"
-        return "Do you have a size or style in mind?"
 
     @staticmethod
     def _normalize_text(text: str) -> str:
@@ -240,38 +52,92 @@ class ChatService:
         lowered = re.sub(r"\s+", " ", lowered).strip()
         return lowered
 
-    def _is_echo_clarifier(self, *, user_text: str, clarifier: str) -> bool:
-        if not user_text or not clarifier:
-            return False
-        u = self._normalize_text(user_text)
-        c = self._normalize_text(clarifier)
-        if not u or not c:
-            return False
-        if c in u or u in c:
-            return True
-        return False
-
+    @staticmethod
+    def _normalize_jewelry_type(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        return re.sub(r"[^a-z0-9]+", "", value.lower())
 
     @staticmethod
-    def _count_sentences(text: str) -> int:
-        if not text:
-            return 0
-        parts = re.split(r"[.!?]+", text)
-        return len([p for p in parts if p.strip()])
+    def _merge_product_attrs(
+        base_attrs: Optional[Dict[str, Any]],
+        eav_attrs: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        attrs = dict(base_attrs or {})
+        if eav_attrs:
+            for key, value in eav_attrs.items():
+                if value is None:
+                    continue
+                attrs[key] = value
+        return attrs
 
-    def _format_clarifier_fallback(self, text: str) -> str:
-        t = (text or "").strip()
-        if not t:
-            t = "Could you share a bit more detail so I can help?"
-        t = re.sub(r"\s+", " ", t)
-        if "?" not in t:
-            t = t.rstrip(".")
-            t = f"{t}?"
-        if not re.match(r"^(hello|thanks)\b", t, re.I):
-            if t and len(t) > 1 and t[0].isupper() and t[1].islower():
-                t = t[0].lower() + t[1:]
-            t = f"Hello, {t}"
-        return t
+    def _infer_primary_jewelry_type(
+        self,
+        *,
+        products: List[ProductCard],
+        query_text: str,
+    ) -> Optional[str]:
+        for p in products:
+            attrs = p.attributes or {}
+            jt = attrs.get("jewelry_type") or attrs.get("type")
+            if isinstance(jt, str) and jt.strip():
+                return jt.strip()
+        return self._infer_jewelry_type_filter(query_text)
+
+    def _build_cross_sell_query(self, jewelry_type: str) -> Optional[str]:
+        if not jewelry_type:
+            return None
+        key = self._normalize_jewelry_type(jewelry_type)
+        mapping = {
+            "barbells": "barbell replacement balls ends spikes attachments",
+            "circularbarbells": "barbell replacement balls ends spikes attachments",
+            "labrets": "labret tops ends threadless attachments",
+            "ballclosurerings": "replacement balls beads closures",
+            "rings": "replacement balls beads closures",
+            "captivebeadrings": "replacement balls beads closures",
+        }
+        return mapping.get(key)
+
+    def _build_cross_sell_label(self, jewelry_type: str) -> Optional[str]:
+        if not jewelry_type:
+            return None
+        key = self._normalize_jewelry_type(jewelry_type)
+        label_map = {
+            "barbells": "Barbell attachments",
+            "circularbarbells": "Barbell attachments",
+            "labrets": "Labret tops",
+            "ballclosurerings": "Ring beads",
+            "rings": "Ring beads",
+            "captivebeadrings": "Ring beads",
+        }
+        return label_map.get(key)
+
+    def _filter_cross_sell_products(
+        self,
+        *,
+        products: List[ProductCard],
+        exclude_type: Optional[str],
+        exclude_ids: set[str],
+        limit: int,
+    ) -> List[ProductCard]:
+        if not products:
+            return []
+        exclude_norm = self._normalize_jewelry_type(exclude_type)
+        filtered: List[ProductCard] = []
+        for p in products:
+            pid = str(p.id)
+            if pid in exclude_ids:
+                continue
+            attrs = p.attributes or {}
+            jt = attrs.get("jewelry_type") or attrs.get("type")
+            if exclude_norm and self._normalize_jewelry_type(jt) == exclude_norm:
+                continue
+            filtered.append(p)
+            if len(filtered) >= limit:
+                break
+        return filtered
+
+
 
     @staticmethod
     def _is_english_language(reply_language: str) -> bool:
@@ -356,122 +222,6 @@ class ChatService:
             return base
         return localized
 
-    async def _generate_contextual_reply(
-        self,
-        *,
-        user_text: str,
-        reply_language: str,
-        suggested_question: str,
-        focus: str,
-        run_id: str,
-        required_terms: Optional[List[str]] = None,
-        telemetry: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        fallback = self._format_clarifier_fallback(suggested_question)
-        fallback = await self._localize_ui_text(
-            reply_language=reply_language,
-            text=fallback,
-            run_id=run_id,
-        )
-
-        def _set_telemetry(used: bool, reason: str) -> None:
-            if telemetry is None:
-                return
-            telemetry["contextual_reply_used"] = used
-            telemetry["contextual_reply_reason"] = reason
-            telemetry["contextual_reply_focus"] = focus
-
-        if not bool(getattr(settings, "CONTEXTUAL_REPLY_ENABLED", True)):
-            _set_telemetry(False, "disabled")
-            return fallback
-        system_prompt = contextual_reply_prompt(reply_language)
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    f"User message: {user_text}\n"
-                    f"Focus: {focus}\n"
-                    f"Suggested question: {suggested_question}"
-                ),
-            },
-        ]
-        model = getattr(settings, "CONTEXTUAL_REPLY_MODEL", None) or settings.OPENAI_MODEL
-        max_tokens = int(getattr(settings, "CONTEXTUAL_REPLY_MAX_TOKENS", 120))
-        temperature = float(getattr(settings, "CONTEXTUAL_REPLY_TEMPERATURE", 0.3))
-        try:
-            reply = await llm_service.generate_chat_response(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                model=model,
-            )
-        except Exception as e:
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.reply.contextual",
-                data={"used": False, "reason": "llm_error", "error": str(e), "focus": focus},
-            )
-            _set_telemetry(False, "llm_error")
-            return fallback
-
-        reply = re.sub(r"\s+", " ", (reply or "").strip())
-        if not reply:
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.reply.contextual",
-                data={"used": False, "reason": "empty_response", "focus": focus},
-            )
-            _set_telemetry(False, "empty_response")
-            return fallback
-        if not re.match(r"^(hello|thanks)\b", reply, re.I):
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.reply.contextual",
-                data={"used": False, "reason": "missing_greeting", "focus": focus},
-            )
-            _set_telemetry(False, "missing_greeting")
-            return fallback
-        if "?" not in reply:
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.reply.contextual",
-                data={"used": False, "reason": "missing_question", "focus": focus},
-            )
-            _set_telemetry(False, "missing_question")
-            return fallback
-        if self._count_sentences(reply) > 2:
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.reply.contextual",
-                data={"used": False, "reason": "too_long", "focus": focus},
-            )
-            _set_telemetry(False, "too_long")
-            return fallback
-        if required_terms:
-            lower_reply = reply.lower()
-            missing_terms = [t for t in required_terms if t.lower() not in lower_reply]
-            if missing_terms:
-                self._log_event(
-                    run_id=run_id,
-                    location="chat_service.reply.contextual",
-                    data={
-                        "used": False,
-                        "reason": "missing_terms",
-                        "focus": focus,
-                        "missing_terms": missing_terms,
-                    },
-                )
-                _set_telemetry(False, "missing_terms")
-                return fallback
-
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.reply.contextual",
-            data={"used": True, "reason": "accepted", "focus": focus},
-        )
-        _set_telemetry(True, "accepted")
-        return reply
 
     def _format_language_instruction(self, *, language: Optional[str], locale: Optional[str]) -> str:
         default_locale = str(getattr(settings, "DEFAULT_LOCALE", "en-US") or "en-US")
@@ -487,315 +237,74 @@ class ChatService:
             return locale
         return default_locale
 
-    async def _detect_language(self, *, user_text: str, run_id: str) -> Dict[str, str]:
+    async def _run_nlu(self, *, user_text: str, history: List[Dict[str, str]] = None, locale: Optional[str], run_id: str) -> Dict[str, Any]:
+        """Run unified NLU for language, intent, and currency."""
         if not user_text or len(user_text.strip()) < 3:
-            return {}
-        system = language_detect_prompt()
-        model = getattr(settings, "LANGUAGE_DETECT_MODEL", None) or settings.OPENAI_MODEL
-        max_tokens = int(getattr(settings, "LANGUAGE_DETECT_MAX_TOKENS", 40))
-        try:
-            data = await llm_service.generate_chat_json(
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_text},
-                ],
-                model=model,
-                temperature=0.0,
-                max_tokens=max_tokens,
-            )
-        except Exception as e:
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.language.detect",
-                data={"error": str(e)},
-            )
-            return {}
+            return {
+                "language": "English",
+                "locale": "en-US",
+                "intent": "knowledge_query",
+                "show_products": False,
+                "currency": "",
+            }
 
-        language = str(data.get("language") or "").strip()
-        locale = str(data.get("locale") or "").strip()
-        if language.lower() in {"unknown", "none"}:
-            language = ""
-        if locale.lower() in {"unknown", "none"}:
-            locale = ""
+        supported = currency_service.supported_currencies()
+        data = await llm_service.run_nlu(
+            user_message=user_text,
+            history=history,
+            locale=locale,
+            supported_currencies=supported,
+            model=getattr(settings, "NLU_MODEL", None),
+            max_tokens=int(getattr(settings, "NLU_MAX_TOKENS", 250)),
+        )
 
         self._log_event(
             run_id=run_id,
-            location="chat_service.language.detect",
-            data={"language": language, "locale": locale},
+            location="chat_service.nlu.run",
+            data=data,
         )
-        return {"language": language, "locale": locale}
+        return data
 
-    async def _resolve_reply_language(self, *, user_text: str, locale: Optional[str], run_id: str) -> str:
+    async def _resolve_reply_language(self, *, nlu_data: Dict[str, Any], user_text: str, locale: Optional[str], run_id: str) -> str:
         mode = str(getattr(settings, "CHAT_LANGUAGE_MODE", "auto") or "auto").lower()
         default_locale = str(getattr(settings, "DEFAULT_LOCALE", "en-US") or "en-US")
         locale = str(locale or "").strip() or None
+        
         if mode == "fixed":
-            fixed = str(getattr(settings, "FIXED_REPLY_LANGUAGE", "") or "").strip()
-            reply_language = fixed or default_locale
-            reason = "fixed"
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.language.resolve",
-                data={"mode": mode, "reply_language": reply_language, "reason": reason},
-            )
-            return reply_language
-        if mode == "locale":
-            reply_language = locale or default_locale
-            reason = "locale"
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.language.resolve",
-                data={"mode": mode, "reply_language": reply_language, "reason": reason},
-            )
-            return reply_language
+            return str(getattr(settings, "FIXED_REPLY_LANGUAGE", "") or "").strip() or default_locale
+        
+        if mode == "locale" and locale:
+            return locale
 
-        # auto: treat locale as a hint, not a hard override.
-        # Many clients always send a default like "en-US", which would otherwise prevent detection.
-        if locale and locale.lower() != default_locale.lower():
-            reply_language = locale
-            reason = "locale_override"
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.language.resolve",
-                data={"mode": mode, "reply_language": reply_language, "reason": reason},
-            )
-            return reply_language
-
-        detected = await self._detect_language(user_text=user_text, run_id=run_id)
-        reply_language = self._format_language_instruction(
-            language=detected.get("language"),
-            locale=detected.get("locale"),
-        )
-        if detected:
-            reason = "detected"
-        else:
+        # auto: use NLU result
+        language = nlu_data.get("language")
+        loc = nlu_data.get("locale")
+        reply_language = self._format_language_instruction(language=language, locale=loc)
+        
+        if not reply_language or reply_language.lower() in {"unknown", "none"}:
             reply_language = locale or default_locale
-            reason = "fallback_default"
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.language.resolve",
-            data={"mode": mode, "reply_language": reply_language, "reason": reason},
-        )
+            
         return reply_language
 
-    async def _detect_requested_currency(
-        self,
-        *,
-        text: str,
-        locale: Optional[str],
-        run_id: str,
-    ) -> tuple[Optional[str], Dict[str, Any]]:
-        meta = {
-            "currency_intent_used": False,
-            "currency_intent_source": "heuristic",
-            "currency_intent_intent": None,
-            "currency_intent_currency": None,
-        }
-
-        if not (text or "").strip():
-            meta["currency_intent_source"] = "empty"
-            return None, meta
-
-        use_llm = bool(getattr(settings, "CURRENCY_INTENT_ENABLED", True))
-        if use_llm:
-            meta["currency_intent_used"] = True
-            meta["currency_intent_source"] = "llm"
-            supported = currency_service.supported_currencies()
-            try:
-                data = await llm_service.detect_currency_intent(
-                    user_message=text,
-                    locale=locale,
-                    supported_currencies=supported,
-                    model=getattr(settings, "CURRENCY_INTENT_MODEL", None),
-                    max_tokens=int(getattr(settings, "CURRENCY_INTENT_MAX_TOKENS", 80)),
-                )
-            except Exception as e:
-                self._log_event(
-                    run_id=run_id,
-                    location="chat_service.currency.intent",
-                    data={"used": True, "error": str(e)},
-                )
-                data = {}
-
-            if data:
-                intent_value = data.get("intent")
-                if isinstance(intent_value, bool):
-                    meta["currency_intent_intent"] = intent_value
-                currency_value = str(data.get("currency") or "").strip().upper()
-                if currency_value:
-                    meta["currency_intent_currency"] = currency_value
-                self._log_event(
-                    run_id=run_id,
-                    location="chat_service.currency.intent",
-                    data={"used": True, "intent": meta["currency_intent_intent"], "currency": currency_value},
-                )
-
-                if meta["currency_intent_intent"] is False:
-                    return None, meta
-
-                if currency_value:
-                    if currency_service.supports(currency_value):
-                        return currency_value, meta
-                    self._log_event(
-                        run_id=run_id,
-                        location="chat_service.currency.intent",
-                        data={"used": True, "unsupported_currency": currency_value},
-                    )
-
-            meta["currency_intent_source"] = "heuristic_fallback"
-
-        heuristic = currency_service.extract_requested_currency(text)
+    async def _resolve_target_currency(self, *, nlu_data: Dict[str, Any], user_text: str) -> str:
+        """Resolve the target currency using NLU and heuristics."""
+        default_display = (
+            getattr(settings, "PRICE_DISPLAY_CURRENCY", None)
+            or getattr(settings, "BASE_CURRENCY", None)
+            or "USD"
+        )
+        
+        # 1. From NLU
+        nlu_currency = str(nlu_data.get("currency") or "").strip().upper()
+        if nlu_currency and currency_service.supports(nlu_currency):
+            return nlu_currency
+            
+        # 2. Heuristic fallback
+        heuristic = currency_service.extract_requested_currency(user_text)
         if heuristic and currency_service.supports(heuristic):
-            meta["currency_intent_currency"] = heuristic
-            return heuristic, meta
-
-        return None, meta
-
-    async def _plan_retrieval(self, *, user_text: str, locale: Optional[str], run_id: str) -> Dict[str, Any]:
-        if not bool(getattr(settings, "PLANNER_ENABLED", True)):
-            return {"used": False, "reason": "disabled"}
-
-        try:
-            data = await llm_service.plan_retrieval(
-                user_message=user_text,
-                locale=locale,
-                model=getattr(settings, "PLANNER_MODEL", None),
-                max_tokens=int(getattr(settings, "PLANNER_MAX_TOKENS", 200)),
-            )
-        except Exception as e:
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.planner",
-                data={"used": True, "error": str(e)},
-            )
-            return {"used": True, "error": str(e), "task": "general", "confidence": 0.0}
-
-        task = str(data.get("task") or "").strip().lower()
-        allowed_tasks = {"product_search", "shipping_region", "policy", "contact", "general", "mixed"}
-        if task not in allowed_tasks:
-            task = "general"
-
-        def _safe_str(value: Any) -> str:
-            if not isinstance(value, str):
-                return ""
-            return value.strip()
-
-        try:
-            confidence = float(data.get("confidence") or 0.0)
-        except Exception:
-            confidence = 0.0
-
-        result = {
-            "used": True,
-            "task": task,
-            "is_smalltalk": bool(data.get("is_smalltalk")),
-            "is_meta_question": bool(data.get("is_meta_question")),
-            "is_catalog_browse": bool(data.get("is_catalog_browse")),
-            "kb_query": _safe_str(data.get("kb_query")),
-            "product_query": _safe_str(data.get("product_query")),
-            "entities": data.get("entities") if isinstance(data.get("entities"), dict) else {},
-            "needs_clarification": bool(data.get("needs_clarification")),
-            "clarifying_question": _safe_str(data.get("clarifying_question")),
-            "confidence": confidence,
-        }
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.planner",
-            data=result,
-        )
-        return result
-
-    async def _general_chat_response(
-        self,
-        *,
-        user_text: str,
-        reply_language: str,
-        history: List[Dict[str, str]],
-    ) -> str:
-        model = getattr(settings, "GENERAL_CHAT_MODEL", None) or settings.OPENAI_MODEL
-        max_tokens = int(getattr(settings, "GENERAL_CHAT_MAX_TOKENS", 250))
-        system = general_chat_prompt(reply_language)
-        messages: List[Dict[str, str]] = [{"role": "system", "content": system}]
-        for m in history[-6:]:
-            role = m.get("role")
-            content = m.get("content")
-            if role in {"user", "assistant"} and isinstance(content, str):
-                messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": user_text})
-        return await llm_service.generate_chat_response(messages, temperature=0.5, max_tokens=max_tokens, model=model)
-
-    async def _smalltalk_response(self, *, user_text: str, reply_language: str) -> str:
-        mode = str(getattr(settings, "SMALLTALK_MODE", "static") or "static").lower()
-        lang = (reply_language or "").strip().lower()
-        is_english = lang.startswith("en") or "english" in lang
-        if mode != "llm" and is_english:
-            return "Hello, thank you for reaching out. How may I assist you today?"
-
-        model = getattr(settings, "SMALLTALK_MODEL", None) or settings.OPENAI_MODEL
-        system = smalltalk_prompt(reply_language)
-        return await llm_service.generate_chat_response(
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user_text}],
-            temperature=0.6,
-            max_tokens=80,
-            model=model,
-        )
-
-    @staticmethod
-    def _is_question_like(text: str) -> bool:
-        if not text:
-            return False
-        t = text.strip().lower()
-        if "?" in t:
-            return True
-        if re.match(r"^(how|what|where|when|why|can|do|does|is|are|will|would|could|should)\b", t):
-            return True
-        # Treat explicit request statements as question-like to avoid misrouting.
-        if re.search(
-            r"\b(refund|return|shipping|policy|minimum order|min(?:imum)? order|discount|customs|payment|bank transfer|price|cost|sku)\b",
-            t,
-        ):
-            return True
-        if re.match(r"^(please|help|explain|tell me|i want|i need|show me|find|search)\b", t):
-            return True
-        return False
-
-    def _looks_like_product_query(self, text: str) -> bool:
-        if not text:
-            return False
-        lowered = text.lower()
-        keywords = [
-            "show me",
-            "recommend",
-            "suggest",
-            "find",
-            "looking for",
-            "i need",
-            "buy",
-            "shop",
-            "product",
-            "sku",
-            "price",
-            "cost",
-            "barbell",
-            "ring",
-            "tunnel",
-            "stud",
-            "piercing",
-            "plug",
-            "jewelry",
-            "labret",
-            "clip",
-            "belly",
-            "nipple",
-            "shield",
-        ]
-        if any(k in lowered for k in keywords):
-            return True
-        if re.search(r"\b\d{1,2}g\b", lowered):
-            return True
-        if re.search(r"\b\d+(?:\.\d+)?\s*mm\b", lowered):
-            return True
-        return False
+            return heuristic
+            
+        return default_display.upper()
 
     def _extract_sku(self, text: str) -> Optional[str]:
         if not text:
@@ -808,6 +317,91 @@ class ChatService:
         if m:
             return m.group(1)
         return None
+
+    @staticmethod
+    def _clean_code_candidate(token: str) -> str:
+        return (token or "").strip(".,!?;:'\"()[]{}<>")
+
+    @staticmethod
+    def _looks_like_code(token: str) -> bool:
+        if not token:
+            return False
+        t = token.strip()
+        if " " in t:
+            return False
+        if len(t) < 3 or len(t) > 32:
+            return False
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", t):
+            return False
+        has_digit = any(c.isdigit() for c in t)
+        has_sep = any(c in "._-" for c in t)
+        is_all_upper = t.isupper()
+        return has_digit or has_sep or (is_all_upper and len(t) <= 10)
+
+    def _extract_code_candidates(self, *, query: str, extracted_code: Optional[str]) -> List[str]:
+        candidates: List[str] = []
+        if extracted_code:
+            clean = self._clean_code_candidate(extracted_code)
+            if self._looks_like_code(clean):
+                candidates.append(clean)
+        sku = self._extract_sku(query)
+        if sku and self._looks_like_code(sku):
+            candidates.append(sku)
+        if query and self._looks_like_code(query):
+            candidates.append(query.strip())
+        for token in re.split(r"\s+", query or ""):
+            clean = self._clean_code_candidate(token)
+            if self._looks_like_code(clean):
+                candidates.append(clean)
+        return list(dict.fromkeys(candidates))
+
+    @staticmethod
+    def _is_question_like(text: str) -> bool:
+        if not text:
+            return False
+        lowered = text.strip().lower()
+        if "?" in lowered:
+            return True
+        starters = (
+            "who", "what", "when", "where", "why", "how",
+            "can", "do", "does", "did", "is", "are", "should", "could", "would", "will",
+        )
+        return lowered.startswith(starters)
+
+    @staticmethod
+    def _is_complex_query(text: str) -> bool:
+        if not text:
+            return False
+        word_count = len(re.findall(r"\b\w+\b", text))
+        if word_count >= 14:
+            return True
+        if text.count("?") > 1:
+            return True
+        lowered = text.lower()
+        if any(sep in lowered for sep in (" and ", " or ", " also ", ";", " as well as ")):
+            return True
+        return False
+
+    @staticmethod
+    def _count_policy_topics(text: str) -> int:
+        if not text:
+            return 0
+        lowered = text.lower()
+        topics = [
+            "shipping", "delivery", "return", "refund", "exchange", "warranty",
+            "payment", "discount", "tax", "customs", "duty", "wholesale",
+            "minimum order", "moq", "sample", "custom", "backorder", "lead time",
+            "cancellation", "cancel", "order status", "policy",
+        ]
+        hits: set[str] = set()
+        for topic in topics:
+            if " " in topic:
+                if topic in lowered:
+                    hits.add(topic)
+            else:
+                if re.search(rf"\b{re.escape(topic)}\b", lowered):
+                    hits.add(topic)
+        return len(hits)
 
     def _infer_jewelry_type_filter(self, text: str) -> Optional[str]:
         if not text:
@@ -829,19 +423,22 @@ class ChatService:
 
     async def _get_product_category_overview(self, limit: int = 6) -> List[str]:
         stmt = (
-            select(Product.jewelry_type, func.count(Product.id))
+            select(ProductAttributeValue.value, func.count(func.distinct(ProductAttributeValue.product_id)))
+            .join(AttributeDefinition, ProductAttributeValue.attribute_id == AttributeDefinition.id)
+            .join(Product, Product.id == ProductAttributeValue.product_id)
+            .where(AttributeDefinition.name == "jewelry_type")
             .where(Product.is_active.is_(True))
-            .where(Product.jewelry_type.isnot(None))
-            .group_by(Product.jewelry_type)
-            .order_by(func.count(Product.id).desc())
+            .where(ProductAttributeValue.value.isnot(None))
+            .group_by(ProductAttributeValue.value)
+            .order_by(func.count(func.distinct(ProductAttributeValue.product_id)).desc())
             .limit(limit)
         )
         result = await self.db.execute(stmt)
         rows = result.all()
         categories: List[str] = []
-        for name, _count in rows:
-            if name:
-                categories.append(str(name).strip())
+        for value, _count in rows:
+            if value:
+                categories.append(str(value).strip())
         return categories
 
     async def _search_products_by_exact_sku(
@@ -860,24 +457,10 @@ class ChatService:
         )
         result = await self.db.execute(stmt)
         products = result.scalars().all()
+        attr_map = await eav_service.get_product_attributes(self.db, [p.id for p in products])
         cards: List[ProductCard] = []
         for p in products:
-            cards.append(
-                ProductCard(
-                    id=p.id,
-                    object_id=p.object_id,
-                    sku=p.sku,
-                    legacy_sku=p.legacy_sku or [],
-                    name=p.name,
-                    description=p.description,
-                    price=p.price,
-                    currency=p.currency,
-                    stock_status=p.stock_status,
-                    image_url=p.image_url,
-                    product_url=p.product_url,
-                    attributes=p.attributes or {},
-                )
-            )
+            cards.append(self._product_to_card(p, attr_map.get(p.id)))
         return cards
 
     def _log_event(self, *, run_id: str, location: str, data: Dict[str, Any]) -> None:
@@ -892,6 +475,14 @@ class ChatService:
                 "timestamp": int(time.time() * 1000),
             }
         )
+
+    @staticmethod
+    def _ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+        if not dt:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
 
     async def get_or_create_user(
         self,
@@ -932,7 +523,23 @@ class ChatService:
             result = await self.db.execute(stmt)
             existing = result.scalar_one_or_none()
             if existing:
-                return existing
+                now = datetime.now(timezone.utc)
+                started_at = self._ensure_utc(existing.started_at)
+                last_message_at = self._ensure_utc(existing.last_message_at) or started_at
+
+                idle_minutes = int(getattr(settings, "CONVERSATION_IDLE_TIMEOUT_MINUTES", 30) or 0)
+                hard_cap_hours = int(getattr(settings, "CONVERSATION_HARD_CAP_HOURS", 24) or 0)
+
+                idle_expired = False
+                hard_cap_expired = False
+
+                if idle_minutes > 0 and last_message_at:
+                    idle_expired = last_message_at < (now - timedelta(minutes=idle_minutes))
+                if hard_cap_hours > 0 and started_at:
+                    hard_cap_expired = started_at < (now - timedelta(hours=hard_cap_hours))
+
+                if not (idle_expired or hard_cap_expired):
+                    return existing
 
         conversation = Conversation(user_id=user.id)
         self.db.add(conversation)
@@ -940,10 +547,44 @@ class ChatService:
         await self.db.refresh(conversation)
         return conversation
 
-    async def save_message(self, conversation_id: int, role: str, content: str) -> None:
-        msg = Message(conversation_id=conversation_id, role=role, content=content)
+    async def save_message(
+        self,
+        conversation_id: int,
+        role: str,
+        content: str,
+        product_data: List[ProductCard] | None = None,
+        token_usage: Dict[str, Any] | None = None,
+        commit: bool = True,
+        touch_conversation: bool = True,
+    ) -> Message:
+        if product_data:
+            # Ensure UUIDs are converted to strings for JSON serialization
+            data_json = []
+            for p in product_data:
+                d = p.dict()
+                if 'id' in d and d['id']:
+                    d['id'] = str(d['id'])
+                data_json.append(d)
+        else:
+            data_json = None
+            
+        msg = Message(
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            product_data=data_json,
+            token_usage=token_usage,
+        )
         self.db.add(msg)
-        await self.db.commit()
+        if touch_conversation:
+            await self.db.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(last_message_at=func.now())
+            )
+        if commit:
+            await self.db.commit()
+        return msg
 
     async def _finalize_response(
         self,
@@ -951,12 +592,69 @@ class ChatService:
         conversation_id: int,
         user_text: str,
         response: ChatResponse,
+        token_usage: Optional[Dict[str, Any]] = None,
+        channel: Optional[str] = None,
     ) -> ChatResponse:
-        await self.save_message(conversation_id, MessageRole.USER, user_text)
-        await self.save_message(conversation_id, MessageRole.ASSISTANT, response.reply_text)
+        qa_status = QAStatus.SUCCESS
+        if response.intent == "fallback_general" or "don't have enough information" in response.reply_text.lower():
+            qa_status = QAStatus.FALLBACK
+
+        qa_log = QALog(
+            question=user_text,
+            answer=response.reply_text,
+            sources=[
+                {
+                    "source_id": s.source_id,
+                    "chunk_id": s.chunk_id,
+                    "title": s.title,
+                    "relevance": s.relevance,
+                }
+                for s in response.sources
+            ],
+            status=qa_status,
+            token_usage=token_usage,
+            channel=channel,
+        )
+
+        try:
+            await self.save_message(
+                conversation_id,
+                MessageRole.USER,
+                user_text,
+                commit=False,
+                touch_conversation=False,
+            )
+            await self.save_message(
+                conversation_id,
+                MessageRole.ASSISTANT,
+                response.reply_text,
+                product_data=response.product_carousel,
+                token_usage=token_usage,
+                commit=False,
+                touch_conversation=False,
+            )
+            await self.db.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(last_message_at=func.now())
+            )
+            await self.db.flush()
+
+            try:
+                async with self.db.begin_nested():
+                    self.db.add(qa_log)
+                    await self.db.flush()
+            except Exception as e:
+                logger.error(f"Failed to log QA event: {e}")
+
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
+
         return response
 
-    async def get_history(self, conversation_id: int, limit: int = 5) -> List[Dict[str, str]]:
+    async def get_history(self, conversation_id: int, limit: int = 5) -> List[Dict[str, Any]]:
         stmt = (
             select(Message)
             .where(Message.conversation_id == conversation_id)
@@ -965,7 +663,95 @@ class ChatService:
         )
         result = await self.db.execute(stmt)
         msgs = result.scalars().all()
-        return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
+        return [
+            {
+                "role": m.role, 
+                "content": m.content,
+                "product_data": m.product_data
+            } for m in reversed(msgs)
+        ]
+
+    async def smart_product_search(
+        self,
+        query: str,
+        query_embedding: List[float],
+        limit: int = 10,
+        run_id: Optional[str] = None,
+        extracted_code: Optional[str] = None,
+    ) -> Tuple[List[ProductCard], List[float], Optional[float], Dict[str, float]]:
+        """
+        Smart search with prioritization:
+        1. Exact SKU match -> Return specific variant
+        2. Master Code / Name match -> Return all variants in group
+        3. Vector Search -> Fallback
+        """
+        candidates = self._extract_code_candidates(query=query, extracted_code=extracted_code)
+        if not candidates:
+            return await self.search_products(query_embedding, limit, run_id)
+        
+        for candidate in candidates:
+            clean_cand = candidate
+            if not clean_cand or not self._looks_like_code(clean_cand):
+                continue
+
+            # 1. Exact SKU Match
+            sku_stmt = select(Product).where(Product.sku.ilike(clean_cand))
+            sku_result = await self.db.execute(sku_stmt)
+            sku_product = sku_result.scalars().first()
+            
+            if sku_product:
+                logger.info(f"Smart Search: Found exact SKU match for '{clean_cand}'")
+                attr_map = await eav_service.get_product_attributes(self.db, [sku_product.id])
+                card = self._product_to_card(sku_product, attr_map.get(sku_product.id))
+                return [card], [0.0], 0.0, {str(sku_product.id): 0.0}
+                
+            # 2. Exact Master Code / Product Name Match
+            master_stmt = select(Product).where(or_(
+                Product.master_code.ilike(clean_cand),
+                Product.name.ilike(clean_cand)
+            )).limit(1)
+            master_result = await self.db.execute(master_stmt)
+            master_product = master_result.scalars().first()
+            
+            if master_product:
+                logger.info(f"Smart Search: Found master code match for '{clean_cand}' (Group: {master_product.group_id})")
+                # Fetch all variants in this group
+                variants_stmt = select(Product).where(Product.group_id == master_product.group_id)
+                variants_result = await self.db.execute(variants_stmt)
+                variants = variants_result.scalars().all()
+                
+                attr_map = await eav_service.get_product_attributes(self.db, [p.id for p in variants])
+                cards = [self._product_to_card(p, attr_map.get(p.id)) for p in variants]
+                if len(cards) > limit * 2:
+                    cards = cards[:limit * 2]
+                    
+                distances = [0.0] * len(cards)
+                dist_map = {str(c.id): 0.0 for c in cards}
+                return cards, distances, 0.0, dist_map
+            
+        # 3. Fallback to Vector Search
+        return await self.search_products(query_embedding, limit, run_id)
+
+    def _product_to_card(
+        self,
+        product: Product,
+        eav_attrs: Optional[Dict[str, Any]] = None,
+    ) -> ProductCard:
+        attrs = self._merge_product_attrs(product.attributes, eav_attrs)
+        return ProductCard(
+            id=product.id,
+            object_id=product.object_id,
+            sku=product.sku,
+            legacy_sku=product.legacy_sku or [],
+            name=product.name,
+            description=product.description,
+            price=product.price,
+            currency=product.currency,
+            stock_status=product.stock_status,
+            image_url=product.image_url,
+            product_url=product.product_url,
+            attributes=attrs,
+        )
 
     async def search_products(
         self,
@@ -980,51 +766,38 @@ class ChatService:
         distance_col = ProductEmbedding.embedding.cosine_distance(query_embedding).label("distance")
 
         model = getattr(settings, "PRODUCT_EMBEDDING_MODEL", settings.EMBEDDING_MODEL)
-        probe_stmt = (
-            select(ProductEmbedding.product_id, distance_col)
+        subq = (
+            select(
+                ProductEmbedding.product_id.label("product_id"),
+                distance_col,
+            )
             .join(Product, Product.id == ProductEmbedding.product_id)
             .where(Product.is_active.is_(True))
             .where(or_(ProductEmbedding.model.is_(None), ProductEmbedding.model == model))
             .order_by(distance_col)
             .limit(limit)
+            .subquery()
         )
-        probe_result = await self.db.execute(probe_stmt)
-        probe_rows: Sequence[Any] = probe_result.all()
+        stmt = (
+            select(Product, subq.c.distance)
+            .join(subq, Product.id == subq.c.product_id)
+            .order_by(subq.c.distance)
+        )
+        result = await self.db.execute(stmt)
+        rows: Sequence[Any] = result.all()
 
-        if not probe_rows:
+        if not rows:
             return [], [], None, {}
 
-        distances = [float(row.distance) for row in probe_rows]
+        distances = [float(distance) for _product, distance in rows]
         best_distance = distances[0] if distances else None
-        product_id_order = [row.product_id for row in probe_rows]
-        distance_by_id = {str(row.product_id): float(row.distance) for row in probe_rows}
+        distance_by_id = {str(product.id): float(distance) for product, distance in rows}
 
-        # Fetch full product data after probe to keep the probe fast
-        products_stmt = select(Product).where(Product.id.in_(product_id_order))
-        products_result = await self.db.execute(products_stmt)
-        products_by_id = {p.id: p for p in products_result.scalars().all()}
+        attr_map = await eav_service.get_product_attributes(self.db, [product.id for product, _distance in rows])
 
         product_cards: List[ProductCard] = []
-        for idx, pid in enumerate(product_id_order):
-            product = products_by_id.get(pid)
-            if not product:
-                continue
-            product_cards.append(
-                ProductCard(
-                    id=product.id,
-                    object_id=product.object_id,
-                    sku=product.sku,
-                    legacy_sku=product.legacy_sku or [],
-                    name=product.name,
-                    description=product.description,
-                    price=product.price,
-                    currency=product.currency,
-                    stock_status=product.stock_status,
-                    image_url=product.image_url,
-                    product_url=product.product_url,
-                    attributes=product.attributes or {},
-                )
-            )
+        for idx, (product, distance) in enumerate(rows):
+            product_cards.append(self._product_to_card(product, attr_map.get(product.id)))
 
             # #region agent log
             if run_id and idx < 3:
@@ -1040,7 +813,7 @@ class ChatService:
                                 "rank": idx + 1,
                                 "product_id": str(product.id),
                                 "name": product.name,
-                                "distance": distances[idx] if idx < len(distances) else None,
+                                "distance": float(distance),
                                 "threshold": settings.PRODUCT_DISTANCE_THRESHOLD,
                             },
                             "timestamp": int(time.time() * 1000),
@@ -1057,10 +830,11 @@ class ChatService:
         question: str,
         sources: List[KnowledgeSource],
         reply_language: str,
+        history: List[Dict[str, str]] = None,
         run_id: Optional[str] = None,
-    ) -> str:
+    ) -> Dict[str, str]:
         if not sources:
-            return await self._localize_ui_text(
+            msg = await self._localize_ui_text(
                 reply_language=reply_language,
                 text=(
                     "I don't have enough information in my knowledge base to answer that yet. "
@@ -1068,998 +842,407 @@ class ChatService:
                 ),
                 run_id=run_id or "synthesize_answer",
             )
+            return {"reply": msg, "carousel_hint": ""}
 
+        product_context = []
+        if history:
+            for msg in reversed(history):
+                if msg.get("role") == "assistant" and msg.get("product_data"):
+                    products = msg["product_data"]
+                    summary = ", ".join([f"{p.get('name')} (SKU: {p.get('sku')})" for p in products[:5]])
+                    product_context.append(f"Previously shown products: {summary}")
+
+        history_snippets = "\n".join(product_context)
+        
         context = "\n\n".join(
             [
                 f"ID: {s.source_id}\nTITLE: {s.title}\nTEXT: {s.content_snippet}"
                 for s in sources[: min(5, len(sources))]
             ]
         )
+        
+        if history_snippets:
+            context = f"History Context:\n{history_snippets}\n\nSearch Context:\n{context}"
         messages = [
             {
                 "role": "system",
                 "content": rag_answer_prompt(reply_language),
             },
-            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
         ]
+        
+        # Insert last 5 messages for context
+        if history:
+            # Format history for LLM (only role and content)
+            history_clean = [{"role": m["role"], "content": m["content"]} for m in history]
+            messages.extend(history_clean)
+            
+        messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"})
         try:
-            return await llm_service.generate_chat_response(messages, temperature=0.2)
+            answer_model = getattr(settings, "RAG_ANSWER_MODEL", None) or settings.OPENAI_MODEL
+            data = await llm_service.generate_chat_json(
+                messages,
+                model=answer_model,
+                temperature=0.2,
+                usage_kind="rag_answer",
+            )
+            return {
+                "reply": str(data.get("reply", "")),
+                "carousel_hint": str(data.get("carousel_hint", "")),
+                "recommended_questions": data.get("recommended_questions", []),
+            }
         except Exception as e:
             logger.error(f"LLM response generation failed: {e}")
-            return await self._localize_ui_text(
+            msg = await self._localize_ui_text(
                 reply_language=reply_language,
                 text="I'm having trouble generating an answer right now. Please try again.",
                 run_id=run_id or "synthesize_answer",
             )
+            return {"reply": msg, "carousel_hint": "", "recommended_questions": []}
 
-    async def synthesize_partial_answer(
-        self,
-        *,
-        original_question: str,
-        sources: List[KnowledgeSource],
-        answerable_topics: List[str],
-        missing_question: str,
-        reply_language: str,
-        run_id: Optional[str] = None,
-    ) -> str:
-        if not sources:
-            return missing_question
 
-        topics_text = ", ".join(answerable_topics[:6]) if answerable_topics else "the supported parts"
-        context = "\n\n".join(
-            [
-                f"ID: {s.source_id}\nTITLE: {s.title}\nURL: {s.url or ''}\nTEXT: {s.content_snippet}"
-                for s in sources[: min(6, len(sources))]
-            ]
-        )
-
-        messages = [
-            {
-                "role": "system",
-                "content": rag_partial_prompt(reply_language),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Original question:\n{original_question}\n\n"
-                    f"Focus topics:\n{topics_text}\n\n"
-                    f"Context:\n{context}\n"
-                ),
-            },
-        ]
-
-        try:
-            found = await llm_service.generate_chat_response(messages, temperature=0.2)
-        except Exception as e:
-            logger.error(f"Partial answer generation failed: {e}")
-            found = await self._localize_ui_text(
-                reply_language=reply_language,
-                text="What I found:\n- I couldn't generate a summary from the retrieved context.",
-                run_id=run_id or "synthesize_partial_answer",
-            )
-
-        confirm_label = await self._localize_ui_text(
-            reply_language=reply_language,
-            text="One question to confirm:",
-            run_id=run_id or "synthesize_partial_answer",
-        )
-        return f"{found}\n\n{confirm_label}\n{missing_question}"
-
-    async def process_chat(self, req: ChatRequest) -> ChatResponse:
+    async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) -> ChatResponse:
         user = await self.get_or_create_user(req.user_id, req.customer_name, req.email)
         conversation = await self.get_or_create_conversation(user, req.conversation_id)
-        history = await self.get_history(conversation.id)
-
+        
         run_id = f"chat-{int(time.time() * 1000)}"
+        channel = channel or "widget"
         debug_meta: Dict[str, Any] = {
             "run_id": run_id,
-            "decomposition_used": False,
-            "decomposition_reason": "not_evaluated",
-            "rerank_used": False,
-            "rerank_reason": "not_evaluated",
-            "rerank_duration_ms": 0,
-            "rerank_timed_out": False,
-            "reply_language": None,
-            "contextual_reply_used": None,
-            "contextual_reply_reason": None,
-            "contextual_reply_focus": None,
-            "currency_intent_used": None,
-            "currency_intent_source": None,
-            "currency_intent_intent": None,
-            "currency_intent_currency": None,
+            "route": "rag_strict",
+            "channel": channel,
         }
+        llm_service.begin_token_tracking()
 
-        _debug_log(
-            {
-                "sessionId": "debug-session",
-                "runId": run_id,
-                "hypothesisId": "H0",
-                "location": "chat_service.process_chat:start",
-                "message": "process_chat start",
-                "data": {"user_id": req.user_id, "message": req.message},
-                "timestamp": int(time.time() * 1000),
-            }
-        )
-
+        # 1. Unified NLU Analysis
         text = req.message or ""
-        requested_currency, currency_meta = await self._detect_requested_currency(
-            text=text,
-            locale=req.locale,
-            run_id=run_id,
+        
+        # Fetch last 5 messages for context memory
+        history = []
+        if conversation.id:
+            history = await self.get_history(conversation.id, limit=5)
+            
+        nlu_data = await self._run_nlu(user_text=text, history=history, locale=req.locale, run_id=run_id)
+        debug_meta["nlu"] = nlu_data
+
+        reply_language = await self._resolve_reply_language(
+            nlu_data=nlu_data, 
+            user_text=text, 
+            locale=req.locale, 
+            run_id=run_id
         )
-        debug_meta.update(currency_meta)
+        debug_meta["reply_language"] = reply_language
+
         default_display_currency = (
             getattr(settings, "PRICE_DISPLAY_CURRENCY", None)
             or getattr(settings, "BASE_CURRENCY", None)
             or "USD"
         )
-        default_display_currency = str(default_display_currency).upper()
-        if requested_currency and not currency_service.supports(requested_currency):
-            requested_currency = None
+        target_currency = await self._resolve_target_currency(nlu_data=nlu_data, user_text=text)
+        debug_meta["target_currency"] = target_currency
 
-        ctx = ChatContext.from_request(
-            text=text,
-            is_question_like=self._is_question_like(text),
-            looks_like_product=self._looks_like_product_query(text),
-            has_store_intent=self._has_store_intent(text),
-            is_policy_intent=self._is_policy_intent(text),
-            policy_topic_count=self._policy_topic_count(text),
-            sku_token=self._extract_sku(text),
-            requested_currency=requested_currency,
-        )
-        target_currency = (ctx.requested_currency or default_display_currency).upper()
-        reply_language = await self._resolve_reply_language(user_text=ctx.text, locale=req.locale, run_id=run_id)
-        debug_meta["reply_language"] = reply_language
-        follow_up_options = await self._get_follow_up_questions(
-            reply_language=reply_language,
-            run_id=run_id,
-        )
-        response_renderer = self._response_renderer
-        looks_like_product = ctx.looks_like_product
-        sku_token = ctx.sku_token
-        product_topk = int(getattr(settings, "PRODUCT_SEARCH_TOPK", settings.RAG_RETRIEVE_TOPK_PRODUCT))
-        is_question_like = ctx.is_question_like
-        has_store_intent = ctx.has_store_intent
-        is_policy_intent = ctx.is_policy_intent
-        policy_topic_count = ctx.policy_topic_count
-        product_pipeline = self._product_pipeline
-        knowledge_pipeline = self._knowledge_pipeline
-        verifier_service = self._verifier_service
+        # 2. Retrieval Gating (Skip unnecessary searches)
+        # Use refined query for search if available, otherwise fallback to original text
+        search_query = nlu_data.get("refined_query") or text
 
-        planner: Dict[str, Any] = {"used": False}
-        planner_used = False
-        planner_task = "general"
-        planner_confidence = 0.0
-        planner_min_conf = float(getattr(settings, "PLANNER_MIN_CONFIDENCE", 0.6))
-        planner_is_smalltalk = False
-        planner_is_meta = False
-        planner_is_catalog_browse = False
-        kb_query_text = ""
-        product_query_text = ""
+        intent = str(nlu_data.get("intent") or "knowledge_query").strip().lower()
+        show_products_flag = bool(nlu_data.get("show_products", False))
+        nlu_product_code = str(nlu_data.get("product_code") or "").strip()
+        nlu_product_code = self._clean_code_candidate(nlu_product_code)
 
-        if not sku_token:
-            planner = await self._plan_retrieval(user_text=ctx.text, locale=req.locale, run_id=run_id)
-            planner_used = bool(planner.get("used")) and not planner.get("error")
-            planner_task = str(planner.get("task") or "general").strip().lower()
-            planner_is_smalltalk = bool(planner.get("is_smalltalk"))
-            planner_is_meta = bool(planner.get("is_meta_question"))
-            planner_is_catalog_browse = bool(planner.get("is_catalog_browse"))
-            try:
-                planner_confidence = float(planner.get("confidence") or 0.0)
-            except Exception:
-                planner_confidence = 0.0
+        sku_token = self._extract_sku(text)
+        if nlu_product_code and self._looks_like_code(nlu_product_code):
+            sku_token = sku_token or nlu_product_code
 
-        planner_applied = planner_used and planner_confidence >= planner_min_conf
-        if planner_used:
-            debug_meta["planner_used"] = True
-            debug_meta["planner_task"] = planner_task
-            debug_meta["planner_confidence"] = planner_confidence
-            debug_meta["planner_kb_query"] = planner.get("kb_query") or ""
-            debug_meta["planner_product_query"] = planner.get("product_query") or ""
-            debug_meta["planner_needs_clarification"] = bool(planner.get("needs_clarification"))
-            debug_meta["planner_applied"] = planner_applied
-            debug_meta["planner_is_smalltalk"] = planner_is_smalltalk
-            debug_meta["planner_is_meta_question"] = planner_is_meta
-            debug_meta["planner_is_catalog_browse"] = planner_is_catalog_browse
-        else:
-            debug_meta["planner_used"] = False
-
-        if planner_used and planner_is_smalltalk and bool(getattr(settings, "SMALLTALK_ENABLED", True)):
-            decision = RouteDecision(route="smalltalk", reason="planner_smalltalk")
-            reply_text = await self._smalltalk_response(user_text=ctx.text, reply_language=reply_language)
-            follow_ups = follow_up_options
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.route_selected",
-                data={"route": "smalltalk", "reason": decision.reason, "planner_task": planner_task},
-            )
-            debug_meta["route"] = decision.route
-            response = await response_renderer.render(
-                conversation_id=conversation.id,
-                route=decision.route,
-                reply_text=reply_text,
-                product_carousel=[],
-                follow_up_questions=follow_ups,
-                sources=[],
-                debug=debug_meta,
-                reply_language=reply_language,
-                target_currency=target_currency,
-                user_text=ctx.text,
-                apply_polish=False,
-            )
-            return await self._finalize_response(
-                conversation_id=conversation.id,
-                user_text=ctx.text,
-                response=response,
-            )
-
-        # Meta / general chat (LLM-only, no retrieval/verifier).
-        if planner_used and planner_is_meta:
-            decision = RouteDecision(route="general_chat", reason="planner_meta")
-            try:
-                reply_text = await self._general_chat_response(
-                    user_text=ctx.text, reply_language=reply_language, history=history
-                )
-            except Exception as e:
-                logger.error(f"general_chat generation failed: {e}")
-                reply_text = await self._localize_ui_text(
-                    reply_language=reply_language,
-                    text="Hello, I am here to help. How may I assist you today?",
-                    run_id=run_id,
-                )
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.route_selected",
-                data={"route": decision.route, "reason": decision.reason, "planner_task": planner_task},
-            )
-            debug_meta["route"] = decision.route
-            response = await response_renderer.render(
-                conversation_id=conversation.id,
-                route=decision.route,
-                reply_text=reply_text,
-                product_carousel=[],
-                follow_up_questions=follow_up_options,
-                sources=[],
-                debug=debug_meta,
-                reply_language=reply_language,
-                target_currency=target_currency,
-                user_text=ctx.text,
-                apply_polish=False,
-            )
-            return await self._finalize_response(
-                conversation_id=conversation.id,
-                user_text=ctx.text,
-                response=response,
-            )
-
-        if planner_used and planner_is_catalog_browse:
-            categories = await self._get_product_category_overview()
-            if categories:
-                preview = ", ".join(categories[:6])
-                suggested = f"I can show categories like {preview}. Which category should I show?"
-            else:
-                suggested = "Which product category are you looking for?"
-            reply_text = await self._generate_contextual_reply(
-                user_text=ctx.text,
-                reply_language=reply_language,
-                suggested_question=suggested,
-                focus="catalog_overview",
-                telemetry=debug_meta,
-                run_id=run_id,
-                required_terms=categories[:6] if categories else None,
-            )
-            decision = RouteDecision(route="product", reason="planner_catalog_browse")
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.route_selected",
-                data={"route": decision.route, "reason": decision.reason, "planner_task": planner_task},
-            )
-            debug_meta["route"] = decision.route
-            response = await response_renderer.render(
-                conversation_id=conversation.id,
-                route=decision.route,
-                reply_text=reply_text,
-                product_carousel=[],
-                follow_up_questions=[],
-                sources=[],
-                debug=debug_meta,
-                reply_language=reply_language,
-                target_currency=target_currency,
-                user_text=ctx.text,
-                apply_polish=False,
-            )
-            return await self._finalize_response(
-                conversation_id=conversation.id,
-                user_text=ctx.text,
-                response=response,
-            )
-
-        # Fallback heuristic routes if planner is disabled or fails.
-        if not planner_used:
-            if bool(getattr(settings, "SMALLTALK_ENABLED", True)) and self._is_smalltalk(ctx.text):
-                decision = RouteDecision(route="smalltalk", reason="heuristic_smalltalk")
-                reply_text = await self._smalltalk_response(user_text=ctx.text, reply_language=reply_language)
-                follow_ups = follow_up_options
-                self._log_event(
-                    run_id=run_id,
-                    location="chat_service.route_selected",
-                    data={"route": "smalltalk", "reason": decision.reason},
-                )
-                debug_meta["route"] = decision.route
-                response = await response_renderer.render(
-                    conversation_id=conversation.id,
-                    route=decision.route,
-                    reply_text=reply_text,
-                    product_carousel=[],
-                    follow_up_questions=follow_ups,
-                    sources=[],
-                    debug=debug_meta,
-                    reply_language=reply_language,
-                    target_currency=target_currency,
-                    user_text=ctx.text,
-                    apply_polish=False,
-                )
-                return await self._finalize_response(
-                    conversation_id=conversation.id,
-                    user_text=ctx.text,
-                    response=response,
-                )
-
-            if self._is_meta_question(ctx.text) or self._is_general_chat(ctx.text):
-                decision = RouteDecision(route="general_chat", reason="heuristic_meta_or_general")
-                try:
-                    reply_text = await self._general_chat_response(
-                        user_text=ctx.text, reply_language=reply_language, history=history
-                    )
-                except Exception as e:
-                    logger.error(f"general_chat generation failed: {e}")
-                    reply_text = await self._localize_ui_text(
-                        reply_language=reply_language,
-                        text="Hello, I am here to help. How may I assist you today?",
-                        run_id=run_id,
-                    )
-                self._log_event(
-                    run_id=run_id,
-                    location="chat_service.route_selected",
-                    data={"route": decision.route, "reason": decision.reason},
-                )
-                debug_meta["route"] = decision.route
-                response = await response_renderer.render(
-                    conversation_id=conversation.id,
-                    route=decision.route,
-                    reply_text=reply_text,
-                    product_carousel=[],
-                    follow_up_questions=follow_up_options,
-                    sources=[],
-                    debug=debug_meta,
-                    reply_language=reply_language,
-                    target_currency=target_currency,
-                    user_text=ctx.text,
-                    apply_polish=False,
-                )
-                return await self._finalize_response(
-                    conversation_id=conversation.id,
-                    user_text=ctx.text,
-                    response=response,
-                )
-
-        if planner_applied and planner_task == "general":
-            decision = RouteDecision(route="general_chat", reason="planner_general")
-            try:
-                reply_text = await self._general_chat_response(user_text=ctx.text, reply_language=reply_language, history=history)
-            except Exception as e:
-                logger.error(f"general_chat generation failed: {e}")
-                reply_text = await self._localize_ui_text(
-                    reply_language=reply_language,
-                    text="Hello, I am here to help. How may I assist you today?",
-                    run_id=run_id,
-                )
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.route_selected",
-                data={"route": decision.route, "planner_task": planner_task},
-            )
-            debug_meta["route"] = decision.route
-            response = await response_renderer.render(
-                conversation_id=conversation.id,
-                route=decision.route,
-                reply_text=reply_text,
-                product_carousel=[],
-                follow_up_questions=follow_up_options,
-                sources=[],
-                debug=debug_meta,
-                reply_language=reply_language,
-                target_currency=target_currency,
-                user_text=ctx.text,
-                apply_polish=False,
-            )
-            return await self._finalize_response(
-                conversation_id=conversation.id,
-                user_text=ctx.text,
-                response=response,
-            )
-
-        if planner_applied and bool(planner.get("needs_clarification")):
-            decision = RouteDecision(route="clarify", reason="planner_clarify")
-            clarifier = str(planner.get("clarifying_question") or "").strip()
-            default_clarifier = "What would you like to know about our products or policies?"
-            if planner_task in {"product_search", "mixed"}:
-                default_clarifier = "Which product category or SKU are you interested in?"
-            elif planner_task in {"policy", "shipping_region"}:
-                default_clarifier = "Are you asking about shipping availability, shipping cost, or delivery time?"
-            elif planner_task == "contact":
-                default_clarifier = "Do you want a phone number, email, or WhatsApp contact?"
-
-            if not clarifier or self._is_echo_clarifier(user_text=ctx.text, clarifier=clarifier):
-                clarifier = default_clarifier
-
-            reply_text = await self._generate_contextual_reply(
-                user_text=ctx.text,
-                reply_language=reply_language,
-                suggested_question=clarifier,
-                focus=f"planner:{planner_task}",
-                telemetry=debug_meta,
-                run_id=run_id,
-            )
-
-            debug_meta["route"] = decision.route
-            response = await response_renderer.render(
-                conversation_id=conversation.id,
-                route=decision.route,
-                reply_text=reply_text,
-                product_carousel=[],
-                follow_up_questions=[],
-                sources=[],
-                debug=debug_meta,
-                reply_language=reply_language,
-                target_currency=target_currency,
-                user_text=ctx.text,
-                apply_polish=False,
-            )
-            return await self._finalize_response(
-                conversation_id=conversation.id,
-                user_text=ctx.text,
-                response=response,
-            )
-
-        if planner_applied and planner_task in {"product_search", "policy", "shipping_region", "contact", "mixed"}:
-            is_question_like = True
-
-        use_products = looks_like_product
-        use_knowledge = True
-        if planner_applied:
-            use_products = planner_task in {"product_search", "mixed"}
-            use_knowledge = planner_task in {"policy", "shipping_region", "contact", "mixed"}
-            looks_like_product = looks_like_product or use_products
-            is_policy_intent = is_policy_intent or planner_task in {"policy", "shipping_region", "mixed"}
-            has_store_intent = has_store_intent or planner_task in {"product_search", "policy", "shipping_region", "contact", "mixed"}
-            if planner_task in {"policy", "shipping_region"} and policy_topic_count == 0:
-                policy_topic_count = 1
-
-        if planner_applied:
-            kb_query_text = str(planner.get("kb_query") or "").strip()
-            product_query_text = str(planner.get("product_query") or "").strip()
-        if not kb_query_text:
-            kb_query_text = ctx.text
-        if not product_query_text:
-            product_query_text = ctx.text
-
-        is_complex = is_question_like and self._is_complex_query(kb_query_text)
-        max_sub_questions = int(getattr(settings, "RAG_MAX_SUB_QUESTIONS", 4))
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.rag.complexity_check",
-            data={
-                "is_complex": is_complex,
-                "is_question_like": is_question_like,
-                "policy_topic_count": policy_topic_count,
-                "len": len(ctx.text),
-                "max_sub_questions": max_sub_questions,
-                "planner_used": planner_used,
-                "planner_task": planner_task,
-            },
-        )
-
-        # SKU shortcut (must-have): direct DB lookup without embeddings.
+        is_product_intent = intent in {"browse_products", "search_specific"} or show_products_flag
         if sku_token:
-            sku_cards = await product_pipeline.sku_shortcut(sku=sku_token, limit=product_topk)
-            if sku_cards:
-                decision = RouteDecision(route="product", reason="sku_shortcut")
-                self._log_event(
-                    run_id=run_id,
-                    location="chat_service.product.sku_shortcut",
-                    data={"matched_sku": sku_token, "count": len(sku_cards)},
-                )
+            is_product_intent = True
 
-                price_intent = bool(re.search(r"\b(price|cost)\b", ctx.text.lower()))
-                if price_intent:
-                    p0 = sku_cards[0]
-                    converted = currency_service.convert(
-                        float(p0.price),
-                        from_currency=str(p0.currency or settings.BASE_CURRENCY),
-                        to_currency=target_currency,
-                    )
-                    amount_str = str(round(float(converted.amount), 2))
-                    reply_text = await self._localize_price_sentence(
-                        sku=p0.sku,
-                        amount=amount_str,
-                        currency=str(converted.currency),
-                        reply_language=reply_language,
-                        run_id=run_id,
-                    )
-                else:
-                    reply_text = await self._localize_ui_text(
-                        reply_language=reply_language,
-                        text="Here are some products that might help:",
-                        run_id=run_id,
-                    )
-
-                debug_meta["route"] = decision.route
-                response = await response_renderer.render(
-                    conversation_id=conversation.id,
-                    route=decision.route,
-                    reply_text=reply_text,
-                    product_carousel=sku_cards,
-                    follow_up_questions=[],
-                    sources=[],
-                    debug=debug_meta,
-                    target_currency=target_currency,
-                    user_text=ctx.text,
-                    apply_polish=False,
-                )
-                return await self._finalize_response(
-                    conversation_id=conversation.id,
-                    user_text=ctx.text,
-                    response=response,
-                )
-
-        sub_questions: List[str] = []
-        knowledge_query_text = kb_query_text
-        knowledge_embedding = None
-        product_embedding = None
-
-        if use_products and use_knowledge and product_query_text == knowledge_query_text:
-            shared_embedding = await llm_service.generate_embedding(product_query_text)
-            product_embedding = shared_embedding
-            knowledge_embedding = shared_embedding
+        if intent in {"knowledge_query", "off_topic"}:
+            use_knowledge = True
+            use_products = show_products_flag or bool(sku_token)
+        elif intent in {"browse_products", "search_specific"}:
+            use_products = True
+            use_knowledge = False
         else:
-            if use_products:
-                product_embedding = await llm_service.generate_embedding(product_query_text)
-            if use_knowledge:
-                knowledge_embedding = await llm_service.generate_embedding(knowledge_query_text)
+            use_products = False
+            use_knowledge = False
 
-        product_result = await product_pipeline.run(
-            ctx=ctx,
-            product_embedding=product_embedding,
-            product_topk=product_topk,
-            use_products=use_products,
-            is_policy_intent=is_policy_intent,
-            looks_like_product=looks_like_product,
-            run_id=run_id,
-        )
-        product_cards = product_result.product_cards
-        product_top_distances = product_result.product_top_distances
-        product_best = product_result.product_best
-        product_gate_decision = product_result.product_gate_decision
+        is_question_like = self._is_question_like(text)
+        is_complex = self._is_complex_query(text)
+        policy_topic_count = self._count_policy_topics(text)
+        is_policy_intent = intent == "knowledge_query" and policy_topic_count > 0
 
-        if product_gate_decision in {"strict", "loose"} and product_cards:
-            decision = RouteDecision(route="product", reason="product_gate")
-            reply_text = await self._localize_ui_text(
-                reply_language=reply_language,
-                text="Here are some products that might help:",
-                run_id=run_id,
-            )
-            debug_meta["route"] = decision.route
-            response = await response_renderer.render(
-                conversation_id=conversation.id,
-                route=decision.route,
-                reply_text=reply_text,
-                product_carousel=product_cards,
-                follow_up_questions=[],
-                sources=[],
-                debug=debug_meta,
-                reply_language=reply_language,
-                target_currency=target_currency,
-                user_text=ctx.text,
-                apply_polish=False,
-            )
-            return await self._finalize_response(
-                conversation_id=conversation.id,
-                user_text=ctx.text,
-                response=response,
-            )
-
-        if not use_knowledge:
-            categories: List[str] = []
-            catalog_browse = bool(planner_used and planner_is_catalog_browse) or (
-                not planner_used and self._is_catalog_browse(ctx.text)
-            )
-            if catalog_browse:
-                categories = await self._get_product_category_overview()
-                if categories:
-                    preview = ", ".join(categories[:6])
-                    reply_text = f"I can show categories like {preview}. Which category should I show?"
-                else:
-                    reply_text = "Which product category should I show?"
-                route = "product"
-            else:
-                reply_text = "Which product category or SKU are you interested in?"
-                route = "clarify"
-
-            reply_text = await self._generate_contextual_reply(
-                user_text=ctx.text,
-                reply_language=reply_language,
-                suggested_question=reply_text,
-                focus="catalog_browse" if categories else "product_clarifier",
-                telemetry=debug_meta,
-                run_id=run_id,
-                required_terms=categories[:6] if categories else None,
-            )
-
-            decision = RouteDecision(route=route, reason="planner_no_knowledge")
-            debug_meta["route"] = decision.route
-            response = await response_renderer.render(
-                conversation_id=conversation.id,
-                route=decision.route,
-                reply_text=reply_text,
-                product_carousel=[],
-                follow_up_questions=[],
-                sources=[],
-                debug=debug_meta,
-                reply_language=reply_language,
-                target_currency=target_currency,
-                user_text=ctx.text,
-                apply_polish=False,
-            )
-            return await self._finalize_response(
-                conversation_id=conversation.id,
-                user_text=ctx.text,
-                response=response,
-            )
-
-        knowledge_result = await knowledge_pipeline.run(
-            ctx=ctx,
-            knowledge_query_text=knowledge_query_text,
-            knowledge_embedding=knowledge_embedding,
-            is_complex=is_complex,
+        looks_like_product = bool(self._infer_jewelry_type_filter(text) or sku_token or is_product_intent)
+        ctx = ChatContext(
+            text=text,
             is_question_like=is_question_like,
+            looks_like_product=looks_like_product,
+            has_store_intent=use_products,
             is_policy_intent=is_policy_intent,
             policy_topic_count=policy_topic_count,
-            max_sub_questions=max_sub_questions,
-            run_id=run_id,
+            sku_token=sku_token,
+            requested_currency=target_currency if target_currency != default_display_currency.upper() else None,
         )
 
-        retrieval = knowledge_result.retrieval
-        rerank_result = knowledge_result.rerank
+        debug_meta["intent"] = intent
+        debug_meta["retrieval_gate"] = {
+            "use_products": use_products,
+            "use_knowledge": use_knowledge,
+            "is_complex": is_complex,
+            "is_policy_intent": is_policy_intent,
+            "policy_topic_count": policy_topic_count,
+        }
 
-        debug_meta["decomposition_used"] = retrieval.decomposition_used
-        debug_meta["decomposition_reason"] = retrieval.decomposition_reason
-        debug_meta["decomposition_knowledge_best"] = retrieval.decomposition_knowledge_best
-        debug_meta["decomposition_gap"] = retrieval.decomposition_gap
+        query_embedding: Optional[List[float]] = None
+        if use_products or use_knowledge:
+            query_embedding = await llm_service.generate_embedding(search_query)
 
-        knowledge_sources = retrieval.knowledge_sources
-        knowledge_best = retrieval.knowledge_best
-        knowledge_top_distances = retrieval.knowledge_top_distances
-        sub_questions = retrieval.sub_questions
-        per_query_keep = retrieval.per_query_keep
-
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.rag.retrieve",
-            data={
-                "knowledge_best": knowledge_best,
-                "product_best": product_best,
-                "knowledge_top5_distances": knowledge_top_distances,
-                "product_top5_distances": product_top_distances,
-                "knowledge_count": len(knowledge_sources),
-                "product_count": len(product_cards),
-                "decompose_used": bool(sub_questions),
-                "sub_questions_count": len(sub_questions),
-                "coverage_first": True,
-                "per_query_keep": per_query_keep,
-            },
-        )
-        
-        # Low-confidence retrieval gate: avoid verifier producing unrelated clarifications.
-        product_weak_thr = float(getattr(settings, "PRODUCT_WEAK_DISTANCE", 0.55))
-        knowledge_weak_thr = float(getattr(settings, "KNOWLEDGE_WEAK_DISTANCE", 0.60))
-        product_weak = (product_best is None) or (float(product_best) >= product_weak_thr)
-        knowledge_weak = (knowledge_best is None) or (float(knowledge_best) >= knowledge_weak_thr)
-        if product_weak and knowledge_weak:
-            has_store_intent = ctx.has_store_intent
-            if has_store_intent:
-                categories: List[str] = []
-                catalog_browse = bool(planner_used and planner_is_catalog_browse) or (
-                    not planner_used and self._is_catalog_browse(ctx.text)
-                )
-                if catalog_browse:
-                    categories = await self._get_product_category_overview()
-                    if categories:
-                        preview = ", ".join(categories[:6])
-                        reply_text = f"I can show categories like {preview}. Which category should I show?"
-                    else:
-                        reply_text = "Which product category should I show?"
-                    route = "product"
-                    weak_retrieval_action = "catalog_overview"
-                else:
-                    reply_text = "Which product category or SKU are you interested in?"
-                    route = "clarify"
-                    weak_retrieval_action = "targeted_clarifier"
-                reply_text = await self._generate_contextual_reply(
-                    user_text=ctx.text,
-                    reply_language=reply_language,
-                    suggested_question=reply_text,
-                    focus=weak_retrieval_action,
-                    telemetry=debug_meta,
-                    run_id=run_id,
-                    required_terms=categories[:6] if categories else None,
-                )
-                follow_ups = []
-            else:
-                route = "general_chat"
-                try:
-                    reply_text = await self._general_chat_response(user_text=ctx.text, reply_language=reply_language, history=history)
-                except Exception as e:
-                    logger.error(f"general_chat generation failed: {e}")
-                    reply_text = await self._localize_ui_text(
-                        reply_language=reply_language,
-                        text="Hello, what would you like to discuss today?",
-                        run_id=run_id,
-                    )
-                follow_ups = follow_up_options
-                weak_retrieval_action = "general_chat"
-
-            decision = RouteDecision(route=route, reason="weak_retrieval")
-            self._log_event(
-                run_id=run_id,
-                location="chat_service.route_selected",
-                data={
-                    "route": decision.route,
-                    "fallback_general_triggered": route == "fallback_general",
-                    "reason": "weak_retrieval",
-                    "product_best": product_best,
-                    "knowledge_best": knowledge_best,
-                    "product_weak_thr": product_weak_thr,
-                    "knowledge_weak_thr": knowledge_weak_thr,
-                    "verifier_skipped_reason": "weak_retrieval",
-                    "store_intent": has_store_intent,
-                    "weak_retrieval_action": weak_retrieval_action,
-                },
-            )
-            debug_meta["weak_retrieval_action"] = weak_retrieval_action
-            debug_meta["route"] = decision.route
-            response = await response_renderer.render(
-                conversation_id=conversation.id,
-                route=decision.route,
-                reply_text=reply_text,
-                product_carousel=[],
-                follow_up_questions=follow_ups,
-                sources=[],
-                debug=debug_meta,
+        if query_embedding is not None:
+            debug_meta["semantic_cache_hit"] = False
+            cache_hit = await semantic_cache_service.get_hit(
+                self.db,
+                query_embedding=query_embedding,
                 reply_language=reply_language,
                 target_currency=target_currency,
-                user_text=ctx.text,
-                apply_polish=False,
             )
-            return await self._finalize_response(
-                conversation_id=conversation.id,
-                user_text=ctx.text,
-                response=response,
+            if cache_hit:
+                debug_meta["semantic_cache_hit"] = True
+                debug_meta["semantic_cache_distance"] = cache_hit.distance
+                cached = cache_hit.entry.response_json or {}
+                response = ChatResponse(
+                    conversation_id=conversation.id,
+                    reply_text=str(cached.get("reply_text", "")),
+                    carousel_msg=str(cached.get("carousel_msg", "")),
+                    product_carousel=[ProductCard(**p) for p in cached.get("product_carousel", [])],
+                    follow_up_questions=list(cached.get("follow_up_questions", []) or []),
+                    intent=str(cached.get("intent", "rag_strict")),
+                    sources=[KnowledgeSource(**s) for s in cached.get("sources", [])],
+                    debug=debug_meta,
+                    view_button_text=str(cached.get("view_button_text", "View Product Details")),
+                    material_label=str(cached.get("material_label", "Material")),
+                    jewelry_type_label=str(cached.get("jewelry_type_label", "Jewelry Type")),
+                )
+                token_usage = llm_service.consume_token_usage()
+                return await self._finalize_response(
+                    conversation_id=conversation.id,
+                    user_text=text,
+                    response=response,
+                    token_usage=token_usage,
+                    channel=channel,
+                )
+
+        product_cards: List[ProductCard] = []
+        distances: List[float] = []
+        best_distance: Optional[float] = None
+        dist_map: Dict[str, float] = {}
+        if use_products and query_embedding is not None:
+            product_cards, distances, best_distance, dist_map = await self.smart_product_search(
+                query=search_query,
+                query_embedding=query_embedding,
+                limit=10,
+                run_id=run_id,
+                extracted_code=nlu_product_code,
             )
 
-        reranked_top = rerank_result.reranked_top
-        debug_meta["rerank_used"] = rerank_result.rerank_used
-        debug_meta["rerank_reason"] = rerank_result.rerank_reason
-        debug_meta["rerank_duration_ms"] = rerank_result.rerank_duration_ms
-        debug_meta["rerank_timed_out"] = rerank_result.rerank_timed_out
-        debug_meta["rerank_candidates"] = rerank_result.candidates_count
-        debug_meta["rerank_d1"] = rerank_result.d1
-        debug_meta["rerank_d10"] = rerank_result.d10
-        debug_meta["rerank_gap"] = rerank_result.gap
+        kb_sources: List[KnowledgeSource] = []
+        if use_knowledge and query_embedding is not None:
+            if is_policy_intent or is_complex:
+                max_sub_questions = int(getattr(settings, "RAG_DECOMPOSE_MAX_SUBQUESTIONS", 5))
+                knowledge_result = await self._knowledge_pipeline.retrieve(
+                    ctx=ctx,
+                    knowledge_query_text=search_query,
+                    knowledge_embedding=query_embedding,
+                    is_complex=is_complex,
+                    is_question_like=is_question_like,
+                    is_policy_intent=is_policy_intent,
+                    policy_topic_count=policy_topic_count,
+                    max_sub_questions=max_sub_questions,
+                    run_id=run_id,
+                )
+                kb_sources = knowledge_result.knowledge_sources
+                debug_meta["knowledge_decompose_used"] = knowledge_result.decomposition_used
+                debug_meta["knowledge_decompose_reason"] = knowledge_result.decomposition_reason
+            else:
+                kb_sources, _ = await self._knowledge_pipeline.search_knowledge(
+                    query_text=search_query,
+                    query_embedding=query_embedding,
+                    limit=5,
+                    run_id=run_id,
+                )
 
-        max_verify_chunks = max(
-            1, int(getattr(settings, "RAG_VERIFY_MAX_KNOWLEDGE_CHUNKS", settings.RAG_RERANK_TOPN))
-        )
-        used_keys: set[str] = set()
-        reranked_knowledge: List[KnowledgeSource] = []
-        for s in reranked_top:
-            key = s.chunk_id or s.source_id
-            if key in used_keys:
-                continue
-            reranked_knowledge.append(s)
-            used_keys.add(key)
-            if len(reranked_knowledge) >= max_verify_chunks:
-                break
-        for s in knowledge_sources:
-            if len(reranked_knowledge) >= max_verify_chunks:
-                break
-            key = s.chunk_id or s.source_id
-            if key in used_keys:
-                continue
-            reranked_knowledge.append(s)
-            used_keys.add(key)
-
-        decision = await verifier_service.verify(
-            question=ctx.text,
-            knowledge_sources=reranked_knowledge,
-            product_cards=product_cards,
-            run_id=run_id,
-        )
-
-        answerable = bool(decision.get("answerable"))
-        answer_type = (decision.get("answer_type") or "knowledge").lower()
-        supporting_ids = [str(x) for x in (decision.get("supporting_chunk_ids") or [])]
-        missing_q = decision.get("missing_info_question")
-        answerable_parts = decision.get("answerable_parts") or []
-        missing_parts = decision.get("missing_parts") or []
-
-        answerable_topics: List[str] = []
-        part_supporting_ids: List[str] = []
-        if isinstance(answerable_parts, list):
-            for p in answerable_parts:
-                if isinstance(p, dict):
-                    topic = p.get("topic")
-                    if isinstance(topic, str) and topic.strip():
-                        answerable_topics.append(topic.strip())
-                    ids = p.get("supporting_chunk_ids") or []
-                    if isinstance(ids, list):
-                        part_supporting_ids.extend([str(x) for x in ids])
-
-        missing_parts_q: Optional[str] = None
-        if isinstance(missing_parts, list) and missing_parts:
-            first = missing_parts[0]
-            if isinstance(first, dict):
-                mq = first.get("missing_info_question")
-                if isinstance(mq, str) and mq.strip():
-                    missing_parts_q = mq.strip()
-
-        selected_sources = reranked_knowledge
-        effective_supporting_ids = part_supporting_ids or supporting_ids
-        if effective_supporting_ids:
-            by_id = {s.source_id: s for s in reranked_knowledge}
-            selected_sources = [by_id[sid] for sid in effective_supporting_ids if sid in by_id] or reranked_knowledge
-
-        route = "clarify"
-        reply_text = ""
         sources: List[KnowledgeSource] = []
-        product_carousel: List[ProductCard] = []
-        follow_up_questions: List[str] = []
+        
+        # 3. Intent Logic (Using NLU results)
+        
+        # Override show_products_flag if we found an EXACT match (smart search)
+        if best_distance is not None and best_distance == 0.0 and product_cards:
+            logger.info("Forcing show_products=True due to exact SKU/MasterCode match")
+            show_products_flag = True
+            intent = "search_specific"
 
-        if answerable:
-            if answer_type == "product" and looks_like_product and product_cards:
-                route = "product"
-                reply_text = await self._localize_ui_text(
-                    reply_language=reply_language,
-                    text="Here are some products that might help:",
-                    run_id=run_id,
-                )
-                product_carousel = product_cards
-                sources = []
-                follow_up_questions = []
-            elif answer_type == "mixed":
-                route = "mixed"
-                reply_text = await self.synthesize_answer(
-                    ctx.text,
-                    selected_sources,
-                    reply_language,
-                    run_id=run_id,
-                )
-                product_carousel = []
-                sources = selected_sources
-                follow_up_questions = []
+        # 4. Filter Products based on intent and relevance
+        top_products = []
+        product_threshold = getattr(settings, "PRODUCT_DISTANCE_THRESHOLD", 0.45)
+
+        # Relax threshold if NLU says user wants to see products
+        if show_products_flag:
+            if intent == "browse_products":
+                product_threshold = 0.85  # Very relaxed for browsing
             else:
-                route = "knowledge"
-                reply_text = await self.synthesize_answer(
-                    ctx.text,
-                    selected_sources,
-                    reply_language,
-                    run_id=run_id,
-                )
-                product_carousel = []
-                sources = selected_sources
-                follow_up_questions = []
-        else:
-            product_weak_thr = float(getattr(settings, "PRODUCT_WEAK_DISTANCE", 0.55))
-            knowledge_weak_thr = float(getattr(settings, "KNOWLEDGE_WEAK_DISTANCE", 0.60))
-            product_weak = (product_best is None) or (float(product_best) >= product_weak_thr)
-            knowledge_weak = (knowledge_best is None) or (float(knowledge_best) >= knowledge_weak_thr)
+                product_threshold = 0.65  # Moderately relaxed for specific search
 
-            if self._is_question_like(ctx.text) and not (product_weak and knowledge_weak):
-                route = "clarify"
-                clarifier = missing_parts_q or (missing_q.strip() if isinstance(missing_q, str) else "")
-                if selected_sources and effective_supporting_ids and clarifier:
-                    reply_text = await self.synthesize_partial_answer(
-                        original_question=ctx.text,
-                        sources=selected_sources,
-                        answerable_topics=answerable_topics,
-                        missing_question=clarifier,
-                        reply_language=reply_language,
-                        run_id=run_id,
-                    )
-                    sources = selected_sources
-                elif clarifier:
-                    reply_text = await self._generate_contextual_reply(
-                        user_text=ctx.text,
-                        reply_language=reply_language,
-                        suggested_question=clarifier,
-                        focus="clarify",
-                        telemetry=debug_meta,
-                        run_id=run_id,
-                    )
-                    sources = []
-                else:
-                    reply_text = await self._generate_contextual_reply(
-                        user_text=ctx.text,
-                        reply_language=reply_language,
-                        suggested_question="Could you clarify what exactly you want to know (one detail)?",
-                        focus="clarify",
-                        telemetry=debug_meta,
-                        run_id=run_id,
-                    )
-                    sources = []
-                product_carousel = []
-                follow_up_questions = []
-            else:
-                route = "fallback_general"
-                reply_text = await self._generate_contextual_reply(
-                    user_text=ctx.text,
-                    reply_language=reply_language,
-                    suggested_question=(
-                        "I can help you browse products or answer store questions. What would you like to do?"
-                    ),
-                    focus="fallback_general",
-                    telemetry=debug_meta,
-                    run_id=run_id,
-                )
-                product_carousel = []
-                sources = []
-                follow_up_questions = await self._get_follow_up_questions(
-                    reply_language=reply_language,
-                    run_id=run_id,
-                )
+        if product_cards and best_distance is not None and best_distance < product_threshold:
+            top_products = product_cards[:10]  # Show up to 10 products
+            # Create a source snippet for products
+            product_text = "\n".join([f"TYPE: {p.attributes.get('jewelry_type', 'Jewelry')}, NAME: {p.name}, SKU: {p.sku}, PRICE: {p.price} {p.currency}" for p in top_products[:3]])
+            sources.append(KnowledgeSource(
+                source_id="product_listings",
+                title="Current Store Products",
+                content_snippet=f"The following products are available in the store:\n{product_text}",
+                relevance=1.0 - best_distance,
+            ))
+        elif show_products_flag and product_cards:
+            # Fallback: Always show some products if user wants products, even if below threshold
+            top_products = product_cards[:10]  # Show up to 10 products
+            product_text = "\n".join([f"- {p.attributes.get('jewelry_type', 'Jewelry')} {p.name} ({p.sku}): {p.price} {p.currency}" for p in top_products])
+            sources.append(KnowledgeSource(
+                source_id="products_fallback",
+                title="Related Products",
+                content_snippet=f"Here are some products you might be interested in:\n{product_text}",
+                relevance=0.3,  # Low relevance indicator
+            ))
+            debug_meta["product_fallback_used"] = True
 
-        decision = RouteDecision(route=route, reason="verifier")
-        self._log_event(
-            run_id=run_id,
-            location="chat_service.rag.route_decision",
-            data={
-                "route": decision.route,
-                "answerable": answerable,
-                "answer_type": answer_type,
-                "knowledge_best": knowledge_best,
-                "product_best": product_best,
-                "knowledge_threshold_observed": settings.KNOWLEDGE_DISTANCE_THRESHOLD,
-                "product_threshold_observed": settings.PRODUCT_DISTANCE_THRESHOLD,
-                "selected_source_ids": [s.source_id for s in sources[:5]],
-                "product_carousel_count": len(product_carousel),
-            },
+        # 4b. Cross-sell accessories (e.g., barbell attachments)
+        cross_sell_products: List[ProductCard] = []
+        cross_sell_label: Optional[str] = None
+        cross_sell_used = False
+        if top_products:
+            primary_type = self._infer_primary_jewelry_type(products=top_products, query_text=search_query)
+            cross_sell_query = self._build_cross_sell_query(primary_type or "")
+            cross_sell_label = self._build_cross_sell_label(primary_type or "")
+            if cross_sell_query:
+                cross_embedding = await llm_service.generate_embedding(cross_sell_query)
+                cross_cards, _cross_distances, _cross_best, _cross_map = await self.search_products(
+                    cross_embedding,
+                    limit=12,
+                    run_id=run_id,
+                )
+                exclude_ids = {str(p.id) for p in top_products}
+                cross_sell_products = self._filter_cross_sell_products(
+                    products=cross_cards,
+                    exclude_type=primary_type,
+                    exclude_ids=exclude_ids,
+                    limit=3,
+                )
+                if cross_sell_products:
+                    remaining = max(0, 10 - len(top_products))
+                    added = cross_sell_products[:remaining] if remaining else []
+                    if added:
+                        top_products.extend(added)
+                        accessory_text = "\n".join(
+                            [
+                                f"TYPE: {p.attributes.get('jewelry_type', 'Accessory')}, NAME: {p.name}, SKU: {p.sku}, PRICE: {p.price} {p.currency}"
+                                for p in added
+                            ]
+                        )
+                        sources.append(
+                            KnowledgeSource(
+                                source_id="product_cross_sell",
+                                title="Compatible Accessories",
+                                content_snippet=f"Related accessories customers often pair with these items:\n{accessory_text}",
+                                relevance=0.35,
+                            )
+                        )
+                        debug_meta["cross_sell_used"] = True
+                        cross_sell_used = True
+
+        sources.extend(kb_sources)
+
+        max_answer_sources = int(getattr(settings, "RAG_MAX_SOURCES_IN_RESPONSE", 5))
+        sources_for_answer = sources[:max_answer_sources]
+        debug_meta["retrieved_source_count"] = len(sources)
+        debug_meta["answer_source_count"] = len(sources_for_answer)
+
+        # 4. Generate Response (Strict RAG)
+        reply_data = await self.synthesize_answer(
+            question=text,
+            sources=sources_for_answer,
+            reply_language=reply_language,
+            history=history,
+            run_id=run_id
         )
 
-        logger.info(
-            "chat_route decision",
-            extra={
-                "knowledge_best_distance": knowledge_best,
-                "product_best_distance": product_best,
-                "route": decision.route,
-            },
-        )
+        # 5. Render
+        # Add "See more" button if products are shown
+        follow_up_questions = []
+        
+        # Priority 1: Context-aware questions from LLM
+        if reply_data.get("recommended_questions"):
+            follow_up_questions = reply_data["recommended_questions"]
+            
+        # Priority 2: Smart fallback IF no LLM suggestions and products exist
+        elif top_products:
+            # Extract the primary search term for "See more" query
+            jewelry_type = top_products[0].attributes.get('jewelry_type', '')
+            material = top_products[0].attributes.get('material', '')
+            search_term = jewelry_type or material or "similar items"
+            follow_up_questions = [f"See more {search_term}"]
 
-        debug_meta["route"] = decision.route
-
-        response = await response_renderer.render(
+        if cross_sell_used and cross_sell_label:
+            accessory_question = f"Show {cross_sell_label}"
+            if accessory_question not in follow_up_questions:
+                follow_up_questions.append(accessory_question)
+            
+        # Enforce limit of 5
+        if len(follow_up_questions) > 5:
+            follow_up_questions = follow_up_questions[:5]
+        
+        response = await self._response_renderer.render(
             conversation_id=conversation.id,
-            route=decision.route,
-            reply_text=reply_text,
-            product_carousel=product_carousel,
+            route="rag_strict",
+            reply_data=reply_data,
+            product_carousel=top_products,
             follow_up_questions=follow_up_questions,
-            sources=sources,
+            sources=sources_for_answer,
             debug=debug_meta,
+            reply_language=reply_language,
             target_currency=target_currency,
-            user_text=ctx.text,
-            apply_polish=True,
+            user_text=text,
+            apply_polish=False,
         )
+
+        if response.sources:
+            payload = {
+                "reply_text": response.reply_text,
+                "carousel_msg": response.carousel_msg or "",
+                "product_carousel": [p.dict() for p in response.product_carousel],
+                "follow_up_questions": list(response.follow_up_questions or []),
+                "intent": response.intent,
+                "sources": [s.dict() for s in response.sources],
+                "view_button_text": response.view_button_text,
+                "material_label": response.material_label,
+                "jewelry_type_label": response.jewelry_type_label,
+            }
+            for p in payload["product_carousel"]:
+                if p.get("id"):
+                    p["id"] = str(p["id"])
+            await semantic_cache_service.save_hit(
+                self.db,
+                query_text=search_query,
+                query_embedding=query_embedding or [],
+                response_json=payload,
+                reply_language=reply_language,
+                target_currency=target_currency,
+            )
+
+        token_usage = llm_service.consume_token_usage()
         return await self._finalize_response(
             conversation_id=conversation.id,
-            user_text=ctx.text,
+            user_text=text,
             response=response,
+            token_usage=token_usage,
+            channel=channel,
         )
+
+

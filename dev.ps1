@@ -64,10 +64,14 @@ $pwsh = Get-PwshExe
 $backendCmd = @"
 `$host.UI.RawUI.WindowTitle = 'WebChat Backend';
 Set-Location '$repoRoot\\backend';
+`$sslArgs = ''
+if ('$($env:SSL_CERTFILE)' -and '$($env:SSL_KEYFILE)') {
+  `$sslArgs = '--ssl-certfile "$($env:SSL_CERTFILE)" --ssl-keyfile "$($env:SSL_KEYFILE)"'
+}
 if (Test-Path '.\\venv\\Scripts\\python.exe') {
-  .\\venv\\Scripts\\python.exe -m uvicorn main:app --reload --host 0.0.0.0 --port $BackendPort
+  .\\venv\\Scripts\\python.exe -m uvicorn main:app --reload --host 0.0.0.0 --port $BackendPort `$sslArgs
 } else {
-  python -m uvicorn main:app --reload --host 0.0.0.0 --port $BackendPort
+  python -m uvicorn main:app --reload --host 0.0.0.0 --port $BackendPort `$sslArgs
 }
 "@
 
@@ -85,14 +89,14 @@ Set-Location '$repoRoot';
 "@
     Start-Process -FilePath $pwsh -ArgumentList @("-NoExit", "-Command", $ngrokCmd) | Out-Null
 
-    # We only need the frontend public URL. Vite will proxy /api to the local backend.
+    # Get the public URL for the frontend (single tunnel).
     $frontendPublic = Get-NgrokPublicUrl -TunnelName "frontend-admin"
 
     $hmrHost = ([uri]$frontendPublic).Host
 
     $frontendCmd = @"
 `$env:VITE_API_BASE_URL = '/api/v1';
-`$env:VITE_DEV_BACKEND_URL = 'http://localhost:$BackendPort';
+`$env:VITE_DEV_BACKEND_URL = 'http://127.0.0.1:$BackendPort';
 `$env:VITE_DEV_HMR_HOST = '$hmrHost';
 `$env:VITE_DEV_ALLOW_ALL_HOSTS = '1';
 $frontendCmdTemplate

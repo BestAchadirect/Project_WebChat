@@ -8,7 +8,27 @@ export interface QALog {
     sources: any[];
     status: 'success' | 'no_answer' | 'fallback' | 'failed';
     error_message?: string;
+    token_usage?: TokenUsageSummary | null;
+    channel?: string | null;
     created_at: string;
+}
+
+export interface TokenUsageCall {
+    kind: string;
+    model: string;
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    cached?: boolean;
+    cached_prompt_tokens?: number;
+}
+
+export interface TokenUsageSummary {
+    total_prompt_tokens: number;
+    total_completion_tokens: number;
+    total_tokens: number;
+    cached_prompt_tokens?: number;
+    by_call: TokenUsageCall[];
 }
 
 export interface Product {
@@ -37,17 +57,27 @@ export interface Product {
     crystal_color?: string;
     color?: string;
     gauge?: string;
-    size_in_pack?: number;
+    size_in_pack?: string;
     rack?: string;
     height?: string;
     packing_option?: string;
     pincher_size?: string;
     ring_size?: string;
-    quantity_in_bulk?: number;
+    quantity_in_bulk?: string;
     opal_color?: string;
     threading?: string;
     outer_diameter?: string;
     pearl_color?: string;
+}
+
+export interface ProductFilterValue {
+    value: string;
+    count: number;
+}
+
+export interface ProductFiltersResponse {
+    total: number;
+    filters: Record<string, ProductFilterValue[]>;
 }
 
 export interface ProductListResponse {
@@ -200,8 +230,27 @@ export const productsApi = {
         search?: string;
         visibility?: boolean;
         is_featured?: boolean;
-        material?: string;
-        jewelry_type?: string;
+        material?: string | string[];
+        jewelry_type?: string | string[];
+        color?: string | string[];
+        gauge?: string | string[];
+        threading?: string | string[];
+        length?: string | string[];
+        size?: string | string[];
+        cz_color?: string | string[];
+        opal_color?: string | string[];
+        outer_diameter?: string | string[];
+        design?: string | string[];
+        crystal_color?: string | string[];
+        pearl_color?: string | string[];
+        rack?: string | string[];
+        height?: string | string[];
+        packing_option?: string | string[];
+        pincher_size?: string | string[];
+        ring_size?: string | string[];
+        size_in_pack?: string | string[];
+        quantity_in_bulk?: string | string[];
+        category?: string | string[];
         master_code?: string;
         min_price?: number;
         max_price?: number;
@@ -210,11 +259,68 @@ export const productsApi = {
         if (params) {
             Object.entries(params).forEach(([key, value]) => {
                 if (value !== undefined && value !== null && value !== '') {
-                    searchParams.append(key, String(value));
+                    if (Array.isArray(value)) {
+                        value.forEach((item) => {
+                            if (item !== undefined && item !== null && String(item).trim() !== '') {
+                                searchParams.append(key, String(item));
+                            }
+                        });
+                    } else {
+                        searchParams.append(key, String(value));
+                    }
                 }
             });
         }
-        const response = await apiClient.get(`/products?${searchParams.toString()}`);
+        const response = await apiClient.get(`/products/?${searchParams.toString()}`);
+        return response.data;
+    },
+
+    async listProductFilters(params?: {
+        search?: string;
+        visibility?: boolean;
+        is_featured?: boolean;
+        material?: string | string[];
+        jewelry_type?: string | string[];
+        color?: string | string[];
+        gauge?: string | string[];
+        threading?: string | string[];
+        length?: string | string[];
+        size?: string | string[];
+        cz_color?: string | string[];
+        opal_color?: string | string[];
+        outer_diameter?: string | string[];
+        design?: string | string[];
+        crystal_color?: string | string[];
+        pearl_color?: string | string[];
+        rack?: string | string[];
+        height?: string | string[];
+        packing_option?: string | string[];
+        pincher_size?: string | string[];
+        ring_size?: string | string[];
+        size_in_pack?: string | string[];
+        quantity_in_bulk?: string | string[];
+        category?: string | string[];
+        master_code?: string;
+        min_price?: number;
+        max_price?: number;
+    }): Promise<ProductFiltersResponse> {
+        const searchParams = new URLSearchParams();
+        if (params) {
+            Object.entries(params).forEach(([key, value]) => {
+                if (value !== undefined && value !== null && value !== '') {
+                    if (Array.isArray(value)) {
+                        value.forEach((item) => {
+                            if (item !== undefined && item !== null && String(item).trim() !== '') {
+                                searchParams.append(key, String(item));
+                            }
+                        });
+                    } else {
+                        searchParams.append(key, String(value));
+                    }
+                }
+            });
+        }
+        const response = await apiClient.get(`/products/filters?${searchParams.toString()}`);
         return response.data;
     },
 
@@ -232,11 +338,19 @@ export const productsApi = {
         const response = await apiClient.post('/products/bulk/show', productIds);
         return response.data;
     },
+
+    async bulkUpdate(productIds: string[], updates: Partial<Product>): Promise<{ status: string; updated: number }> {
+        const response = await apiClient.post('/products/bulk/update', {
+            product_ids: productIds,
+            updates
+        });
+        return response.data;
+    },
 };
 
 export const documentsApi = {
     async listDocuments(skip = 0, limit = 50): Promise<{ items: Document[]; total: number }> {
-        const response = await apiClient.get(`/documents?skip=${skip}&limit=${limit}`);
+        const response = await apiClient.get(`/import/knowledge/uploads?offset=${skip}&limit=${limit}`);
         return response.data;
     },
 
