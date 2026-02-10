@@ -89,6 +89,16 @@ interface ChatWidgetProps {
     customerId?: string | number;
 }
 
+interface Ticket {
+    id: number;
+    description: string;
+    image_url?: string;
+    image_urls?: string[];
+    status: string;
+    ai_summary?: string;
+    created_at: string;
+}
+
 declare global {
     interface Window {
         genaiConfig?: {
@@ -466,10 +476,17 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     })();
 
     const [isOpen, setIsOpen] = useState(false);
-    const [activeTab, setActiveTab] = useState<'home' | 'chat'>('home');
+    const [activeTab, setActiveTab] = useState<'home' | 'chat' | 'report'>('home');
     const [messages, setMessages] = useState<Message[]>([]);
+    const [tickets, setTickets] = useState<Ticket[]>([]);
+    const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+    const [isTicketsLoading, setIsTicketsLoading] = useState(false);
+    const [lastCreatedTicket, setLastCreatedTicket] = useState<Ticket | null>(null);
     const [input, setInput] = useState('');
+    const [isEditingTicket, setIsEditingTicket] = useState(false);
+    const [editTicketDescription, setEditTicketDescription] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [mainImageUrl, setMainImageUrl] = useState<string | null>(null);
     const [conversationId, setConversationId] = useState<number | null>(() => {
         const raw = localStorage.getItem('genai_conversation_id') || localStorage.getItem('chat_conversation_id');
         const parsed = raw ? Number(raw) : NaN;
@@ -483,45 +500,50 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     const isAtBottomRef = useRef(true);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const [selectedImage, setSelectedImage] = useState<File | null>(null);
-    const [selectedImageUrl, setSelectedImageUrl] = useState<string | null>(null);
+    const [selectedImages, setSelectedImages] = useState<File[]>([]);
+    const [selectedImageUrls, setSelectedImageUrls] = useState<string[]>([]);
 
-    const handleReportClick = () => {
-        if (config.reportUrl) {
-            window.open(config.reportUrl, '_blank', 'noopener,noreferrer');
-            return;
-        }
-        setActiveTab('chat');
-        setInput('Report: ');
-        setTimeout(() => textareaRef.current?.focus(), 0);
+    const formatTicketNumber = (ticket: Ticket) => {
+        const year = new Date(ticket.created_at).getFullYear();
+        return `${year}-${String(ticket.id).padStart(4, '0')}`;
     };
 
     const handleImageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
-        if (!file) return;
-        if (!file.type.startsWith('image/')) {
-            alert('Please select an image file.');
-            if (fileInputRef.current) fileInputRef.current.value = '';
-            return;
+        const files = event.target.files;
+        if (!files || files.length === 0) return;
+
+        const newImages: File[] = [];
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            if (file.type.startsWith('image/')) {
+                newImages.push(file);
+            } else {
+                alert(`File ${file.name} is not an image.`);
+            }
         }
-        setSelectedImage(file);
+
+        if (newImages.length > 0) {
+            setSelectedImages(prev => [...prev, ...newImages]);
+        }
+
+        if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
     const clearSelectedImage = () => {
-        setSelectedImage(null);
-        setSelectedImageUrl(null);
+        setSelectedImages([]);
+        setSelectedImageUrls([]);
         if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
     useEffect(() => {
-        if (!selectedImage) {
-            setSelectedImageUrl(null);
+        if (selectedImages.length === 0) {
+            setSelectedImageUrls([]);
             return;
         }
-        const url = URL.createObjectURL(selectedImage);
-        setSelectedImageUrl(url);
-        return () => URL.revokeObjectURL(url);
-    }, [selectedImage]);
+        const urls = selectedImages.map(img => URL.createObjectURL(img));
+        setSelectedImageUrls(urls);
+        return () => urls.forEach(url => URL.revokeObjectURL(url));
+    }, [selectedImages]);
     const [showScrollToLatest, setShowScrollToLatest] = useState(false);
     const hasHydratedRef = useRef(false);
 
@@ -621,6 +643,96 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         hasHydratedRef.current = false;
     }, [resolvedUserId, activeUserId]);
 
+    const fetchTickets = async () => {
+        try {
+            if (!resolvedUserId) return;
+            setIsTicketsLoading(true);
+            const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/tickets/` : '/tickets/';
+            const { data } = await apiClient.get<Ticket[]>(endpoint, {
+                params: { user_id: resolvedUserId }
+            });
+            setTickets(data || []);
+        } catch (error) {
+            console.error('Failed to fetch tickets:', error);
+        } finally {
+            setIsTicketsLoading(false);
+        }
+    };
+
+    const submitTicketReport = async () => {
+        if (!input.trim() || isLoading) return;
+        setIsLoading(true);
+        const descriptionText = input;
+        const mainImagePreview = selectedImageUrls[0];
+        try {
+            const formData = new FormData();
+            formData.append('user_id', resolvedUserId);
+            formData.append('description', input);
+            if (selectedImages.length > 0) {
+                selectedImages.forEach(img => {
+                    formData.append('images', img);
+                });
+            }
+
+            const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/tickets/` : '/tickets/';
+            const { data } = await apiClient.post<Ticket>(endpoint, formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+
+            setLastCreatedTicket({
+                ...data,
+                description: data.description || descriptionText,
+                image_url: data.image_url || mainImagePreview || undefined,
+            });
+            setInput('');
+            clearSelectedImage();
+            fetchTickets();
+            // Important: close the detail view if we're submitting from inside it
+            setSelectedTicket(null);
+        } catch (error) {
+            console.error('Failed to submit report:', error);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleUpdateTicket = async () => {
+        if (!selectedTicket || isLoading) return;
+        setIsLoading(true);
+        try {
+            const formData = new FormData();
+            if (editTicketDescription) {
+                formData.append('description', editTicketDescription);
+            }
+            if (selectedImages.length > 0) {
+                selectedImages.forEach(img => {
+                    formData.append('images', img);
+                });
+            }
+
+            const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/tickets/${selectedTicket.id}` : `/tickets/${selectedTicket.id}`;
+            const { data } = await apiClient.patch<Ticket>(endpoint, formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+
+            // Update local state
+            setSelectedTicket(data);
+            setIsEditingTicket(false);
+            clearSelectedImage();
+            fetchTickets();
+        } catch (error) {
+            console.error('Failed to update ticket:', error);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (isOpen && activeTab === 'report') {
+            fetchTickets();
+        }
+    }, [isOpen, activeTab, resolvedUserId]);
+
     useEffect(() => {
         const fetchBanners = async () => {
             try {
@@ -653,6 +765,14 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             document.body.style.overflow = '';
         };
     }, [isOpen]);
+
+    useEffect(() => {
+        if (selectedTicket) {
+            setMainImageUrl(selectedTicket.image_url || (selectedTicket.image_urls?.[0] || null));
+        } else {
+            setMainImageUrl(null);
+        }
+    }, [selectedTicket]);
 
     // Adjust textarea height
     useEffect(() => {
@@ -782,9 +902,15 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                     <div className="absolute -right-6 -top-6 h-24 w-24 rounded-full bg-white/15 blur-2xl"></div>
                     <div className="absolute -left-8 -bottom-8 h-24 w-24 rounded-full bg-white/10 blur-2xl"></div>
                     <div className="flex items-center justify-between relative z-10">
-                        {activeTab === 'chat' ? (
+                        {activeTab !== 'home' ? (
                             <button
-                                onClick={() => setActiveTab('home')}
+                                onClick={() => {
+                                    if (selectedTicket) {
+                                        setSelectedTicket(null);
+                                    } else {
+                                        setActiveTab('home');
+                                    }
+                                }}
                                 className="flex items-center gap-2 text-white/90 hover:text-white transition-colors bg-white/15 px-3 py-1.5 rounded-lg text-sm font-semibold"
                             >
                                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
@@ -980,65 +1106,380 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                 </button>
                             )}
 
-                            {/* Input Group (Deep Chat Style) */}
-                            <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 flex flex-col pt-2 pb-3 px-4 shadow-[0_-10px_30px_rgba(0,0,0,0.03)] z-10">
-                            <div className="flex items-center gap-3">
-                                <textarea
-                                    ref={textareaRef}
-                                    value={input}
-                                    onChange={(e) => setInput(e.target.value)}
-                                    onKeyDown={handleKeyPress}
-                                        placeholder="Enter your message..."
-                                        rows={1}
-                                        className="flex-1 bg-transparent border-none py-3 focus:outline-none resize-none max-h-[100px] scrollbar-custom text-sm font-medium text-gray-700"
-                                        style={{ padding: '16px 0px' }}
-                                    />
-                                    <button
-                                        onClick={() => sendMessage()}
-                                        disabled={isLoading || !input.trim()}
-                                        className="w-10 h-10 rounded-xl text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95 disabled:opacity-20 disabled:grayscale"
-                                        style={{ backgroundColor: config.primaryColor }}
-                                    >
-                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="rotate-[-10deg]">
-                                            <path d="M5.78393 10.7733L3.47785 6.16113C2.36853 3.9425 1.81387 2.83318 2.32353 2.32353C2.83318 1.81387 3.9425 2.36853 6.16113 3.47785L19.5769 10.1857C21.138 10.9663 21.9185 11.3566 21.9185 11.9746C21.9185 12.5926 21.138 12.9829 19.5769 13.7634L6.16113 20.4713C3.9425 21.5806 2.83318 22.1353 2.32353 21.6256C1.81387 21.116 2.36853 20.0067 3.47785 17.788L5.78522 13.1733H12.6367C13.2995 13.1733 13.8367 12.636 13.8367 11.9733C13.8367 11.3105 13.2995 10.7733 12.6367 10.7733H5.78393Z" fill="currentColor" />
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div className="mt-2 flex items-center gap-3 text-xs text-gray-500">
-                                    <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-gray-600 hover:text-gray-800">
-                                        <input
-                                            ref={fileInputRef}
-                                            type="file"
-                                            accept="image/*"
-                                            className="hidden"
-                                            onChange={handleImageChange}
+                            {/* Input Group (Composer) */}
+                            <div className="absolute bottom-0 left-0 right-0 z-10 px-4 pb-4 pt-3 bg-gradient-to-t from-white via-white/95 to-white/70 backdrop-blur">
+                                <div className="rounded-2xl border border-gray-200/70 bg-white shadow-[0_10px_30px_rgba(0,0,0,0.06)]">
+                                    <div className="flex items-end gap-3 px-4 pt-3">
+                                        <textarea
+                                            ref={textareaRef}
+                                            value={input}
+                                            onChange={(e) => setInput(e.target.value)}
+                                            onKeyDown={handleKeyPress}
+                                            placeholder="Enter your message..."
+                                            rows={1}
+                                            className="flex-1 bg-transparent border-none py-3 focus:outline-none resize-none min-h-[44px] max-h-[120px] scrollbar-custom text-sm font-medium text-gray-700"
                                         />
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                                            <path d="M4 7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V7Z" stroke="currentColor" strokeWidth="1.5" />
-                                            <path d="M8 14l2.5-2.5a1 1 0 0 1 1.4 0L16 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                                            <circle cx="9" cy="9" r="1.5" fill="currentColor" />
-                                        </svg>
-                                        Upload photo
-                                    </label>
-                                    {selectedImageUrl && (
-                                        <div className="flex items-center gap-2">
-                                            <img
-                                                src={selectedImageUrl}
-                                                alt="Selected upload"
-                                                className="h-10 w-10 rounded-lg object-cover border border-gray-200"
-                                            />
-                                            <div className="max-w-[140px] truncate text-gray-600">
-                                                {selectedImage?.name}
+                                        <button
+                                            onClick={() => sendMessage()}
+                                            disabled={isLoading || !input.trim()}
+                                            className="h-11 w-11 rounded-2xl text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95 disabled:opacity-20 disabled:grayscale shadow-sm hover:shadow-md"
+                                            style={{ backgroundColor: config.primaryColor }}
+                                        >
+                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="rotate-[-10deg]">
+                                                <path d="M5.78393 10.7733L3.47785 6.16113C2.36853 3.9425 1.81387 2.83318 2.32353 2.32353C2.83318 1.81387 3.9425 2.36853 6.16113 3.47785L19.5769 10.1857C21.138 10.9663 21.9185 11.3566 21.9185 11.9746C21.9185 12.5926 21.138 12.9829 19.5769 13.7634L6.16113 20.4713C3.9425 21.5806 2.83318 22.1353 2.32353 21.6256C1.81387 21.116 2.36853 20.0067 3.47785 17.788L5.78522 13.1733H12.6367C13.2995 13.1733 13.8367 12.636 13.8367 11.9733C13.8367 11.3105 13.2995 10.7733 12.6367 10.7733H5.78393Z" fill="currentColor" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Report Tab */}
+                    {activeTab === 'report' && (
+                        <div className="flex-1 flex flex-col overflow-hidden animate-fade-in bg-white h-full relative">
+                            <div className="flex-1 overflow-y-auto p-4 scrollbar-custom pb-24">
+                                {lastCreatedTicket && (
+                                    <div className="mb-8 rounded-2xl border border-gray-200 shadow-sm overflow-hidden animate-fade-in bg-white">
+                                        <div className="flex items-center justify-between px-4 py-3 bg-gray-50/80 border-b border-gray-100">
+                                            <div className="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400">Ticket Submitted</div>
+                                            <span className={`text-[10px] uppercase font-black px-2 py-0.5 rounded-full ${lastCreatedTicket.status === 'pending' ? 'bg-orange-100 text-orange-600' :
+                                                lastCreatedTicket.status === 'resolved' ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-600'
+                                                }`}>
+                                                {lastCreatedTicket.status}
+                                            </span>
+                                        </div>
+
+                                        {lastCreatedTicket.image_url && (
+                                            <div className="relative group">
+                                                <img
+                                                    src={lastCreatedTicket.image_url}
+                                                    alt="Ticket attachment"
+                                                    className="w-full h-auto object-cover max-h-[200px] border-b border-gray-100 cursor-zoom-in"
+                                                    onClick={() => window.open(lastCreatedTicket.image_url, '_blank')}
+                                                />
                                             </div>
+                                        )}
+
+                                        <div className="p-4 space-y-4">
+                                            <div>
+                                                <div className="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400 mb-1">Description & Issue Summary</div>
+                                                <p className="text-sm text-gray-700 font-medium leading-relaxed">
+                                                    {lastCreatedTicket.description}
+                                                </p>
+                                                {lastCreatedTicket.ai_summary && (
+                                                    <p className="mt-2 text-sm text-blue-600 font-medium italic bg-blue-50/50 p-3 rounded-xl border border-blue-100">
+                                                        AI Summary: {lastCreatedTicket.ai_summary}
+                                                    </p>
+                                                )}
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-4 pt-4 border-t border-gray-50">
+                                                <div>
+                                                    <div className="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400 mb-0.5">Ticket #</div>
+                                                    <div className="text-sm font-bold text-gray-800">{formatTicketNumber(lastCreatedTicket)}</div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400 mb-0.5">Reported Date</div>
+                                                    <div className="text-xs font-bold text-gray-800">{new Date(lastCreatedTicket.created_at).toLocaleDateString()}</div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="p-4 bg-gray-50/50 border-t border-gray-100 flex flex-wrap gap-2">
                                             <button
                                                 type="button"
-                                                onClick={clearSelectedImage}
-                                                className="text-xs font-semibold text-red-500 hover:text-red-600"
+                                                onClick={() => {
+                                                    setInput(lastCreatedTicket.description || '');
+                                                    fileInputRef.current?.click();
+                                                    setTimeout(() => textareaRef.current?.focus(), 0);
+                                                }}
+                                                className="flex-1 whitespace-nowrap px-4 py-2.5 rounded-xl text-xs font-bold border-2 transition-all active:scale-95 text-center"
+                                                style={{ borderColor: config.primaryColor, color: config.primaryColor }}
                                             >
-                                                Remove
+                                                Add more image
                                             </button>
+                                            {lastCreatedTicket.status === 'closed' && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setInput(`Please re-open ticket ${formatTicketNumber(lastCreatedTicket)}.`);
+                                                        setTimeout(() => textareaRef.current?.focus(), 0);
+                                                    }}
+                                                    className="flex-1 whitespace-nowrap px-4 py-2.5 rounded-xl text-xs font-bold border-2 transition-all active:scale-95 text-center"
+                                                    style={{ borderColor: config.primaryColor, color: config.primaryColor }}
+                                                >
+                                                    Re-open this ticket
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                                <div className="mb-6">
+                                    <h5 className="text-[10px] uppercase font-black text-gray-300 tracking-[0.2em] px-1 mb-3">Your Tickets</h5>
+                                    {isTicketsLoading ? (
+                                        <div className="space-y-3">
+                                            {[1, 2].map(i => (
+                                                <div key={i} className="h-20 bg-gray-50 rounded-xl animate-pulse"></div>
+                                            ))}
+                                        </div>
+                                    ) : tickets.length === 0 ? (
+                                        <div className="text-center py-10 px-4">
+                                            <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                                                <svg className="w-8 h-8 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                                                </svg>
+                                            </div>
+                                            <p className="text-sm text-gray-400 font-medium">No reports yet</p>
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-3">
+                                            {tickets.map((ticket) => (
+                                                <div
+                                                    key={ticket.id}
+                                                    onClick={() => setSelectedTicket(ticket)}
+                                                    className="bg-white border border-gray-100 rounded-xl p-4 shadow-sm hover:shadow-md transition-all cursor-pointer hover:border-blue-100 group"
+                                                >
+                                                    <div className="flex justify-between items-start mb-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-[10px] font-black text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{new Date(ticket.created_at).getFullYear()}-{String(ticket.id).padStart(4, '0')}</span>
+                                                            <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-lg ${ticket.status === 'pending' ? 'bg-orange-100 text-orange-600' :
+                                                                ticket.status === 'resolved' ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-600'
+                                                                }`}>
+                                                                {ticket.status}
+                                                            </span>
+                                                        </div>
+                                                        <span className="text-[10px] text-gray-400 group-hover:text-blue-400 transition-colors">View Details →</span>
+                                                    </div>
+                                                    <p className="text-sm font-medium text-gray-700 line-clamp-1 mb-1">{ticket.description}</p>
+                                                    <div className="text-[10px] text-gray-300 font-medium">{new Date(ticket.created_at).toLocaleDateString()}</div>
+                                                </div>
+                                            ))}
                                         </div>
                                     )}
+                                </div>
+                            </div>
+
+                            {/* Ticket Detail Overlay */}
+                            {selectedTicket && (
+                                <div className="absolute inset-0 z-50 bg-white animate-slide-up flex flex-col">
+                                    <h3 className="font-bold text-gray-800 p-4 border-b border-gray-100">Ticket Details</h3>
+
+                                    <div className="flex-1 overflow-y-auto scrollbar-custom p-5 space-y-6">
+                                        {/* Flex Message Look */}
+                                        <div className="rounded-2xl border border-gray-200 shadow-sm overflow-hidden bg-white">
+                                            <div className="px-4 py-3 bg-gray-50/80 border-b border-gray-100 flex justify-between items-center">
+                                                <div className="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400">Issue Report</div>
+                                                <span className={`text-[10px] uppercase font-black px-2 py-0.5 rounded-full ${selectedTicket.status === 'pending' ? 'bg-orange-100 text-orange-600' :
+                                                    selectedTicket.status === 'resolved' ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-600'
+                                                    }`}>
+                                                    {selectedTicket.status}
+                                                </span>
+                                            </div>
+
+                                            {(selectedImageUrls.length > 0 || mainImageUrl || selectedTicket.image_url) && (
+                                                <div className="flex flex-col border-b border-gray-100">
+                                                    <div className="relative group cursor-pointer" onClick={() => isEditingTicket && fileInputRef.current?.click()}>
+                                                        <img
+                                                            src={selectedImageUrls[0] || mainImageUrl || selectedTicket.image_url}
+                                                            alt="Report attachment"
+                                                            className={`w-full h-auto object-cover max-h-[240px] ${isEditingTicket ? 'opacity-75 hover:opacity-100 transition-opacity' : ''}`}
+                                                            onClick={(e) => {
+                                                                if (!isEditingTicket) {
+                                                                    window.open(mainImageUrl || selectedTicket.image_url, '_blank');
+                                                                } else {
+                                                                    e.stopPropagation();
+                                                                    fileInputRef.current?.click();
+                                                                }
+                                                            }}
+                                                        />
+                                                        {isEditingTicket && (
+                                                            <div className="absolute inset-0 flex items-center justify-center bg-black/10 pointer-events-none">
+                                                                <div className="bg-white/90 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider text-gray-700 shadow-sm border border-white/20">Click to add image</div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    {/* Thumbnails */}
+                                                    {selectedTicket.image_urls && selectedTicket.image_urls.length > 1 && !isEditingTicket && (
+                                                        <div className="flex gap-2 p-3 bg-gray-50/50 overflow-x-auto scrollbar-none">
+                                                            {selectedTicket.image_urls.map((url, idx) => (
+                                                                <div
+                                                                    key={idx}
+                                                                    onClick={() => setMainImageUrl(url)}
+                                                                    className={`relative w-12 h-12 flex-shrink-0 cursor-pointer rounded-lg overflow-hidden border-2 transition-all ${(mainImageUrl || selectedTicket.image_url) === url ? 'border-primary-500 ring-2 ring-primary-500/10' : 'border-white hover:border-gray-200'
+                                                                        }`}
+                                                                >
+                                                                    <img src={url} alt={`Thumbnail ${idx}`} className="w-full h-full object-cover" />
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+
+                                            <div className="p-4 space-y-4">
+                                                <div>
+                                                    <div className="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400 mb-1">Description & Issue Summary</div>
+                                                    {isEditingTicket ? (
+                                                        <textarea
+                                                            value={editTicketDescription}
+                                                            onChange={(e) => setEditTicketDescription(e.target.value)}
+                                                            className="w-full p-3 rounded-xl border border-gray-200 text-sm font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all resize-none min-h-[100px]"
+                                                            placeholder="Edit description..."
+                                                        />
+                                                    ) : (
+                                                        <p className="text-sm text-gray-700 font-medium leading-relaxed">
+                                                            {selectedTicket.description}
+                                                        </p>
+                                                    )}
+                                                    {selectedTicket.ai_summary && !isEditingTicket && (
+                                                        <p className="mt-2 text-sm text-blue-600 font-medium italic bg-blue-50/50 p-3 rounded-xl border border-blue-100">
+                                                            AI Summary: {selectedTicket.ai_summary}
+                                                        </p>
+                                                    )}
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-4 pt-4 border-t border-gray-50">
+                                                    <div>
+                                                        <div className="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400 mb-0.5">Ticket #</div>
+                                                        <div className="text-sm font-bold text-gray-800">{formatTicketNumber(selectedTicket)}</div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400 mb-0.5">Reported Date</div>
+                                                        <div className="text-xs font-bold text-gray-800">{new Date(selectedTicket.created_at).toLocaleDateString()}</div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div className="p-4 bg-gray-50/50 border-t border-gray-100 flex flex-col gap-2">
+                                                {!isEditingTicket ? (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setIsEditingTicket(true);
+                                                            setEditTicketDescription(selectedTicket.description);
+                                                        }}
+                                                        className="w-full whitespace-nowrap px-4 py-2.5 rounded-xl text-xs font-bold border-2 transition-all active:scale-95 text-center"
+                                                        style={{ borderColor: config.primaryColor, color: config.primaryColor }}
+                                                    >
+                                                        Edit ticket
+                                                    </button>
+                                                ) : (
+                                                    <>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleUpdateTicket()}
+                                                            disabled={isLoading}
+                                                            className="w-full bg-gray-900 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-all active:scale-95 text-center shadow-md animate-fade-in disabled:opacity-50"
+                                                        >
+                                                            {isLoading ? 'Updating...' : 'Update Detail'}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setIsEditingTicket(false);
+                                                                clearSelectedImage();
+                                                            }}
+                                                            className="w-full text-gray-500 px-4 py-2 text-xs font-bold hover:text-gray-700 transition-colors"
+                                                        >
+                                                            Cancel
+                                                        </button>
+                                                    </>
+                                                )}
+                                                {selectedTicket.status === 'closed' && !isEditingTicket && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setSelectedTicket(null);
+                                                            setInput(`Please re-open ticket ${formatTicketNumber(selectedTicket)}.`);
+                                                            setTimeout(() => textareaRef.current?.focus(), 300);
+                                                        }}
+                                                        className="w-full whitespace-nowrap px-4 py-2.5 rounded-xl text-xs font-bold border-2 transition-all active:scale-95 text-center"
+                                                        style={{ borderColor: config.primaryColor, color: config.primaryColor }}
+                                                    >
+                                                        Re-open this ticket
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Report Input Group */}
+                            <div className="absolute bottom-0 left-0 right-0 z-10 px-4 pb-4 pt-3 bg-gradient-to-t from-white via-white/95 to-white/70 backdrop-blur">
+                                <div className="rounded-2xl border border-gray-200/70 bg-white shadow-[0_10px_30px_rgba(0,0,0,0.06)]">
+                                    <div className="flex items-end gap-3 px-4 pt-3">
+                                        <textarea
+                                            ref={textareaRef}
+                                            value={input}
+                                            onChange={(e) => setInput(e.target.value)}
+                                            placeholder="Describe your issue..."
+                                            rows={2}
+                                            className="flex-1 bg-transparent border-none py-3 focus:outline-none resize-none min-h-[60px] max-h-[120px] scrollbar-custom text-sm font-medium text-gray-700"
+                                        />
+                                        <button
+                                            onClick={() => submitTicketReport()}
+                                            disabled={isLoading || !input.trim()}
+                                            className="h-11 w-11 rounded-2xl text-white flex items-center justify-center transition-all hover:scale-105 active:scale-95 disabled:opacity-20 disabled:grayscale shadow-sm hover:shadow-md"
+                                            style={{ backgroundColor: config.primaryColor }}
+                                        >
+                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                    <div className="mt-1 flex items-center justify-between gap-3 border-t border-gray-100/80 px-4 py-2.5 text-xs text-gray-500">
+                                        <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-gray-600 hover:text-gray-800">
+                                            <input
+                                                ref={fileInputRef}
+                                                type="file"
+                                                accept="image/*"
+                                                multiple
+                                                className="hidden"
+                                                onChange={handleImageChange}
+                                            />
+                                            <span className="flex h-7 w-7 items-center justify-center rounded-lg border border-gray-200 bg-gray-50 text-gray-500">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                                    <path d="M4 7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V7Z" stroke="currentColor" strokeWidth="1.5" />
+                                                    <path d="M8 14l2.5-2.5a1 1 0 0 1 1.4 0L16 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                                    <circle cx="9" cy="9" r="1.5" fill="currentColor" />
+                                                </svg>
+                                            </span>
+                                            <span className="text-[11px] uppercase tracking-wider">Add Photo</span>
+                                        </label>
+                                        {selectedImageUrls.length > 0 && (
+                                            <div className="flex flex-wrap gap-2 animate-fade-in-up py-1">
+                                                {selectedImageUrls.map((url, idx) => (
+                                                    <div key={idx} className="relative group w-10 h-10">
+                                                        <img
+                                                            src={url}
+                                                            alt="Preview"
+                                                            className="w-full h-full object-cover rounded-lg border border-gray-200"
+                                                        />
+                                                        <button
+                                                            onClick={(e) => {
+                                                                e.preventDefault();
+                                                                setSelectedImages(prev => prev.filter((_, i) => i !== idx));
+                                                            }}
+                                                            className="absolute -top-1.5 -right-1.5 bg-gray-900 text-white rounded-full p-0.5 shadow-md opacity-0 group-hover:opacity-100 transition-opacity"
+                                                        >
+                                                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                                                                <path d="M18 6L6 18M6 6l12 12" />
+                                                            </svg>
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                                <button
+                                                    onClick={() => clearSelectedImage()}
+                                                    className="px-2 text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-red-500 transition-colors"
+                                                >
+                                                    Clear
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1053,31 +1494,28 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                             className={`group flex flex-col items-center gap-1.5 transition-all p-2 rounded-xl active:scale-95 ${activeTab === 'home' ? '' : 'text-gray-300 hover:text-gray-400'}`}
                             style={{ color: activeTab === 'home' ? config.primaryColor : undefined }}
                         >
-                            <div className={`p-1.5 rounded-lg transition-colors ${activeTab === 'home' ? 'bg-current opacity-10' : ''}`}></div>
-                            <svg className="absolute" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                 <path d="M4.66663 24.5V10.5L14 3.5L23.3333 10.5V24.5H16.3333V16.3333H11.6666V24.5H4.66663Z" fill="currentColor" />
                             </svg>
-                            <span className="text-[10px] font-black uppercase tracking-widest mt-6">Home</span>
+                            <span className="text-[10px] font-black uppercase tracking-widest mt-1">Home</span>
                         </button>
                         <button
                             onClick={() => setActiveTab('chat')}
                             className="group flex flex-col items-center gap-1.5 transition-all p-2 rounded-xl active:scale-95 text-gray-300 hover:text-gray-400"
                         >
-                            <div className="p-1.5 rounded-lg transition-colors"></div>
-                            <svg className="absolute" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                 <path d="M20.4001 5.1223V15.9045C20.4001 16.3308 20.2566 16.6912 19.9697 16.9856C19.6828 17.28 19.3316 17.4272 18.916 17.4272H6.49717L3.6001 20.3996V5.1223C3.6001 4.69595 3.74356 4.33558 4.03048 4.04119C4.31741 3.7468 4.66864 3.59961 5.08417 3.59961H18.916C19.3316 3.59961 19.6828 3.7468 19.9697 4.04119C20.2566 4.33558 20.4001 4.69595 20.4001 5.1223Z" fill="currentColor" />
                             </svg>
-                            <span className="text-[10px] font-black uppercase tracking-widest mt-6">Chat</span>
+                            <span className="text-[10px] font-black uppercase tracking-widest mt-1">Chat</span>
                         </button>
                         <button
-                            onClick={handleReportClick}
+                            onClick={() => setActiveTab('report')}
                             className="group flex flex-col items-center gap-1.5 transition-all p-2 rounded-xl active:scale-95 text-gray-300 hover:text-gray-400"
                         >
-                            <div className="p-1.5 rounded-lg transition-colors"></div>
-                            <svg className="absolute" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                 <path d="M6 4h9l3 3v13H6V4Zm8 1.5V8h2.5L14 5.5ZM8 11h8v1.5H8V11Zm0 4h8v1.5H8V15Z" fill="currentColor" />
                             </svg>
-                            <span className="text-[10px] font-black uppercase tracking-widest mt-6">Report</span>
+                            <span className="text-[10px] font-black uppercase tracking-widest mt-1">Report</span>
                         </button>
                     </div>
                 )}

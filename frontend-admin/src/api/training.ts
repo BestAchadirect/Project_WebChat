@@ -157,9 +157,10 @@ export interface BulkOperationResponse {
 // API Functions
 export const trainingApi = {
     // QA Logs
-    async listQALogs(limit = 50, offset = 0, status?: string): Promise<QALog[]> {
+    async listQALogs(limit = 50, offset = 0, status?: string, channel?: string): Promise<QALog[]> {
         const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
         if (status) params.append('status', status);
+        if (channel) params.append('channel', channel);
         const response = await apiClient.get(`/dashboard/qa/qa-logs?${params.toString()}`);
         return response.data;
     },

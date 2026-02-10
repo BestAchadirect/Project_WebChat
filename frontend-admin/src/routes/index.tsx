@@ -6,6 +6,7 @@ import { AnalyticsPage } from './AnalyticsPage';
 import { ChatSettingsPage } from './ChatSettingsPage';
 import { DocumentControlPage, ProductTuningPage } from './Knowledge';
 import { QAMonitoringPage } from './QA';
+import { TicketsPage } from './TicketsPage';
 
 export const router = createBrowserRouter([
     {
@@ -44,6 +45,10 @@ export const router = createBrowserRouter([
             {
                 path: 'knowledge/products-tuning',
                 element: <ProductTuningPage />,
+            },
+            {
+                path: 'tickets',
+                element: <TicketsPage />,
             },
             {
                 path: 'qa',

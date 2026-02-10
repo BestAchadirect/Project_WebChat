@@ -31,11 +31,19 @@ async def list_qa_logs(
     limit: int = 50,
     offset: int = 0,
     status: Optional[str] = None,
+    channel: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
     query = select(QALog).order_by(desc(QALog.created_at)).offset(offset).limit(limit)
     if status:
         query = query.where(QALog.status == status)
+    if channel:
+        channel_value = channel.strip()
+        if channel_value:
+            if channel_value.lower() == "unlabeled":
+                query = query.where(or_(QALog.channel.is_(None), QALog.channel == ""))
+            else:
+                query = query.where(QALog.channel == channel_value)
         
     result = await db.execute(query)
     return result.scalars().all()

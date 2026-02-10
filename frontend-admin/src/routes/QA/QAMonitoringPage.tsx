@@ -16,12 +16,26 @@ export const QAMonitoringPage: React.FC = () => {
 
     useEffect(() => {
         loadLogs();
-    }, [filterStatus]);
+    }, [filterStatus, filterChannel]);
 
     const loadLogs = async () => {
         try {
             setLoading(true);
-            const result = await trainingApi.listQALogs(50, 0, filterStatus || undefined);
+            let channelParam: string | undefined;
+            switch (filterChannel) {
+                case 'customer':
+                    channelParam = 'widget';
+                    break;
+                case 'internal':
+                    channelParam = 'qa_console';
+                    break;
+                case 'unlabeled':
+                    channelParam = 'unlabeled';
+                    break;
+                default:
+                    channelParam = undefined;
+            }
+            const result = await trainingApi.listQALogs(50, 0, filterStatus || undefined, channelParam);
             setLogs(result);
         } catch (error) {
             console.error('Failed to load QA logs:', error);

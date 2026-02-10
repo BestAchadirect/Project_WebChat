@@ -20,7 +20,7 @@ from app.api.routes.training import router as knowledge_router, qa_router
 from app.api.routes.products import router as products_router
 from app.api.routes.analytics import router as analytics_router
 from app.api.routes.banner import router as banner_router
-
+from app.api.routes.tickets import router as tickets_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: ensure required extensions exist
@@ -76,6 +76,7 @@ app.include_router(chat_router, prefix=f"{settings.API_V1_STR}/chat", tags=["Cha
 app.include_router(chat_setting_router, prefix=f"{settings.API_V1_STR}/settings/chat", tags=["Settings"])
 app.include_router(data_import_router, prefix=f"{settings.API_V1_STR}/import", tags=["Import"])
 app.include_router(tasks_router, prefix=f"{settings.API_V1_STR}/tasks", tags=["Tasks"])
+app.include_router(tickets_router, prefix=f"{settings.API_V1_STR}/tickets", tags=["Tickets"])
 app.include_router(knowledge_router, prefix=f"{settings.API_V1_STR}/dashboard/knowledge", tags=["Knowledge"])
 app.include_router(qa_router, prefix=f"{settings.API_V1_STR}/dashboard/qa", tags=["QA"])
 app.include_router(products_router, prefix=f"{settings.API_V1_STR}/products", tags=["Products"])

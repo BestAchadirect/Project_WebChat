@@ -15,3 +15,4 @@ from .product_change import ProductChange
 from .semantic_cache import SemanticCache
 from .chat_setting import ChatSetting
 from .banner import Banner
+from .ticket import Ticket
