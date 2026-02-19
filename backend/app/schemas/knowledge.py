@@ -21,6 +21,14 @@ class KnowledgeUploadResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+class KnowledgeUploadListResponse(BaseModel):
+    items: list[KnowledgeUploadResponse]
+    totalItems: int
+    page: int
+    pageSize: int
+    totalPages: int
+
 class KnowledgeImportResponse(BaseModel):
     message: str
     upload_id: UUID

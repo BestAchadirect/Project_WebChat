@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import io
 import json
@@ -5,13 +6,16 @@ import html
 import re
 import hashlib
 import enum
+import random
+import time
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from uuid import uuid4, UUID
 from datetime import datetime
 from fastapi import UploadFile, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, update, delete, or_
+from sqlalchemy import select, func, and_, update, delete, or_, exists
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import selectinload
 
 from app.models.product import Product, ProductEmbedding
@@ -29,6 +33,7 @@ from app.models.product_upload import ProductUpload, ProductUploadStatus
 from app.services.llm_service import llm_service
 from app.services.task_service import task_service
 from app.services.eav_service import eav_service
+from app.services.product_attribute_sync_service import product_attribute_sync_service
 from app.models.task import TaskType, TaskStatus
 from app.core.logging import get_logger
 from app.core.config import settings
@@ -418,7 +423,6 @@ class DataImportService:
         csv_reader = csv.DictReader(io.StringIO(text_content))
 
         stats = {"created": 0, "updated": 0, "errors": 0}
-        products_to_embed = []
         group_cache: Dict[str, UUID] = {}
         pending_eav_rows: List[Tuple[UUID, str, Any]] = []
         pending_new_eav: List[Tuple[Product, Dict[str, Any]]] = []
@@ -506,6 +510,7 @@ class DataImportService:
                             normalized = self._normalize_attribute_value(key, attributes[key])
                             if normalized is not None:
                                 attributes[key] = normalized
+                    attributes = product_attribute_sync_service.normalize_attributes(attributes)
 
                     category_raw = row.get("category")
                     category = category_raw.strip() if isinstance(category_raw, str) else category_raw
@@ -544,33 +549,20 @@ class DataImportService:
                             if normalized:
                                 manual_keywords.append(normalized)
 
-                    synonyms = self._build_search_synonyms(effective_attributes)
-                    if manual_keywords:
-                        synonyms = [*synonyms, *manual_keywords]
-                    search_text = self._build_search_text(
+                    search_payload = product_attribute_sync_service.build_search_document(
                         display_name=display_name,
                         sku=sku,
                         object_id=object_id,
                         description=row_desc,
                         legacy_skus=legacy_skus,
-                        synonyms=synonyms,
                         attributes=effective_attributes,
+                        manual_keywords=manual_keywords,
                         attribute_columns=ATTRIBUTE_COLUMNS,
                     )
-                    search_keywords = self._build_search_keywords(
-                        display_name=display_name,
-                        sku=sku,
-                        legacy_skus=legacy_skus,
-                        attributes=effective_attributes,
-                        keyword_columns=SEARCH_KEYWORD_COLUMNS,
-                    )
-                    if manual_keywords:
-                        seen_keywords = set(search_keywords)
-                        for keyword in manual_keywords:
-                            if keyword not in seen_keywords:
-                                seen_keywords.add(keyword)
-                                search_keywords.append(keyword)
-                    search_hash = self._hash_text(search_text)
+                    search_text = search_payload["search_text"]
+                    search_keywords = search_payload["search_keywords"]
+                    search_hash = search_payload["search_hash"]
+                    stock_synced_at = datetime.utcnow()
 
                     if existing_product:
                         update_fields: Dict[str, Any] = {
@@ -606,6 +598,7 @@ class DataImportService:
 
                         for field, value in update_fields.items():
                             setattr(existing_product, field, value)
+                        existing_product.last_stock_sync_at = stock_synced_at
 
                         if effective_attributes:
                             for key, value in effective_attributes.items():
@@ -623,7 +616,6 @@ class DataImportService:
                             )
                         
                         stats["updated"] += 1
-                        products_to_embed.append(existing_product)
                     else:
                         new_product = Product(
                             sku=sku,
@@ -639,6 +631,7 @@ class DataImportService:
                             search_text=search_text,
                             search_hash=search_hash,
                             stock_status=stock_status,
+                            last_stock_sync_at=stock_synced_at,
                             search_keywords=search_keywords,
                             attributes=attributes or {},
                             legacy_sku=legacy_skus,
@@ -653,7 +646,6 @@ class DataImportService:
                         if attributes:
                             pending_new_eav.append((new_product, attributes))
                         stats["created"] += 1
-                        products_to_embed.append(new_product)
                 except Exception as row_error:
                     logger.error(f"Error importing row {row}: {row_error}")
                     stats["errors"] += 1
@@ -680,17 +672,18 @@ class DataImportService:
             await db.commit()
 
             # Schedule background embedding generation
-            if background_tasks and products_to_embed:
+            imported_count = stats["created"] + stats["updated"]
+            if background_tasks and imported_count > 0:
                 background_tasks.add_task(
                     self._generate_product_embeddings_background,
-                    [p.id for p in products_to_embed],
+                    upload_id=upload_record.id,
                 )
 
             await self._update_product_upload_status(
                 db,
                 upload_record.id,
                 ProductUploadStatus.COMPLETED,
-                imported_count=stats["created"] + stats["updated"],
+                imported_count=imported_count,
             )
 
             return {
@@ -714,83 +707,431 @@ class DataImportService:
             )
             raise
 
-    async def _generate_product_embeddings_background(self, product_ids: List[UUID]) -> None:
-        """Background task to generate embeddings for products."""
-        from app.db.session import AsyncSessionLocal
-        
-        async with AsyncSessionLocal() as db:
-            try:
-                # Create task
-                task = await task_service.create_task(
-                    db,
-                    TaskType.EMBEDDING_GENERATION,
-                    f"Generating embeddings for {len(product_ids)} products",
-                    {"product_ids": product_ids}
+    def _normalize_product_ids(self, product_ids: Optional[List[UUID]]) -> List[UUID]:
+        if not product_ids:
+            return []
+        seen: set[UUID] = set()
+        deduped: List[UUID] = []
+        for product_id in product_ids:
+            if not product_id or product_id in seen:
+                continue
+            seen.add(product_id)
+            deduped.append(product_id)
+        return deduped
+
+    def _embedding_candidate_filter(
+        self,
+        *,
+        product_ids: List[UUID],
+        upload_id: UUID | None,
+    ):
+        clauses = []
+
+        if product_ids:
+            clauses.append(Product.id.in_(product_ids))
+
+        if upload_id:
+            changed_in_upload = exists(
+                select(1).where(
+                    and_(
+                        ProductChange.upload_id == upload_id,
+                        ProductChange.product_id == Product.id,
+                    )
                 )
-                
-                await task_service.update_task_status(db, task.id, TaskStatus.RUNNING)
-                
-                # Get products
-                stmt = select(Product).where(Product.id.in_(product_ids))
-                result = await db.execute(stmt)
-                products = result.scalars().all()
-                
-                total = len(products)
-                for idx, product in enumerate(products):
-                    await self._update_product_embedding(db, product)
-                    progress = int((idx + 1) / total * 100)
-                    await task_service.update_task_status(db, task.id, TaskStatus.RUNNING, progress=progress)
-                
-                await task_service.update_task_status(db, task.id, TaskStatus.COMPLETED, progress=100)
-                
-            except Exception as e:
-                logger.error(f"Error in background embedding generation: {e}")
-
-    async def _update_product_embedding(self, db: AsyncSession, product: Product):
-        # Check if embedding exists and hash matches
-        # For simplicity, we regenerate if calling this function. 
-        # But we can optimize using search_hash in future.
-        
-        model = settings.EMBEDDING_MODEL
-        text = product.search_text or f"{product.name} {product.description or ''} {product.sku}"
-        source_hash = product.search_hash or self._hash_text(self._normalize_search_text(text))
-
-        stmt = select(ProductEmbedding).where(
-            and_(
-                ProductEmbedding.product_id == product.id,
-                ProductEmbedding.model == model,
             )
-        )
-        result = await db.execute(stmt)
-        existing = result.scalar_one_or_none()
+            clauses.append(
+                or_(
+                    Product.product_upload_id == upload_id,
+                    changed_in_upload,
+                )
+            )
 
-        if existing and getattr(existing, "source_hash", None) == source_hash:
+        if not clauses:
+            return None
+        if len(clauses) == 1:
+            return clauses[0]
+        return or_(*clauses)
+
+    async def _count_embedding_candidates(
+        self,
+        db: AsyncSession,
+        *,
+        product_ids: List[UUID],
+        upload_id: UUID | None,
+    ) -> int:
+        candidate_filter = self._embedding_candidate_filter(
+            product_ids=product_ids,
+            upload_id=upload_id,
+        )
+        if candidate_filter is None:
+            return 0
+
+        subquery = (
+            select(Product.id)
+            .where(candidate_filter)
+            .distinct()
+            .subquery()
+        )
+        stmt = select(func.count()).select_from(subquery)
+        result = await db.execute(stmt)
+        return int(result.scalar() or 0)
+
+    async def _fetch_embedding_candidate_page(
+        self,
+        db: AsyncSession,
+        *,
+        product_ids: List[UUID],
+        upload_id: UUID | None,
+        last_seen_id: UUID | None,
+        page_size: int,
+    ) -> List[Product]:
+        candidate_filter = self._embedding_candidate_filter(
+            product_ids=product_ids,
+            upload_id=upload_id,
+        )
+        if candidate_filter is None:
+            return []
+
+        stmt = select(Product).where(candidate_filter)
+        if last_seen_id is not None:
+            stmt = stmt.where(Product.id > last_seen_id)
+        stmt = stmt.order_by(Product.id).limit(page_size)
+        result = await db.execute(stmt)
+        return result.scalars().all()
+
+    @staticmethod
+    def _is_embedding_payload_too_large(exc: Exception) -> bool:
+        message = str(exc).lower()
+        indicators = (
+            "payload too large",
+            "request too large",
+            "too many tokens",
+            "maximum context length",
+            "context_length_exceeded",
+            "413",
+        )
+        return any(indicator in message for indicator in indicators)
+
+    def _is_transient_embedding_error(self, exc: Exception) -> bool:
+        if self._is_embedding_payload_too_large(exc):
+            return False
+        message = str(exc).lower()
+        indicators = (
+            "rate limit",
+            "too many requests",
+            "429",
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "service unavailable",
+            "internal server error",
+            "bad gateway",
+            "gateway timeout",
+            "502",
+            "503",
+            "504",
+            "connection reset",
+        )
+        return any(indicator in message for indicator in indicators)
+
+    async def _generate_embeddings_with_retry(self, texts: List[str]) -> List[List[float]]:
+        max_retries = max(0, int(getattr(settings, "PRODUCT_EMBEDDING_MAX_RETRIES", 4)))
+        base_ms = max(1, int(getattr(settings, "PRODUCT_EMBEDDING_RETRY_BASE_MS", 500)))
+
+        for attempt in range(max_retries + 1):
+            try:
+                return await llm_service.generate_embeddings_batch(texts)
+            except Exception as exc:
+                if attempt >= max_retries or not self._is_transient_embedding_error(exc):
+                    raise
+                jitter_ms = random.randint(0, base_ms)
+                sleep_seconds = ((2**attempt) * base_ms + jitter_ms) / 1000.0
+                logger.warning(
+                    "Retrying embedding batch after transient error (attempt=%s/%s, size=%s): %s",
+                    attempt + 1,
+                    max_retries,
+                    len(texts),
+                    exc,
+                )
+                await asyncio.sleep(sleep_seconds)
+
+        raise RuntimeError("Failed to generate embeddings after retries")
+
+    async def _generate_embeddings_adaptive(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+        try:
+            return await self._generate_embeddings_with_retry(texts)
+        except Exception as exc:
+            if len(texts) <= 1 or not self._is_embedding_payload_too_large(exc):
+                raise
+            split_at = max(1, len(texts) // 2)
+            left = await self._generate_embeddings_adaptive(texts[:split_at])
+            right = await self._generate_embeddings_adaptive(texts[split_at:])
+            return left + right
+
+    async def _embed_payload_batch(
+        self,
+        *,
+        semaphore: asyncio.Semaphore,
+        payloads: List[Dict[str, Any]],
+        vectors: List[Optional[List[float]]],
+        start: int,
+    ) -> None:
+        texts = [payload["text"] for payload in payloads]
+        async with semaphore:
+            batch_vectors = await self._generate_embeddings_adaptive(texts)
+        for offset, vector in enumerate(batch_vectors):
+            vectors[start + offset] = vector
+
+    async def _embed_product_payloads(self, payloads: List[Dict[str, Any]]) -> List[List[float]]:
+        if not payloads:
+            return []
+
+        batch_size = max(1, int(getattr(settings, "PRODUCT_EMBEDDING_BATCH_SIZE", 128)))
+        max_concurrency = max(1, int(getattr(settings, "PRODUCT_EMBEDDING_MAX_CONCURRENCY", 4)))
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        vectors: List[Optional[List[float]]] = [None] * len(payloads)
+        tasks = []
+
+        for start in range(0, len(payloads), batch_size):
+            batch = payloads[start:start + batch_size]
+            tasks.append(
+                asyncio.create_task(
+                    self._embed_payload_batch(
+                        semaphore=semaphore,
+                        payloads=batch,
+                        vectors=vectors,
+                        start=start,
+                    )
+                )
+            )
+
+        await asyncio.gather(*tasks)
+
+        missing = [idx for idx, value in enumerate(vectors) if value is None]
+        if missing:
+            raise RuntimeError(f"Missing embedding vectors for payload indexes: {missing[:5]}")
+
+        return [value for value in vectors if value is not None]
+
+    async def _upsert_product_embeddings(
+        self,
+        db: AsyncSession,
+        *,
+        rows: List[Dict[str, Any]],
+    ) -> None:
+        if not rows:
             return
 
-        embedding_vector = await llm_service.generate_embedding(text)
+        stmt = pg_insert(ProductEmbedding).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[ProductEmbedding.product_id, ProductEmbedding.model],
+            index_where=ProductEmbedding.model.isnot(None),
+            set_={
+                "embedding": stmt.excluded.embedding,
+                "price_cache": stmt.excluded.price_cache,
+                "category_id": stmt.excluded.category_id,
+                "source_hash": stmt.excluded.source_hash,
+            },
+        )
+        await db.execute(stmt)
 
-        category_id = None
-        if isinstance(product.attributes, dict):
-            category_id = product.attributes.get("category")
+    async def _process_product_embedding_page(
+        self,
+        db: AsyncSession,
+        *,
+        products: List[Product],
+        model: str,
+    ) -> Tuple[int, int]:
+        if not products:
+            return 0, 0
 
-        if existing:
-            existing.embedding = embedding_vector
-            existing.price_cache = product.price
-            existing.category_id = category_id
-            existing.source_hash = source_hash
-            db.add(existing)
-        else:
-            emb = ProductEmbedding(
-                product_id=product.id,
-                embedding=embedding_vector,
-                price_cache=product.price,
-                model=model,
-                category_id=category_id,
-                source_hash=source_hash,
+        product_ids = [product.id for product in products]
+        existing_stmt = (
+            select(ProductEmbedding)
+            .where(ProductEmbedding.product_id.in_(product_ids))
+            .where(ProductEmbedding.model == model)
+        )
+        existing_result = await db.execute(existing_stmt)
+        existing_by_product: Dict[UUID, ProductEmbedding] = {}
+        for embedding in existing_result.scalars().all():
+            existing_by_product[embedding.product_id] = embedding
+
+        payloads: List[Dict[str, Any]] = []
+        skipped_unchanged = 0
+
+        for product in products:
+            text = product.search_text or f"{product.name} {product.description or ''} {product.sku}"
+            source_hash = product.search_hash or self._hash_text(self._normalize_search_text(text))
+            existing_embedding = existing_by_product.get(product.id)
+            if existing_embedding and getattr(existing_embedding, "source_hash", None) == source_hash:
+                skipped_unchanged += 1
+                continue
+
+            category_id = None
+            if isinstance(product.attributes, dict):
+                category_id = product.attributes.get("category")
+
+            payloads.append(
+                {
+                    "product_id": product.id,
+                    "text": text,
+                    "price_cache": product.price,
+                    "category_id": category_id,
+                    "source_hash": source_hash,
+                }
             )
-            db.add(emb)
 
+        if not payloads:
+            return 0, skipped_unchanged
+
+        vectors = await self._embed_product_payloads(payloads)
+        upsert_rows = []
+        for payload, vector in zip(payloads, vectors):
+            upsert_rows.append(
+                {
+                    "product_id": payload["product_id"],
+                    "embedding": vector,
+                    "price_cache": payload["price_cache"],
+                    "model": model,
+                    "category_id": payload["category_id"],
+                    "source_hash": payload["source_hash"],
+                }
+            )
+
+        await self._upsert_product_embeddings(db, rows=upsert_rows)
         await db.commit()
+        return len(upsert_rows), skipped_unchanged
+
+    async def _maybe_update_embedding_progress(
+        self,
+        db: AsyncSession,
+        *,
+        task_id: UUID,
+        processed: int,
+        total: int,
+        last_progress: int,
+        last_update_ts: float,
+        interval_seconds: float,
+    ) -> Tuple[int, float]:
+        if total <= 0:
+            return last_progress, last_update_ts
+
+        progress = min(99, int((processed / total) * 100))
+        now = time.monotonic()
+        should_update = progress != last_progress or (now - last_update_ts) >= interval_seconds
+        if not should_update:
+            return last_progress, last_update_ts
+
+        await task_service.update_task_status(db, task_id, TaskStatus.RUNNING, progress=progress)
+        return progress, now
+
+    async def _generate_product_embeddings_background(
+        self,
+        product_ids: List[UUID] | None = None,
+        upload_id: UUID | None = None,
+    ) -> None:
+        """Background task to generate embeddings for products."""
+        from app.db.session import AsyncSessionLocal
+
+        normalized_ids = self._normalize_product_ids(product_ids)
+        if not normalized_ids and not upload_id:
+            logger.warning("Embedding task skipped: no product_ids or upload_id provided")
+            return
+
+        mode = "upload" if upload_id else "ids"
+        description = (
+            f"Generating embeddings for upload {upload_id}"
+            if upload_id
+            else f"Generating embeddings for {len(normalized_ids)} products"
+        )
+        metadata: Dict[str, Any] = {
+            "mode": mode,
+            "upload_id": str(upload_id) if upload_id else None,
+            "product_count": len(normalized_ids),
+        }
+
+        async with AsyncSessionLocal() as db:
+            task = await task_service.create_task(
+                db,
+                TaskType.EMBEDDING_GENERATION,
+                description,
+                metadata,
+            )
+            try:
+                await task_service.update_task_status(db, task.id, TaskStatus.RUNNING, progress=0)
+
+                total_candidates = await self._count_embedding_candidates(
+                    db,
+                    product_ids=normalized_ids,
+                    upload_id=upload_id,
+                )
+                if total_candidates <= 0:
+                    await task_service.update_task_status(db, task.id, TaskStatus.COMPLETED, progress=100)
+                    return
+
+                page_size = max(1, int(getattr(settings, "PRODUCT_EMBEDDING_PAGE_SIZE", 1000)))
+                model = getattr(settings, "PRODUCT_EMBEDDING_MODEL", settings.EMBEDDING_MODEL)
+                progress_interval = float(
+                    max(1, int(getattr(settings, "PRODUCT_EMBEDDING_PROGRESS_INTERVAL_SECONDS", 5)))
+                )
+
+                processed = 0
+                embedded = 0
+                skipped = 0
+                last_seen_id: UUID | None = None
+                last_progress = -1
+                last_progress_ts = 0.0
+
+                while True:
+                    page = await self._fetch_embedding_candidate_page(
+                        db,
+                        product_ids=normalized_ids,
+                        upload_id=upload_id,
+                        last_seen_id=last_seen_id,
+                        page_size=page_size,
+                    )
+                    if not page:
+                        break
+
+                    last_seen_id = page[-1].id
+                    updated_count, skipped_count = await self._process_product_embedding_page(
+                        db,
+                        products=page,
+                        model=model,
+                    )
+                    embedded += updated_count
+                    skipped += skipped_count
+                    processed += len(page)
+
+                    last_progress, last_progress_ts = await self._maybe_update_embedding_progress(
+                        db,
+                        task_id=task.id,
+                        processed=processed,
+                        total=total_candidates,
+                        last_progress=last_progress,
+                        last_update_ts=last_progress_ts,
+                        interval_seconds=progress_interval,
+                    )
+
+                await task_service.update_task_status(db, task.id, TaskStatus.COMPLETED, progress=100)
+                logger.info(
+                    "Embedding task completed mode=%s total=%s embedded=%s skipped_unchanged=%s",
+                    mode,
+                    total_candidates,
+                    embedded,
+                    skipped,
+                )
+            except Exception as exc:
+                logger.error(f"Error in background embedding generation: {exc}")
+                await task_service.update_task_status(
+                    db,
+                    task.id,
+                    TaskStatus.FAILED,
+                    error_message=str(exc),
+                )
 
     async def import_knowledge(
         self,
@@ -867,6 +1208,7 @@ class DataImportService:
                     created_by=uploaded_by
                 )
                 db.add(version)
+                article.active_version = new_v
                 await db.commit() # Commit to get ID? ID is uuid, auto gen.
                 stats["new_versions"] += 1
                 
@@ -1164,10 +1506,21 @@ class DataImportService:
         upload.updated_at = datetime.utcnow()
         await db.commit()
 
-    async def list_product_uploads(self, db: AsyncSession) -> List[ProductUpload]:
-        stmt = select(ProductUpload).order_by(ProductUpload.created_at.desc())
+    async def list_product_uploads(
+        self, db: AsyncSession, page: int, page_size: int
+    ) -> Tuple[List[ProductUpload], int]:
+        offset = (page - 1) * page_size
+        count_stmt = select(func.count()).select_from(ProductUpload)
+        total = int((await db.execute(count_stmt)).scalar() or 0)
+
+        stmt = (
+            select(ProductUpload)
+            .order_by(ProductUpload.created_at.desc())
+            .offset(offset)
+            .limit(page_size)
+        )
         result = await db.execute(stmt)
-        return result.scalars().all()
+        return result.scalars().all(), total
 
     async def get_product_upload(self, db: AsyncSession, upload_id: UUID) -> ProductUpload | None:
         stmt = select(ProductUpload).where(ProductUpload.id == upload_id)
@@ -1210,14 +1563,22 @@ class DataImportService:
         await db.delete(upload)
         await db.commit()
 
-    async def list_knowledge_uploads(self, db: AsyncSession) -> List[KnowledgeUpload]:
+    async def list_knowledge_uploads(
+        self, db: AsyncSession, page: int, page_size: int
+    ) -> Tuple[List[KnowledgeUpload], int]:
+        offset = (page - 1) * page_size
+        count_stmt = select(func.count()).select_from(KnowledgeUpload)
+        total = int((await db.execute(count_stmt)).scalar() or 0)
+
         stmt = (
             select(KnowledgeUpload)
             .options(selectinload(KnowledgeUpload.articles))
             .order_by(KnowledgeUpload.created_at.desc())
+            .offset(offset)
+            .limit(page_size)
         )
         result = await db.execute(stmt)
-        return result.scalars().unique().all()
+        return result.scalars().unique().all(), total
 
     async def get_upload(self, db: AsyncSession, upload_id: UUID) -> KnowledgeUpload | None:
         stmt = (

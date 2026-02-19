@@ -28,6 +28,14 @@ class ChatLogResponse(BaseModel):
     messages: List[ChatMessageResponse] = []
 
 
+class ChatLogListResponse(BaseModel):
+    items: List[ChatLogResponse]
+    totalItems: int
+    page: int
+    pageSize: int
+    totalPages: int
+
+
 class ChatStatsResponse(BaseModel):
     totalChats: int
     totalMessages: int

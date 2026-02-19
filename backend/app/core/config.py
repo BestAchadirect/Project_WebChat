@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     KNOWLEDGE_DISTANCE_THRESHOLD: float = 0.40
     PRODUCT_DISTANCE_THRESHOLD: float = 0.35
     PRODUCT_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    PRODUCT_EMBEDDING_PAGE_SIZE: int = 1000
+    PRODUCT_EMBEDDING_BATCH_SIZE: int = 128
+    PRODUCT_EMBEDDING_MAX_CONCURRENCY: int = 4
+    PRODUCT_EMBEDDING_MAX_RETRIES: int = 4
+    PRODUCT_EMBEDDING_RETRY_BASE_MS: int = 500
+    PRODUCT_EMBEDDING_PROGRESS_INTERVAL_SECONDS: int = 5
     PRICE_DISPLAY_CURRENCY: str = "USD"
     THB_TO_USD_RATE: float = 1.0
     BASE_CURRENCY: str = "USD"
@@ -47,6 +53,16 @@ class Settings(BaseSettings):
     FIXED_REPLY_LANGUAGE: str = "en-US"
     PRODUCT_WEAK_DISTANCE: float = 0.55
     KNOWLEDGE_WEAK_DISTANCE: float = 0.60
+
+    # Agentic function calling (phase 1 read-only)
+    AGENTIC_FUNCTION_CALLING_ENABLED: bool = False
+    AGENTIC_ALLOWED_CHANNELS: str = "widget,qa_console"
+    AGENTIC_MODEL: str = ""
+    AGENTIC_MAX_TOOL_ROUNDS: int = 4
+    AGENTIC_MAX_TOOL_CALLS: int = 6
+    AGENTIC_TOOL_TIMEOUT_MS: int = 3500
+    AGENTIC_MAX_TOOL_RESULT_ITEMS: int = 10
+    AGENTIC_ENABLE_FALLBACK: bool = True
 
     # Conversation lifecycle
     CONVERSATION_IDLE_TIMEOUT_MINUTES: int = 30

@@ -1,4 +1,5 @@
 import apiClient from './client';
+import { PaginatedResponse } from '../types/pagination';
 
 // Types
 export interface QALog {
@@ -80,12 +81,8 @@ export interface ProductFiltersResponse {
     filters: Record<string, ProductFilterValue[]>;
 }
 
-export interface ProductListResponse {
-    items: Product[];
-    total: number;
-    offset: number;
-    limit: number;
-}
+export type ProductListResponse = PaginatedResponse<Product>;
+export type QALogListResponse = PaginatedResponse<QALog>;
 
 export interface Document {
     id: string;
@@ -157,11 +154,18 @@ export interface BulkOperationResponse {
 // API Functions
 export const trainingApi = {
     // QA Logs
-    async listQALogs(limit = 50, offset = 0, status?: string, channel?: string): Promise<QALog[]> {
-        const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-        if (status) params.append('status', status);
-        if (channel) params.append('channel', channel);
-        const response = await apiClient.get(`/dashboard/qa/qa-logs?${params.toString()}`);
+    async listQALogs(params?: {
+        page?: number;
+        pageSize?: number;
+        status?: string;
+        channel?: string;
+    }): Promise<QALogListResponse> {
+        const searchParams = new URLSearchParams();
+        searchParams.append('page', String(params?.page ?? 1));
+        searchParams.append('pageSize', String(params?.pageSize ?? 20));
+        if (params?.status) searchParams.append('status', params.status);
+        if (params?.channel) searchParams.append('channel', params.channel);
+        const response = await apiClient.get(`/dashboard/qa/qa-logs?${searchParams.toString()}`);
         return response.data;
     },
 };
@@ -226,8 +230,8 @@ export const chunksApi = {
 
 export const productsApi = {
     async listProducts(params?: {
-        limit?: number;
-        offset?: number;
+        page?: number;
+        pageSize?: number;
         search?: string;
         visibility?: boolean;
         is_featured?: boolean;
@@ -330,6 +334,22 @@ export const productsApi = {
         return response.data;
     },
 
+    async hardDeleteBySku(sku: string): Promise<{ status: string; sku: string; deleted: boolean }> {
+        const response = await apiClient.delete(`/products/sku/${encodeURIComponent(sku.trim())}`);
+        return response.data;
+    },
+
+    async bulkDeleteBySku(skus: string[]): Promise<{
+        status: string;
+        requested: number;
+        deleted: number;
+        deleted_skus: string[];
+        not_found_skus: string[];
+    }> {
+        const response = await apiClient.post('/products/bulk/delete-sku', skus);
+        return response.data;
+    },
+
     async bulkHide(productIds: string[]): Promise<{ status: string; count: number }> {
         const response = await apiClient.post('/products/bulk/hide', productIds);
         return response.data;
@@ -350,8 +370,8 @@ export const productsApi = {
 };
 
 export const documentsApi = {
-    async listDocuments(skip = 0, limit = 50): Promise<{ items: Document[]; total: number }> {
-        const response = await apiClient.get(`/import/knowledge/uploads?offset=${skip}&limit=${limit}`);
+    async listDocuments(page = 1, pageSize = 20): Promise<PaginatedResponse<Document>> {
+        const response = await apiClient.get(`/import/knowledge/uploads?page=${page}&pageSize=${pageSize}`);
         return response.data;
     },
 

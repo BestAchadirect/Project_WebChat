@@ -10,6 +10,9 @@ interface Message {
     materialLabel?: string;
     jewelryTypeLabel?: string;
     followUpQuestions?: string[];  // Add follow-up questions support
+    qaLogId?: string;
+    feedbackValue?: 1 | -1;
+    feedbackPending?: boolean;
 }
 
 interface KnowledgeSource {
@@ -34,6 +37,7 @@ interface ChatResponse {
     view_button_text?: string;
     material_label?: string;
     jewelry_type_label?: string;
+    qa_log_id?: string | null;
 }
 
 interface ChatHistoryMessage {
@@ -96,6 +100,13 @@ interface Ticket {
     image_urls?: string[];
     status: string;
     ai_summary?: string;
+    admin_reply?: string;
+    admin_replies?: Array<{
+        message: string;
+        created_at?: string;
+    }>;
+    customer_last_activity_at?: string;
+    admin_last_seen_at?: string;
     created_at: string;
 }
 
@@ -318,6 +329,26 @@ const ProductCarousel: React.FC<{
         return `${Number.isFinite(p.price) ? p.price.toFixed(2) : p.price} ${currency || 'THB'}`;
     };
 
+    const normalizeStockStatus = (status?: string | null): string => {
+        return String(status || '').trim().toLowerCase().replace(/\s+/g, '_');
+    };
+
+    const isOutOfStock = (status?: string | null): boolean => {
+        const normalized = normalizeStockStatus(status);
+        return normalized === 'out_of_stock' || normalized === 'outofstock';
+    };
+
+    const stockLabel = (status?: string | null): string => {
+        const normalized = normalizeStockStatus(status);
+        if (!normalized || normalized === 'in_stock' || normalized === 'instock') {
+            return 'In stock';
+        }
+        if (normalized === 'out_of_stock' || normalized === 'outofstock') {
+            return 'Out of stock';
+        }
+        return String(status || 'Checking...');
+    };
+
     return (
         <div className="mt-3">
             <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-custom">
@@ -388,8 +419,8 @@ const ProductCarousel: React.FC<{
                             </div>
                             <div className="flex flex-col items-end">
                                 <span className="text-[10px] uppercase font-bold text-gray-400 leading-none mb-1">Stock</span>
-                                <span className={`text-xs font-bold px-2 py-0.5 rounded-1g ${p.stock_status?.toLowerCase() === 'in stock' || !p.stock_status ? 'text-green-700 bg-green-100' : 'text-red-700 bg-red-100'}`}>
-                                    {p.stock_status || 'Checking...'}
+                                <span className={`text-xs font-bold px-2 py-0.5 rounded-lg ${isOutOfStock(p.stock_status) ? 'text-red-700 bg-red-100' : 'text-green-700 bg-green-100'}`}>
+                                    {stockLabel(p.stock_status)}
                                 </span>
                             </div>
                         </div>
@@ -701,6 +732,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         setIsLoading(true);
         try {
             const formData = new FormData();
+            formData.append('actor', 'customer');
             if (editTicketDescription) {
                 formData.append('description', editTicketDescription);
             }
@@ -724,6 +756,21 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             console.error('Failed to update ticket:', error);
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const handleOpenTicket = async (ticket: Ticket) => {
+        setSelectedTicket(ticket);
+        try {
+            const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/tickets/${ticket.id}/customer-open` : `/tickets/${ticket.id}/customer-open`;
+            const { data } = await apiClient.post<Ticket>(endpoint);
+            setTickets(prev => prev.map(t => (t.id === ticket.id ? data : t)));
+            setSelectedTicket(data);
+            if (lastCreatedTicket?.id === ticket.id) {
+                setLastCreatedTicket(data);
+            }
+        } catch (error) {
+            console.error('Failed to mark ticket as opened:', error);
         }
     };
 
@@ -822,6 +869,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                     materialLabel: data.material_label,
                     jewelryTypeLabel: data.jewelry_type_label,
                     followUpQuestions: data.follow_up_questions || [],
+                    qaLogId: data.qa_log_id || undefined,
                 };
                 const updated: Message[] = [...prev, assistantMessage];
                 return updated;
@@ -840,6 +888,29 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             }]);
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const submitFeedback = async (messageIndex: number, qaLogId: string, feedback: 1 | -1) => {
+        if (!qaLogId) return;
+        const current = messages[messageIndex];
+        if (!current || current.feedbackPending || current.feedbackValue !== undefined) return;
+
+        setMessages(prev => prev.map((msg, idx) => (
+            idx === messageIndex ? { ...msg, feedbackPending: true } : msg
+        )));
+
+        try {
+            const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/chat/feedback` : '/chat/feedback';
+            await apiClient.post(endpoint, { qa_log_id: qaLogId, feedback });
+            setMessages(prev => prev.map((msg, idx) => (
+                idx === messageIndex ? { ...msg, feedbackValue: feedback, feedbackPending: false } : msg
+            )));
+        } catch (error) {
+            console.error('Feedback submit error:', error);
+            setMessages(prev => prev.map((msg, idx) => (
+                idx === messageIndex ? { ...msg, feedbackPending: false } : msg
+            )));
         }
     };
 
@@ -1065,6 +1136,33 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                                 </div>
                                             </div>
                                         )}
+
+                                        {msg.role === 'assistant' && msg.qaLogId && (
+                                            <div className="mt-2 flex items-center gap-2 text-xs">
+                                                <button
+                                                    type="button"
+                                                    disabled={msg.feedbackPending || msg.feedbackValue !== undefined}
+                                                    onClick={() => submitFeedback(idx, msg.qaLogId as string, 1)}
+                                                    className={`px-2 py-1 rounded-full border transition-colors ${msg.feedbackValue === 1 ? 'bg-green-100 border-green-300 text-green-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'} disabled:opacity-60 disabled:cursor-not-allowed`}
+                                                >
+                                                    Helpful
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    disabled={msg.feedbackPending || msg.feedbackValue !== undefined}
+                                                    onClick={() => submitFeedback(idx, msg.qaLogId as string, -1)}
+                                                    className={`px-2 py-1 rounded-full border transition-colors ${msg.feedbackValue === -1 ? 'bg-red-100 border-red-300 text-red-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'} disabled:opacity-60 disabled:cursor-not-allowed`}
+                                                >
+                                                    Not helpful
+                                                </button>
+                                                {msg.feedbackPending && (
+                                                    <span className="text-gray-400">Saving...</span>
+                                                )}
+                                                {msg.feedbackValue !== undefined && !msg.feedbackPending && (
+                                                    <span className="text-gray-500">Feedback saved</span>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                 ))}
 
@@ -1163,15 +1261,28 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
                                         <div className="p-4 space-y-4">
                                             <div>
-                                                <div className="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400 mb-1">Description & Issue Summary</div>
-                                                <p className="text-sm text-gray-700 font-medium leading-relaxed">
-                                                    {lastCreatedTicket.description}
-                                                </p>
-                                                {lastCreatedTicket.ai_summary && (
-                                                    <p className="mt-2 text-sm text-blue-600 font-medium italic bg-blue-50/50 p-3 rounded-xl border border-blue-100">
-                                                        AI Summary: {lastCreatedTicket.ai_summary}
-                                                    </p>
-                                                )}
+                                                <div className="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400 mb-1">Conversation with Support</div>
+                                                <div className="space-y-2">
+                                                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                                                        <div className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1">You</div>
+                                                        <p className="text-sm text-gray-700 font-medium leading-relaxed whitespace-pre-wrap">
+                                                            {lastCreatedTicket.description}
+                                                        </p>
+                                                    </div>
+                                                    {(lastCreatedTicket.admin_replies || []).map((reply, idx) => (
+                                                        <div key={`last-created-reply-${idx}`} className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+                                                            <div className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Admin</div>
+                                                            <p className="text-sm text-emerald-800 font-medium whitespace-pre-wrap">
+                                                                {reply.message}
+                                                            </p>
+                                                            {reply.created_at && (
+                                                                <div className="mt-1 text-[10px] text-emerald-500">
+                                                                    {new Date(reply.created_at).toLocaleString()}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                </div>
                                             </div>
 
                                             <div className="grid grid-cols-2 gap-4 pt-4 border-t border-gray-50">
@@ -1237,7 +1348,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                             {tickets.map((ticket) => (
                                                 <div
                                                     key={ticket.id}
-                                                    onClick={() => setSelectedTicket(ticket)}
+                                                    onClick={() => handleOpenTicket(ticket)}
                                                     className="bg-white border border-gray-100 rounded-xl p-4 shadow-sm hover:shadow-md transition-all cursor-pointer hover:border-blue-100 group"
                                                 >
                                                     <div className="flex justify-between items-start mb-2">
@@ -1320,7 +1431,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
                                             <div className="p-4 space-y-4">
                                                 <div>
-                                                    <div className="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400 mb-1">Description & Issue Summary</div>
+                                                    <div className="text-[10px] uppercase font-black tracking-[0.2em] text-gray-400 mb-1">Conversation with Support</div>
                                                     {isEditingTicket ? (
                                                         <textarea
                                                             value={editTicketDescription}
@@ -1329,14 +1440,27 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                                             placeholder="Edit description..."
                                                         />
                                                     ) : (
-                                                        <p className="text-sm text-gray-700 font-medium leading-relaxed">
-                                                            {selectedTicket.description}
-                                                        </p>
-                                                    )}
-                                                    {selectedTicket.ai_summary && !isEditingTicket && (
-                                                        <p className="mt-2 text-sm text-blue-600 font-medium italic bg-blue-50/50 p-3 rounded-xl border border-blue-100">
-                                                            AI Summary: {selectedTicket.ai_summary}
-                                                        </p>
+                                                        <div className="space-y-2">
+                                                            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                                                                <div className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1">You</div>
+                                                                <p className="text-sm text-gray-700 font-medium leading-relaxed whitespace-pre-wrap">
+                                                                    {selectedTicket.description}
+                                                                </p>
+                                                            </div>
+                                                            {(selectedTicket.admin_replies || []).map((reply, idx) => (
+                                                                <div key={`selected-reply-${idx}`} className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+                                                                    <div className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Admin</div>
+                                                                    <p className="text-sm text-emerald-800 font-medium whitespace-pre-wrap">
+                                                                        {reply.message}
+                                                                    </p>
+                                                                    {reply.created_at && (
+                                                                        <div className="mt-1 text-[10px] text-emerald-500">
+                                                                            {new Date(reply.created_at).toLocaleString()}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            ))}
+                                                        </div>
                                                     )}
                                                 </div>
 

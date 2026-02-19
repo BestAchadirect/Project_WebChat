@@ -1,6 +1,7 @@
 import apiClient from './client';
 import { KnowledgeUpload } from '../types/knowledge';
 import { ProductUpload } from '../types/product';
+import { PaginatedResponse } from '../types/pagination';
 
 export const importApi = {
     async downloadTemplate(type: 'products' | 'knowledge'): Promise<void> {
@@ -30,8 +31,13 @@ export const importApi = {
         return response.data;
     },
 
-    async listProductUploads(): Promise<ProductUpload[]> {
-        const response = await apiClient.get('/import/products/uploads');
+    async listProductUploads(params?: { page?: number; pageSize?: number }): Promise<PaginatedResponse<ProductUpload>> {
+        const response = await apiClient.get('/import/products/uploads', {
+            params: {
+                page: params?.page ?? 1,
+                pageSize: params?.pageSize ?? 20,
+            },
+        });
         return response.data;
     },
 
@@ -65,8 +71,13 @@ export const importApi = {
         return response.data;
     },
 
-    async listKnowledgeUploads(): Promise<KnowledgeUpload[]> {
-        const response = await apiClient.get('/import/knowledge/uploads');
+    async listKnowledgeUploads(params?: { page?: number; pageSize?: number }): Promise<PaginatedResponse<KnowledgeUpload>> {
+        const response = await apiClient.get('/import/knowledge/uploads', {
+            params: {
+                page: params?.page ?? 1,
+                pageSize: params?.pageSize ?? 20,
+            },
+        });
         return response.data;
     },
 

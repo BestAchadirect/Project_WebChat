@@ -24,6 +24,7 @@ class Product(Base):
     price = Column(Float, nullable=False)
     currency = Column(String, default=lambda: (getattr(settings, "BASE_CURRENCY", "USD") or "USD").upper(), nullable=False)
     stock_status = Column(Enum(StockStatus), default=StockStatus.in_stock)
+    last_stock_sync_at = Column(DateTime(timezone=True), nullable=True)
     image_url = Column(String, nullable=True)
     product_url = Column(String, nullable=True)
     attributes = Column(JSONB, default=dict)  # Key-value pairs for filters

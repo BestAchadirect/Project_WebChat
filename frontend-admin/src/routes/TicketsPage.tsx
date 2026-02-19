@@ -1,48 +1,82 @@
 import React, { useEffect, useState } from 'react';
-import apiClient from '../api/client';
-
-interface Ticket {
-    id: number;
-    user_id: string;
-    description: string;
-    image_url?: string;
-    image_urls?: string[];
-    status: string;
-    ai_summary?: string;
-    created_at: string;
-    updated_at: string;
-}
+import { PaginationControls } from '../components/common/PaginationControls';
+import { defaultPageSize } from '../constants/pagination';
+import { ticketsApi, Ticket } from '../api/tickets';
 
 export const TicketsPage: React.FC = () => {
     const [tickets, setTickets] = useState<Ticket[]>([]);
+    const [currentPage, setCurrentPage] = useState(1);
+    const [pageSize, setPageSize] = useState(defaultPageSize);
+    const [totalItems, setTotalItems] = useState(0);
+    const [totalPages, setTotalPages] = useState(1);
     const [isLoading, setIsLoading] = useState(true);
     const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
     const [isUpdating, setIsUpdating] = useState(false);
+    const [replyDraft, setReplyDraft] = useState('');
+    const [unreadCount, setUnreadCount] = useState(0);
 
-    const fetchTickets = async () => {
-        setIsLoading(true);
+    const isTicketUnread = (ticket: Ticket) => {
+        if (!ticket.customer_last_activity_at) return false;
+        if (!ticket.admin_last_seen_at) return true;
+        return new Date(ticket.customer_last_activity_at).getTime() > new Date(ticket.admin_last_seen_at).getTime();
+    };
+
+    const fetchUnreadCount = async () => {
         try {
-            const { data } = await apiClient.get<Ticket[]>('/tickets/all');
-            setTickets(data);
+            const result = await ticketsApi.getUnreadCount();
+            setUnreadCount(result.count || 0);
+        } catch (error) {
+            console.error('Failed to fetch unread count:', error);
+        }
+    };
+
+    const fetchTickets = async (showSpinner: boolean = true, page: number = currentPage, size: number = pageSize) => {
+        if (showSpinner) setIsLoading(true);
+        try {
+            const data = await ticketsApi.listAll({ page, pageSize: size });
+            setTickets(data.items);
+            setCurrentPage(data.page);
+            setPageSize(data.pageSize);
+            setTotalItems(data.totalItems);
+            setTotalPages(data.totalPages);
+            if (selectedTicket) {
+                const latest = data.items.find((t) => t.id === selectedTicket.id);
+                if (latest) setSelectedTicket(latest);
+            }
         } catch (error) {
             console.error('Failed to fetch tickets:', error);
         } finally {
-            setIsLoading(false);
+            if (showSpinner) setIsLoading(false);
         }
     };
 
     useEffect(() => {
-        fetchTickets();
+        void fetchTickets();
+        void fetchUnreadCount();
     }, []);
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+            void fetchTickets(false);
+            void fetchUnreadCount();
+        }, 15000);
+        return () => clearInterval(interval);
+    }, [selectedTicket, currentPage, pageSize]);
+
+    useEffect(() => {
+        setReplyDraft('');
+    }, [selectedTicket]);
 
     const handleUpdateStatus = async (ticketId: number, newStatus: string) => {
         setIsUpdating(true);
         try {
-            await apiClient.patch(`/tickets/${ticketId}`, { status: newStatus });
-            fetchTickets();
-            if (selectedTicket?.id === ticketId) {
-                setSelectedTicket(prev => prev ? { ...prev, status: newStatus } : null);
-            }
+            const formData = new FormData();
+            formData.append('status', newStatus);
+            formData.append('actor', 'admin');
+            const data = await ticketsApi.update(ticketId, formData);
+            setTickets(prev => prev.map(t => (t.id === ticketId ? data : t)));
+            if (selectedTicket?.id === ticketId) setSelectedTicket(data);
+            void fetchUnreadCount();
         } catch (error) {
             console.error('Failed to update ticket status:', error);
         } finally {
@@ -50,16 +84,43 @@ export const TicketsPage: React.FC = () => {
         }
     };
 
-    const handleUpdateSummary = async (ticketId: number, newSummary: string) => {
+    const handleSendReply = async (ticketId: number) => {
+        const reply = replyDraft.trim();
+        if (!reply) return;
         setIsUpdating(true);
         try {
-            await apiClient.patch(`/tickets/${ticketId}`, { ai_summary: newSummary });
-            fetchTickets();
+            const formData = new FormData();
+            formData.append('admin_reply', reply);
+            formData.append('actor', 'admin');
+            const data = await ticketsApi.update(ticketId, formData);
+            setTickets(prev => prev.map(t => (t.id === ticketId ? data : t)));
+            setSelectedTicket(data);
+            setReplyDraft('');
+            void fetchUnreadCount();
         } catch (error) {
-            console.error('Failed to update ticket summary:', error);
+            console.error('Failed to send admin reply:', error);
         } finally {
             setIsUpdating(false);
         }
+    };
+
+    const handleOpenTicket = async (ticket: Ticket) => {
+        setSelectedTicket(ticket);
+        try {
+            const data = await ticketsApi.markRead(ticket.id);
+            setTickets(prev => prev.map(t => (t.id === ticket.id ? data : t)));
+            setSelectedTicket(data);
+            void fetchUnreadCount();
+        } catch (error) {
+            console.error('Failed to mark ticket as read:', error);
+        }
+    };
+
+    const handlePaginationChange = ({ currentPage: nextPage, pageSize: nextPageSize }: { currentPage: number; pageSize: number }) => {
+        if (nextPage === currentPage && nextPageSize === pageSize) return;
+        setCurrentPage(nextPage);
+        setPageSize(nextPageSize);
+        void fetchTickets(true, nextPage, nextPageSize);
     };
 
     const formatTicketNumber = (ticket: Ticket) => {
@@ -78,9 +139,19 @@ export const TicketsPage: React.FC = () => {
     return (
         <div className="space-y-6">
             <div className="flex justify-between items-center">
-                <h2 className="text-2xl font-bold text-gray-800">Ticket Management</h2>
+                <div className="flex items-center gap-3">
+                    <h2 className="text-2xl font-bold text-gray-800">Ticket Management</h2>
+                    {unreadCount > 0 && (
+                        <span className="inline-flex px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-600 uppercase tracking-wide">
+                            {unreadCount} New Update{unreadCount > 1 ? 's' : ''}
+                        </span>
+                    )}
+                </div>
                 <button
-                    onClick={fetchTickets}
+                    onClick={() => {
+                        void fetchTickets(true, currentPage, pageSize);
+                        void fetchUnreadCount();
+                    }}
                     className="p-2 text-gray-500 hover:text-primary-600 transition-colors"
                 >
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -104,7 +175,12 @@ export const TicketsPage: React.FC = () => {
                     <tbody className="divide-y divide-gray-50">
                         {tickets.map((ticket) => (
                             <tr key={ticket.id} className="hover:bg-gray-50/50 transition-colors">
-                                <td className="px-6 py-4 font-mono text-sm text-gray-600">{formatTicketNumber(ticket)}</td>
+                                <td className="px-6 py-4">
+                                    <div className="flex items-center gap-2">
+                                        <span className="font-mono text-sm text-gray-600">{formatTicketNumber(ticket)}</span>
+                                        {isTicketUnread(ticket) && <span className="h-2.5 w-2.5 rounded-full bg-red-500" title="Customer update" />}
+                                    </div>
+                                </td>
                                 <td className="px-6 py-4">
                                     <div className="text-sm font-medium text-gray-800">{ticket.user_id}</div>
                                 </td>
@@ -123,7 +199,7 @@ export const TicketsPage: React.FC = () => {
                                 </td>
                                 <td className="px-6 py-4">
                                     <button
-                                        onClick={() => setSelectedTicket(ticket)}
+                                        onClick={() => handleOpenTicket(ticket)}
                                         className="text-primary-600 hover:text-primary-700 text-sm font-semibold"
                                     >
                                         View Details
@@ -131,8 +207,23 @@ export const TicketsPage: React.FC = () => {
                                 </td>
                             </tr>
                         ))}
+                        {tickets.length === 0 && (
+                            <tr>
+                                <td colSpan={6} className="px-6 py-10 text-center text-sm text-gray-500">
+                                    No tickets found.
+                                </td>
+                            </tr>
+                        )}
                     </tbody>
                 </table>
+                <PaginationControls
+                    currentPage={currentPage}
+                    pageSize={pageSize}
+                    totalItems={totalItems}
+                    totalPages={totalPages}
+                    isLoading={isLoading}
+                    onChange={handlePaginationChange}
+                />
             </div>
 
             {/* Ticket Detail Modal */}
@@ -240,26 +331,44 @@ export const TicketsPage: React.FC = () => {
                             </section>
 
                             <section className="pt-8 border-t border-gray-100">
-                                <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Manual AI Resolution Summary Edit</h4>
+                                <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Reply to Customer</h4>
                                 <div className="space-y-3">
+                                    <div className="bg-gray-50 rounded-2xl border border-gray-100 p-4 space-y-3 max-h-48 overflow-y-auto">
+                                        <div className="rounded-xl bg-white border border-gray-200 p-3">
+                                            <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Customer</div>
+                                            <p className="text-sm text-gray-700 whitespace-pre-wrap">{selectedTicket.description}</p>
+                                        </div>
+                                        {(selectedTicket.admin_replies || []).map((reply, idx) => (
+                                            <div key={`${selectedTicket.id}-reply-${idx}`} className="rounded-xl bg-blue-50 border border-blue-100 p-3">
+                                                <div className="text-[10px] font-black text-blue-500 uppercase tracking-widest mb-1">Admin</div>
+                                                <p className="text-sm text-blue-800 whitespace-pre-wrap">{reply.message}</p>
+                                                {reply.created_at && (
+                                                    <div className="mt-1 text-[10px] text-blue-400">
+                                                        {new Date(reply.created_at).toLocaleString()}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
                                     <textarea
                                         className="w-full rounded-2xl border-gray-200 focus:border-primary-500 focus:ring-primary-500 bg-blue-50/30 p-4 text-sm italic text-blue-800"
                                         rows={3}
-                                        defaultValue={selectedTicket.ai_summary}
-                                        onBlur={(e) => handleUpdateSummary(selectedTicket.id, e.target.value)}
-                                        placeholder="Edit the resolution summary for the customer..."
+                                        value={replyDraft}
+                                        onChange={(e) => setReplyDraft(e.target.value)}
+                                        placeholder="Write a message that will be shown to the customer..."
                                     />
-                                    <p className="text-[10px] text-gray-400 italic">This summary is what the customer sees as the "Issue Type / AI Detected Summary" in their widget.</p>
+                                    <p className="text-[10px] text-gray-400 italic">This message is visible to the customer in their ticket details.</p>
                                 </div>
                             </section>
                         </div>
 
                         <div className="p-6 bg-gray-50 border-t border-gray-100 flex justify-end">
                             <button
-                                onClick={() => setSelectedTicket(null)}
+                                onClick={() => handleSendReply(selectedTicket.id)}
+                                disabled={isUpdating || !replyDraft.trim()}
                                 className="px-10 py-3 bg-gray-900 text-white rounded-2xl font-bold text-sm hover:bg-gray-800 transition-all shadow-lg active:scale-95"
                             >
-                                Close & Save
+                                {isUpdating ? 'Sending...' : 'Send to Customer'}
                             </button>
                         </div>
                     </div>

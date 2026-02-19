@@ -285,6 +285,64 @@ class LLMService:
         )
         content = response.choices[0].message.content or "{}"
         return json.loads(content)
+
+    async def generate_chat_with_tools(
+        self,
+        messages: List[dict],
+        *,
+        tools: List[dict],
+        model: Optional[str] = None,
+        temperature: float = 0.0,
+        max_tokens: Optional[int] = 500,
+        tool_choice: str = "auto",
+        usage_kind: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Generate a chat response that can invoke function tools."""
+        use_model = model or self.model
+        response = await self.client.chat.completions.create(
+            model=use_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+        self._record_usage(
+            kind=usage_kind or "chat_with_tools",
+            model=use_model,
+            usage=response.usage,
+        )
+
+        message = response.choices[0].message
+        raw_tool_calls = list(message.tool_calls or [])
+        parsed_tool_calls: List[Dict[str, Any]] = []
+        for tool_call in raw_tool_calls:
+            raw_arguments = getattr(getattr(tool_call, "function", None), "arguments", "") or "{}"
+            parsed_arguments: Dict[str, Any] = {}
+            argument_error: Optional[str] = None
+            try:
+                loaded = json.loads(raw_arguments)
+                if isinstance(loaded, dict):
+                    parsed_arguments = loaded
+                else:
+                    argument_error = "tool arguments must decode to an object"
+            except Exception as exc:
+                argument_error = str(exc)
+            parsed_tool_calls.append(
+                {
+                    "id": str(getattr(tool_call, "id", "")),
+                    "name": str(getattr(getattr(tool_call, "function", None), "name", "")),
+                    "arguments": parsed_arguments,
+                    "raw_arguments": raw_arguments,
+                    "argument_error": argument_error,
+                }
+            )
+
+        return {
+            "content": message.content or "",
+            "tool_calls": parsed_tool_calls,
+            "finish_reason": response.choices[0].finish_reason,
+        }
     
     async def run_nlu(
         self,

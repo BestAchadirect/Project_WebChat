@@ -4,6 +4,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from uuid import UUID
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logging import get_logger
 from app.core.config import settings
 from app.models.chat import AppUser, Conversation, Message, MessageRole
-from app.models.product import Product, ProductEmbedding
+from app.models.product import Product, ProductEmbedding, StockStatus
 from app.models.product_attribute import AttributeDefinition, ProductAttributeValue
 from app.models.qa_log import QALog, QAStatus
 from app.prompts.system_prompts import (
@@ -26,6 +27,8 @@ from app.services.currency_service import currency_service
 from app.services.eav_service import eav_service
 from app.services.response_renderer import ResponseRenderer
 from app.services.semantic_cache_service import semantic_cache_service
+from app.services.agent_orchestrator import AgentOrchestrator
+from app.services.agent_tools import AgentToolRegistry
 from app.utils.debug_log import debug_log as _debug_log
 
 logger = get_logger(__name__)
@@ -484,6 +487,16 @@ class ChatService:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
 
+    @staticmethod
+    def _is_agentic_channel_enabled(channel: Optional[str]) -> bool:
+        if not bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)):
+            return False
+        allowed_raw = str(getattr(settings, "AGENTIC_ALLOWED_CHANNELS", "") or "")
+        allowed = {part.strip().lower() for part in allowed_raw.split(",") if part.strip()}
+        if not allowed:
+            return True
+        return str(channel or "").strip().lower() in allowed
+
     async def get_or_create_user(
         self,
         user_id: str,
@@ -615,6 +628,7 @@ class ChatService:
             token_usage=token_usage,
             channel=channel,
         )
+        qa_log_id: Optional[str] = None
 
         try:
             await self.save_message(
@@ -644,6 +658,8 @@ class ChatService:
                 async with self.db.begin_nested():
                     self.db.add(qa_log)
                     await self.db.flush()
+                    if qa_log.id:
+                        qa_log_id = str(qa_log.id)
             except Exception as e:
                 logger.error(f"Failed to log QA event: {e}")
 
@@ -652,7 +668,23 @@ class ChatService:
             await self.db.rollback()
             raise
 
+        response.qa_log_id = qa_log_id
         return response
+
+    async def submit_feedback(self, *, qa_log_id: UUID, feedback: int) -> Optional[QALog]:
+        stmt = select(QALog).where(QALog.id == qa_log_id)
+        result = await self.db.execute(stmt)
+        qa_log = result.scalar_one_or_none()
+        if qa_log is None:
+            return None
+        if feedback not in (-1, 1):
+            raise ValueError("feedback must be -1 or 1")
+        qa_log.user_feedback = int(feedback)
+        qa_log.feedback_at = datetime.utcnow()
+        self.db.add(qa_log)
+        await self.db.commit()
+        await self.db.refresh(qa_log)
+        return qa_log
 
     async def get_history(self, conversation_id: int, limit: int = 5) -> List[Dict[str, Any]]:
         stmt = (
@@ -766,6 +798,8 @@ class ChatService:
         distance_col = ProductEmbedding.embedding.cosine_distance(query_embedding).label("distance")
 
         model = getattr(settings, "PRODUCT_EMBEDDING_MODEL", settings.EMBEDDING_MODEL)
+        candidate_multiplier = max(1, int(getattr(settings, "PRODUCT_SEARCH_CANDIDATE_MULTIPLIER", 3)))
+        candidate_limit = max(limit, min(60, limit * candidate_multiplier))
         subq = (
             select(
                 ProductEmbedding.product_id.label("product_id"),
@@ -775,7 +809,7 @@ class ChatService:
             .where(Product.is_active.is_(True))
             .where(or_(ProductEmbedding.model.is_(None), ProductEmbedding.model == model))
             .order_by(distance_col)
-            .limit(limit)
+            .limit(candidate_limit)
             .subquery()
         )
         stmt = (
@@ -789,14 +823,26 @@ class ChatService:
         if not rows:
             return [], [], None, {}
 
-        distances = [float(distance) for _product, distance in rows]
-        best_distance = distances[0] if distances else None
-        distance_by_id = {str(product.id): float(distance) for product, distance in rows}
+        raw_distances = [float(distance) for _product, distance in rows]
+        best_distance = min(raw_distances) if raw_distances else None
 
-        attr_map = await eav_service.get_product_attributes(self.db, [product.id for product, _distance in rows])
+        ranked_rows = sorted(
+            rows,
+            key=lambda item: (
+                0 if item[0].stock_status == StockStatus.in_stock else 1,
+                float(item[1]),
+            ),
+        )
+        ranked_rows = ranked_rows[:limit]
+        distances = [float(distance) for _product, distance in ranked_rows]
+        distance_by_id = {str(product.id): float(distance) for product, distance in ranked_rows}
+
+        attr_map = await eav_service.get_product_attributes(
+            self.db, [product.id for product, _distance in ranked_rows]
+        )
 
         product_cards: List[ProductCard] = []
-        for idx, (product, distance) in enumerate(rows):
+        for idx, (product, distance) in enumerate(ranked_rows):
             product_cards.append(self._product_to_card(product, attr_map.get(product.id)))
 
             # #region agent log
@@ -992,6 +1038,116 @@ class ChatService:
             "is_policy_intent": is_policy_intent,
             "policy_topic_count": policy_topic_count,
         }
+
+        # Optional agentic read-only tool path for live-state/tool-needed requests.
+        agent_result = None
+        agentic_enabled = self._is_agentic_channel_enabled(channel)
+        agentic_suitable = AgentToolRegistry.is_tool_suitable(
+            user_text=text,
+            intent=intent,
+            sku_token=sku_token,
+        )
+        if agentic_enabled and agentic_suitable:
+            debug_meta["agentic"] = {
+                "attempted": True,
+                "eligible": True,
+                "channel": channel,
+            }
+            try:
+                orchestrator = AgentOrchestrator(
+                    db=self.db,
+                    run_id=run_id,
+                    channel=channel,
+                )
+                agent_result = await orchestrator.run(
+                    user_text=text,
+                    history=history,
+                    reply_language=reply_language,
+                )
+            except Exception as exc:
+                logger.error(f"Agentic orchestration failed: {exc}")
+                debug_meta["agentic_error"] = str(exc)
+                agent_result = None
+
+            if agent_result and agent_result.final_reply and agent_result.used_tools:
+                debug_meta["agentic"] = {
+                    "attempted": True,
+                    "eligible": True,
+                    "used_tools": True,
+                    "tool_call_count": len(agent_result.trace),
+                    "channel": channel,
+                }
+                response = await self._response_renderer.render(
+                    conversation_id=conversation.id,
+                    route="agentic_tools",
+                    reply_data={
+                        "reply": agent_result.final_reply,
+                        "carousel_hint": agent_result.carousel_msg or "",
+                        "recommended_questions": list(agent_result.follow_up_questions or []),
+                    },
+                    product_carousel=list(agent_result.product_carousel or []),
+                    follow_up_questions=list(agent_result.follow_up_questions or []),
+                    sources=list(agent_result.sources or []),
+                    debug=debug_meta,
+                    reply_language=reply_language,
+                    target_currency=target_currency,
+                    user_text=text,
+                    apply_polish=False,
+                )
+                token_usage = llm_service.consume_token_usage() or {}
+                if isinstance(token_usage, dict):
+                    token_usage["agent_tool_trace"] = list(agent_result.trace or [])
+                    token_usage["agent_used_tools"] = True
+                return await self._finalize_response(
+                    conversation_id=conversation.id,
+                    user_text=text,
+                    response=response,
+                    token_usage=token_usage,
+                    channel=channel,
+                )
+
+            fallback_enabled = bool(getattr(settings, "AGENTIC_ENABLE_FALLBACK", True))
+            if not fallback_enabled:
+                debug_meta["agentic"] = {
+                    "attempted": True,
+                    "eligible": True,
+                    "used_tools": bool(agent_result and agent_result.used_tools),
+                    "fallback": False,
+                    "channel": channel,
+                }
+                fallback_text = await self._localize_ui_text(
+                    reply_language=reply_language,
+                    text="I could not complete that request right now. Please try again.",
+                    run_id=run_id,
+                )
+                response = await self._response_renderer.render(
+                    conversation_id=conversation.id,
+                    route="agentic_tools",
+                    reply_data={"reply": fallback_text, "carousel_hint": "", "recommended_questions": []},
+                    product_carousel=[],
+                    follow_up_questions=[],
+                    sources=[],
+                    debug=debug_meta,
+                    reply_language=reply_language,
+                    target_currency=target_currency,
+                    user_text=text,
+                    apply_polish=False,
+                )
+                token_usage = llm_service.consume_token_usage()
+                return await self._finalize_response(
+                    conversation_id=conversation.id,
+                    user_text=text,
+                    response=response,
+                    token_usage=token_usage,
+                    channel=channel,
+                )
+        else:
+            debug_meta["agentic"] = {
+                "attempted": False,
+                "eligible": bool(agentic_suitable),
+                "enabled": bool(agentic_enabled),
+                "channel": channel,
+            }
 
         query_embedding: Optional[List[float]] = None
         if use_products or use_knowledge:
@@ -1193,6 +1349,17 @@ class ChatService:
             accessory_question = f"Show {cross_sell_label}"
             if accessory_question not in follow_up_questions:
                 follow_up_questions.append(accessory_question)
+
+        if top_products:
+            out_of_stock_count = 0
+            for product in top_products:
+                stock_value = str(product.stock_status or "").strip().lower()
+                if stock_value in {"out_of_stock", "stockstatus.out_of_stock"}:
+                    out_of_stock_count += 1
+            if out_of_stock_count * 2 >= len(top_products):
+                in_stock_question = "Show similar in-stock items"
+                if in_stock_question not in follow_up_questions:
+                    follow_up_questions.append(in_stock_question)
             
         # Enforce limit of 5
         if len(follow_up_questions) > 5:
@@ -1244,5 +1411,3 @@ class ChatService:
             token_usage=token_usage,
             channel=channel,
         )
-
-

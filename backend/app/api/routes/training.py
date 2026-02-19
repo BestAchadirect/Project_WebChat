@@ -2,7 +2,7 @@ from typing import List, Optional, Any
 from uuid import UUID
 import hashlib
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func, or_, cast, String
 from sqlalchemy.orm import selectinload
@@ -12,7 +12,7 @@ from app.models.qa_log import QALog
 from app.models.knowledge import KnowledgeChunk, KnowledgeArticle, KnowledgeEmbedding
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.training import (
-    QALogResponse, ChunkResponse, ChunkUpdate, ChunkListResponse,
+    QALogResponse, QALogListResponse, ChunkResponse, ChunkUpdate, ChunkListResponse,
     ArticleGroupedResponse, ArticleChunkGroup,
     BulkChunkIds, BulkOperationResponse,
     SimilarityTestRequest, SimilarityTestResponse, SimilarityResult
@@ -20,33 +20,59 @@ from app.schemas.training import (
 from app.services.embedding import EmbeddingService
 from app.services.chat_service import ChatService
 from app.core.config import settings
+from app.utils.pagination import normalize_pagination
 
 router = APIRouter()
 qa_router = APIRouter()
 
 # --- QA Monitoring ---
 
-@qa_router.get("/qa-logs", response_model=List[QALogResponse])
+@qa_router.get("/qa-logs", response_model=QALogListResponse)
 async def list_qa_logs(
-    limit: int = 50,
-    offset: int = 0,
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, alias="pageSize", ge=1, le=9999),
     status: Optional[str] = None,
     channel: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    query = select(QALog).order_by(desc(QALog.created_at)).offset(offset).limit(limit)
+    if "limit" in request.query_params or "offset" in request.query_params:
+        raise HTTPException(
+            status_code=400,
+            detail="limit/offset pagination is no longer supported. Use page and pageSize.",
+        )
+
+    query = select(QALog)
+    count_query = select(func.count()).select_from(QALog)
     if status:
         query = query.where(QALog.status == status)
+        count_query = count_query.where(QALog.status == status)
     if channel:
         channel_value = channel.strip()
         if channel_value:
             if channel_value.lower() == "unlabeled":
                 query = query.where(or_(QALog.channel.is_(None), QALog.channel == ""))
+                count_query = count_query.where(or_(QALog.channel.is_(None), QALog.channel == ""))
             else:
                 query = query.where(QALog.channel == channel_value)
-        
+                count_query = count_query.where(QALog.channel == channel_value)
+
+    total = int((await db.execute(count_query)).scalar() or 0)
+    safe_page, total_pages, offset = normalize_pagination(
+        total_items=total,
+        page=page,
+        page_size=page_size,
+    )
+    query = query.order_by(desc(QALog.created_at)).offset(offset).limit(page_size)
+
     result = await db.execute(query)
-    return result.scalars().all()
+    return QALogListResponse(
+        items=result.scalars().all(),
+        totalItems=total,
+        page=safe_page,
+        pageSize=page_size,
+        totalPages=total_pages,
+    )
 
 
 @qa_router.post("/test-chat", response_model=ChatResponse)
@@ -277,6 +303,10 @@ async def update_chunk(
     chunk.chunk_text = chunk_in.chunk_text
     chunk.chunk_hash = hashlib.sha256(chunk_in.chunk_text.encode()).hexdigest()
     chunk.version += 1
+    if chunk.article:
+        current_active = chunk.article.active_version or 0
+        if chunk.version > current_active:
+            chunk.article.active_version = chunk.version
     
     await db.commit()
     await db.refresh(chunk)
@@ -307,6 +337,10 @@ async def reembed_chunk(
         
         # Increment chunk version
         chunk.version += 1
+        if chunk.article:
+            current_active = chunk.article.active_version or 0
+            if chunk.version > current_active:
+                chunk.article.active_version = chunk.version
         
         # Delete old embeddings for this chunk
         for old_embedding in chunk.embeddings:
@@ -348,7 +382,8 @@ async def bulk_reembed_chunks(
     for chunk_id in data.chunk_ids:
         try:
             query = select(KnowledgeChunk).options(
-                selectinload(KnowledgeChunk.embeddings)
+                selectinload(KnowledgeChunk.embeddings),
+                selectinload(KnowledgeChunk.article),
             ).where(KnowledgeChunk.id == chunk_id)
             
             result = await db.execute(query)
@@ -363,6 +398,10 @@ async def bulk_reembed_chunks(
             
             # Increment chunk version
             chunk.version += 1
+            if chunk.article:
+                current_active = chunk.article.active_version or 0
+                if chunk.version > current_active:
+                    chunk.article.active_version = chunk.version
             
             # Delete old embeddings
             for old_embedding in chunk.embeddings:

@@ -1,19 +1,22 @@
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, func, desc, case, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db
 from app.models.chat import Conversation, Message, MessageRole
+from app.models.qa_log import QALog
 from app.schemas.analytics import (
     ChatStatsResponse,
+    ChatLogListResponse,
     ChatLogResponse,
     ChatMessageResponse,
     ChatMessageMetadata,
 )
+from app.utils.pagination import normalize_pagination
 
 
 router = APIRouter()
@@ -44,6 +47,14 @@ def _period_range(period: str) -> tuple[Optional[datetime], Optional[datetime]]:
     if period == "month":
         return now - timedelta(days=30), now
     return None, None
+
+
+def _to_naive_utc(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _build_messages(messages: List[Message]) -> List[ChatMessageResponse]:
@@ -155,46 +166,78 @@ async def get_chat_stats(
     avg_result = await db.execute(avg_query)
     avg_response_time = float(avg_result.scalar() or 0.0)
 
+    feedback_query = select(func.avg(QALog.user_feedback)).where(QALog.user_feedback.is_not(None))
+    qa_start = _to_naive_utc(start)
+    qa_end = _to_naive_utc(end)
+    if qa_start:
+        feedback_query = feedback_query.where(QALog.created_at >= qa_start)
+    if qa_end:
+        feedback_query = feedback_query.where(QALog.created_at <= qa_end)
+    feedback_result = await db.execute(feedback_query)
+    avg_feedback = feedback_result.scalar()
+    if avg_feedback is None:
+        user_satisfaction = 0.0
+    else:
+        user_satisfaction = round(((float(avg_feedback) + 1.0) / 2.0) * 100.0, 2)
+
     return ChatStatsResponse(
         totalChats=total_chats,
         totalMessages=total_messages,
         avgResponseTime=avg_response_time,
-        userSatisfaction=0.0,
+        userSatisfaction=user_satisfaction,
         period=period,
     )
 
 
-@router.get("/logs", response_model=List[ChatLogResponse])
+@router.get("/logs", response_model=ChatLogListResponse)
 async def list_chat_logs(
+    request: Request,
     start_date: Optional[str] = Query(None, alias="startDate"),
     end_date: Optional[str] = Query(None, alias="endDate"),
     min_satisfaction: Optional[float] = Query(None, alias="minSatisfaction"),
-    limit: int = 50,
-    offset: int = 0,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, alias="pageSize", ge=1, le=9999),
     db: AsyncSession = Depends(get_db),
-) -> List[ChatLogResponse]:
+) -> ChatLogListResponse:
+    if "limit" in request.query_params or "offset" in request.query_params:
+        raise HTTPException(
+            status_code=400,
+            detail="limit/offset pagination is no longer supported. Use page and pageSize.",
+        )
+
     start = _parse_datetime(start_date)
     end = _parse_datetime(end_date)
 
-    query = (
-        select(Conversation)
-        .options(selectinload(Conversation.messages))
-        .order_by(desc(Conversation.started_at))
-        .offset(offset)
-        .limit(limit)
-    )
+    query = select(Conversation).options(selectinload(Conversation.messages))
+    count_query = select(func.count()).select_from(Conversation)
     if start:
         query = query.where(Conversation.started_at >= start)
+        count_query = count_query.where(Conversation.started_at >= start)
     if end:
         query = query.where(Conversation.started_at <= end)
+        count_query = count_query.where(Conversation.started_at <= end)
 
     if min_satisfaction is not None:
         # Satisfaction is not captured yet; keep the filter here for forward compatibility.
         pass
 
+    total = int((await db.execute(count_query)).scalar() or 0)
+    safe_page, total_pages, offset = normalize_pagination(
+        total_items=total,
+        page=page,
+        page_size=page_size,
+    )
+    query = query.order_by(desc(Conversation.started_at)).offset(offset).limit(page_size)
+
     result = await db.execute(query)
     conversations = result.scalars().all()
-    return [_build_chat_log(conv) for conv in conversations]
+    return ChatLogListResponse(
+        items=[_build_chat_log(conv) for conv in conversations],
+        totalItems=total,
+        page=safe_page,
+        pageSize=page_size,
+        totalPages=total_pages,
+    )
 
 
 @router.get("/logs/{session_id}", response_model=ChatLogResponse)

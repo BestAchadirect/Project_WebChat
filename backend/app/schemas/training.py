@@ -20,6 +20,14 @@ class QALogResponse(BaseModel):
         from_attributes = True
 
 
+class QALogListResponse(BaseModel):
+    items: List[QALogResponse]
+    totalItems: int
+    page: int
+    pageSize: int
+    totalPages: int
+
+
 # Knowledge Chunk with extended metadata
 class ChunkResponse(BaseModel):
     id: UUID

@@ -45,6 +45,7 @@ class KnowledgeArticle(Base):
     content = Column(Text, nullable=False)
     url = Column(String, nullable=True)
     category = Column(String, nullable=True, index=True)
+    active_version = Column(Integer, nullable=True)
     upload_session_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_uploads.id"), nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

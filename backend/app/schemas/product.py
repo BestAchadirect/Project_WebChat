@@ -94,6 +94,7 @@ class ProductCarouselItem(BaseModel):
 
 class ProductListResponse(BaseModel):
     items: List[Product]
-    total: int
-    offset: int
-    limit: int
+    totalItems: int
+    page: int
+    pageSize: int
+    totalPages: int

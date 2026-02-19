@@ -1,9 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { trainingApi, QALog } from '../../api/training';
 import apiClient from '../../api/client';
+import { PaginationControls } from '../../components/common/PaginationControls';
+import { defaultPageSize } from '../../constants/pagination';
 
 export const QAMonitoringPage: React.FC = () => {
     const [logs, setLogs] = useState<QALog[]>([]);
+    const [currentPage, setCurrentPage] = useState(1);
+    const [pageSize, setPageSize] = useState(defaultPageSize);
+    const [totalItems, setTotalItems] = useState(0);
+    const [totalPages, setTotalPages] = useState(1);
     const [loading, setLoading] = useState(true);
     const [filterStatus, setFilterStatus] = useState<string>('');
     const [filterChannel, setFilterChannel] = useState<string>('all');
@@ -15,10 +21,12 @@ export const QAMonitoringPage: React.FC = () => {
     const [expandedSources, setExpandedSources] = useState<Record<string, boolean>>({});
 
     useEffect(() => {
-        loadLogs();
+        const firstPage = 1;
+        setCurrentPage(firstPage);
+        void loadLogs(firstPage, pageSize);
     }, [filterStatus, filterChannel]);
 
-    const loadLogs = async () => {
+    const loadLogs = async (targetPage: number = currentPage, targetPageSize: number = pageSize) => {
         try {
             setLoading(true);
             let channelParam: string | undefined;
@@ -35,8 +43,17 @@ export const QAMonitoringPage: React.FC = () => {
                 default:
                     channelParam = undefined;
             }
-            const result = await trainingApi.listQALogs(50, 0, filterStatus || undefined, channelParam);
-            setLogs(result);
+            const result = await trainingApi.listQALogs({
+                page: targetPage,
+                pageSize: targetPageSize,
+                status: filterStatus || undefined,
+                channel: channelParam,
+            });
+            setLogs(result.items);
+            setCurrentPage(result.page);
+            setPageSize(result.pageSize);
+            setTotalItems(result.totalItems);
+            setTotalPages(result.totalPages);
         } catch (error) {
             console.error('Failed to load QA logs:', error);
         } finally {
@@ -61,7 +78,7 @@ export const QAMonitoringPage: React.FC = () => {
                 sources: response.data.sources || [],
             });
             // Refresh logs to show the new test in the table
-            loadLogs();
+            void loadLogs(currentPage, pageSize);
         } catch (error) {
             console.error('Test failed:', error);
             setTestResult({ answer: 'Error: Failed to get response', sources: [] });
@@ -119,6 +136,13 @@ export const QAMonitoringPage: React.FC = () => {
         if (channel === 'qa_console') return 'bg-indigo-100 text-indigo-700';
         if (channel === 'widget') return 'bg-sky-100 text-sky-700';
         return 'bg-gray-100 text-gray-500';
+    };
+
+    const handlePaginationChange = ({ currentPage: nextPage, pageSize: nextPageSize }: { currentPage: number; pageSize: number }) => {
+        if (nextPage === currentPage && nextPageSize === pageSize) return;
+        setCurrentPage(nextPage);
+        setPageSize(nextPageSize);
+        void loadLogs(nextPage, nextPageSize);
     };
 
     // Calculate stats
@@ -437,6 +461,14 @@ export const QAMonitoringPage: React.FC = () => {
                         )}
                     </div>
                 )}
+                <PaginationControls
+                    currentPage={currentPage}
+                    pageSize={pageSize}
+                    totalItems={totalItems}
+                    totalPages={totalPages}
+                    isLoading={loading}
+                    onChange={handlePaginationChange}
+                />
             </div>
 
         </div>

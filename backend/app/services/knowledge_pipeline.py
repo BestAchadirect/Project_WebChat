@@ -68,11 +68,17 @@ class KnowledgePipeline:
                 distance_col,
             )
             .join(KnowledgeArticle, KnowledgeEmbedding.article_id == KnowledgeArticle.id)
+            .join(KnowledgeChunk, KnowledgeEmbedding.chunk_id == KnowledgeChunk.id)
         )
         stmt = stmt.where(or_(KnowledgeEmbedding.model.is_(None), KnowledgeEmbedding.model == model))
+        stmt = stmt.where(
+            or_(
+                KnowledgeArticle.active_version.is_(None),
+                KnowledgeChunk.version == KnowledgeArticle.active_version,
+            )
+        )
 
         if tag_join_needed:
-            stmt = stmt.join(KnowledgeChunk, KnowledgeChunk.id == KnowledgeEmbedding.chunk_id)
             stmt = stmt.outerjoin(KnowledgeChunkTag, KnowledgeChunkTag.chunk_id == KnowledgeChunk.id)
 
         if must_tags or tag_join_needed:
