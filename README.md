@@ -72,8 +72,8 @@ With a public ngrok URL (admin UI + API proxy):
 
 ```bash
 cd backend
-python -m venv venv
-.\venv\Scripts\activate
+python -m venv .venv
+.\.venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env
 python -m uvicorn main:app --reload
@@ -114,7 +114,7 @@ Admin: `http://localhost:5173`
 
 ## Key endpoints
 See `/docs` for the full OpenAPI reference. Common endpoints include:
-- `POST /api/v1/chat` chat (RAG + product carousel + guardrails)
+- `POST /api/v1/chat/` chat (RAG + product carousel + guardrails)
 - `POST /api/v1/import/knowledge` import KB file (`.csv` / `.docx`)
 - `GET /api/v1/import/knowledge/uploads` list KB upload history
 - `POST /api/v1/import/products` import products CSV
@@ -130,9 +130,13 @@ See `/docs` for the full OpenAPI reference. Common endpoints include:
 ## Product tuning
 The only active product tuning knob is `PRODUCT_DISTANCE_THRESHOLD` (controls how strict vector product matching is in chat).
 
-## Test suites (API must be running)
-- Product carousel: `python backend/scripts/run_product_carousel_test_suite.py --suite backend/tests/product_carousel_test.json`
-- Smalltalk/general chat guardrails: `python backend/scripts/run_smalltalk_test_suite.py --suite backend/tests/smalltalk_test.json`
+## Tests
+Unit/service tests live in `backend/tests/` (see `backend/pyproject.toml` pytest config).
+
+```bash
+cd backend
+pytest -q
+```
 
 ## Backend quality checks
 ```bash
@@ -143,8 +147,22 @@ pytest tests -q
 ```
 
 ## Logging
-- `backend/backend.log` (app logger)
+- `backend/backend.log` (app logger, created when running from `backend/`)
 - `backend/logs/debug.log` (NDJSON debug events used by RAG/product routing)
+
+## Scripts (manual tooling)
+`backend/scripts/` is a developer/maintenance toolbox. These scripts are not part of the backend runtime startup path.
+
+Common examples:
+- Legacy import guardrail: `backend/scripts/check_legacy_imports.py`
+- Debug/verification: `backend/scripts/debug_retrieval.py`, `backend/scripts/verify_chat.py`, `backend/scripts/verify_search.py`
+- Maintenance/backfill: `backend/scripts/rebuild_product_search_text.py`, `backend/scripts/maintenance/cleanup_stale_knowledge.py`
+
+## Generated folders (safe to delete, never commit)
+These are local runtime/IDE/test artifacts. They are gitignored and can be removed any time:
+- `backend/__pycache__/`, `backend/.tmp_pyc/`
+- `backend/pytest-cache-files-*/`, `.pytest_cache/`
+- `backend/uploads/`, `backend/logs/`
 
 ## Database migrations (Alembic)
 Rules of thumb:

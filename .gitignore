@@ -1,6 +1,8 @@
 # Dependencies
 node_modules/
 backend/.venv/
+backend/venv/
+.venv/
 venv/
 .env.local
 .env.*.local
@@ -21,6 +23,13 @@ dist/
 build/
 *.egg-info/
 
+# Tooling caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+frontend-admin/.vite/
+frontend-admin/.eslintcache
+
 # IDE
 .vscode/
 .idea/
@@ -40,18 +49,15 @@ logs/
 backend/logs/
 backend/*_suite_report.json
 
-# Codex local artifacts
-codex_*.patch
 
 # Testing
 coverage/
-.pytest_cache/
 htmlcov/
 .coverage
+.coverage.*
 
 # Temporary files
 *.tmp
-test.txt
 check_documents.py
 test_upload_fixed.py
 test_doc.txt
