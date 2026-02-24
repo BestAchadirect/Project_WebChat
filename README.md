@@ -32,7 +32,7 @@ Project WebChat is AchaDirect's AI-assisted customer chat experience that turns 
 FastAPI + PostgreSQL (pgvector) backend with a React admin dashboard.
 
 ## Project Structure
-See `Agent.md` for the canonical directory structure and responsibilities.
+See `AGENTS.md` for the canonical directory structure and responsibilities.
 
 Quick view:
 
@@ -45,6 +45,13 @@ Project_WebChat/
   infra/                  # Infrastructure and deployment
   tests/                  # End-to-end and integration tests
 ```
+
+Useful docs:
+- Docs index: `docs/README.md`
+- Task system architecture: `docs/architecture/task-system.md`
+- Services redesign: `docs/architecture/services-redesign.md`
+- Database troubleshooting runbook: `docs/runbooks/database-troubleshooting.md`
+- Services deprecation runbook: `docs/runbooks/services-deprecation.md`
 
 ## Quick start
 
@@ -126,6 +133,14 @@ The only active product tuning knob is `PRODUCT_DISTANCE_THRESHOLD` (controls ho
 ## Test suites (API must be running)
 - Product carousel: `python backend/scripts/run_product_carousel_test_suite.py --suite backend/tests/product_carousel_test.json`
 - Smalltalk/general chat guardrails: `python backend/scripts/run_smalltalk_test_suite.py --suite backend/tests/smalltalk_test.json`
+
+## Backend quality checks
+```bash
+cd backend
+python scripts/check_legacy_imports.py
+ruff check app/services
+pytest tests -q
+```
 
 ## Logging
 - `backend/backend.log` (app logger)

@@ -12,9 +12,9 @@ from app.models.product_group import ProductGroup
 from app.models.product_change import ProductChange
 from app.models.product_attribute import ProductAttributeValue
 from app.schemas.product import Product as ProductSchema, ProductUpdate, ProductListResponse, ProductBulkUpdateRequest
-from app.services.eav_service import eav_service
-from app.services.data_import_service import data_import_service
-from app.services.product_attribute_sync_service import product_attribute_sync_service
+from app.services.catalog.attributes_service import eav_service
+from app.services.imports.service import data_import_service
+from app.services.catalog.attribute_sync_service import product_attribute_sync_service
 from app.utils.pagination import normalize_pagination
 
 router = APIRouter()

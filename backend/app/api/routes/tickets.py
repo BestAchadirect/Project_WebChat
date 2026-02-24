@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db
 from app.schemas.ticket import TicketRead, TicketUpdate, TicketListResponse
-from app.services.ticket_service import TicketService
+from app.services.tickets.service import TicketService
 from app.utils.pagination import normalize_pagination
 
 router = APIRouter()

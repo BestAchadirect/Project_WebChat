@@ -7,7 +7,7 @@ sys.path.append(os.getcwd())
 from sqlalchemy import select, func
 from app.db.session import AsyncSessionLocal
 from app.models.product import Product
-from app.services.data_import_service import (
+from app.services.imports.service import (
     data_import_service,
     ATTRIBUTE_COLUMNS,
     SEARCH_KEYWORD_COLUMNS,

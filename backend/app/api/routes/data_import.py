@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
 from app.dependencies import get_db
-from app.services.data_import_service import data_import_service
+from app.services.imports.service import data_import_service
 from app.schemas import (
     KnowledgeUploadListResponse,
     KnowledgeImportResponse,

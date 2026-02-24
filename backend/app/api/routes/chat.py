@@ -12,7 +12,7 @@ from app.schemas.chat import (
     ChatHistoryMessage,
     ActiveConversationResponse,
 )
-from app.services.chat_service import ChatService
+from app.services.chat.service import ChatService
 
 router = APIRouter()
 

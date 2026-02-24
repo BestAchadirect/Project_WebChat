@@ -5,7 +5,7 @@ import sys
 # Add parent to path
 sys.path.append(os.getcwd())
 
-from app.services.llm_service import llm_service
+from app.services.ai.llm_service import llm_service
 from app.db.session import AsyncSessionLocal
 from app.core.config import settings
 
@@ -20,7 +20,7 @@ async def check():
         # We need to manually call the search logic or use the service if manageable.
         # But ChatService.search_products is what we want.
         # Let's import ChatService instead.
-        from app.services.chat_service import ChatService
+        from app.services.chat.service import ChatService
         service = ChatService(db)
         
         products, distances, best_dist, _ = await service.search_products(

@@ -349,10 +349,46 @@ const ProductCarousel: React.FC<{
         return String(status || 'Checking...');
     };
 
+    const isHiddenAttributeValue = (value: any): boolean => {
+        if (value === null || value === undefined) return true;
+        if (typeof value === 'boolean') return value === false;
+        if (typeof value === 'number') return !Number.isFinite(value);
+        if (Array.isArray(value)) return value.length === 0;
+        if (typeof value === 'object') return Object.keys(value).length === 0;
+        if (typeof value === 'string') {
+            const normalized = value.trim().toLowerCase();
+            return normalized === '' || ['false', 'none', 'null', 'n/a', 'na', 'no'].includes(normalized);
+        }
+        return false;
+    };
+
+    const formatAttributeLabel = (key: string): string => {
+        if (key === 'material') return materialLabel || 'Material';
+        if (key === 'jewelry_type') return jewelryTypeLabel || 'Jewelry Type';
+        return key
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, (char) => char.toUpperCase());
+    };
+
+    const formatAttributeValue = (value: any): string => {
+        if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+        if (Array.isArray(value)) return value.join(', ');
+        if (typeof value === 'object' && value !== null) return JSON.stringify(value);
+        return String(value);
+    };
+
+    const getVisibleAttributes = (attributes?: Record<string, any>) => {
+        if (!attributes) return [];
+        const blockedKeys = new Set(['master_code']);
+        return Object.entries(attributes).filter(([key, value]) => !blockedKeys.has(key) && !isHiddenAttributeValue(value));
+    };
+
     return (
         <div className="mt-3">
             <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-custom">
-                {items.map((p) => (
+                {items.map((p) => {
+                    const visibleAttributes = getVisibleAttributes(p.attributes);
+                    return (
                     <div
                         key={p.id}
                         className="min-w-[240px] max-w-[240px] bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md transition-shadow flex flex-col"
@@ -395,18 +431,18 @@ const ProductCarousel: React.FC<{
                                 </div>
                             )}
 
-                            {(p.attributes?.material || p.attributes?.jewelry_type) && (
+                            {visibleAttributes.length > 0 && (
                                 <div className="mt-3 pt-3 border-t border-gray-50 flex flex-wrap gap-2 text-xs uppercase font-bold tracking-wider">
-                                    {p.attributes.material && (
-                                        <div className="bg-gray-100 text-gray-600 px-2.5 py-1.5 rounded-md">
-                                            {materialLabel || "Material"}: {p.attributes.material}
+                                    {visibleAttributes.map(([key, value]) => (
+                                        <div
+                                            key={`${p.id}-${key}`}
+                                            className={key === 'jewelry_type'
+                                                ? "bg-[#96D0E6]/20 text-[#214166] px-2.5 py-1.5 rounded-md"
+                                                : "bg-gray-100 text-gray-600 px-2.5 py-1.5 rounded-md"}
+                                        >
+                                            {formatAttributeLabel(key)}: {formatAttributeValue(value)}
                                         </div>
-                                    )}
-                                    {p.attributes.jewelry_type && (
-                                        <div className="bg-[#96D0E6]/20 text-[#214166] px-2.5 py-1.5 rounded-md">
-                                            {jewelryTypeLabel || "Jewelry Type"}: {p.attributes.jewelry_type}
-                                        </div>
-                                    )}
+                                    ))}
                                 </div>
                             )}
                         </div>
@@ -440,7 +476,8 @@ const ProductCarousel: React.FC<{
                             </div>
                         )}
                     </div>
-                ))}
+                    );
+                })}
             </div>
         </div>
     );

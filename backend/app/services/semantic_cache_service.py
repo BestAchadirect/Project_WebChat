@@ -8,7 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.logging import get_logger
 from app.models.semantic_cache import SemanticCache
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -89,8 +92,24 @@ class SemanticCacheService:
             created_at=now,
             expires_at=expires_at,
         )
-        db.add(entry)
-        await db.commit()
+        try:
+            db.add(entry)
+            await db.commit()
+        except Exception as exc:
+            # Cache writes are best-effort and must never block chat responses.
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            logger.warning(
+                "semantic cache save failed; continuing without cache",
+                extra={
+                    "event": "semantic_cache_save_failed",
+                    "reply_language": str(reply_language or ""),
+                    "target_currency": str(target_currency) if target_currency else None,
+                    "error": str(exc),
+                },
+            )
 
 
 semantic_cache_service = SemanticCacheService()

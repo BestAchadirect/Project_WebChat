@@ -1,6 +1,10 @@
+import pytest
 from pydantic import ValidationError
 
-from app.services.agent_tools import (
+pytest.importorskip("sqlalchemy")
+pytest.importorskip("pydantic_settings")
+
+from app.services.chat.agentic.tool_registry import (
     GetProductDetailsArgs,
     SearchKnowledgeBaseArgs,
     SearchProductsArgs,

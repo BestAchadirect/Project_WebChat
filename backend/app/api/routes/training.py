@@ -18,7 +18,7 @@ from app.schemas.training import (
     SimilarityTestRequest, SimilarityTestResponse, SimilarityResult
 )
 from app.services.embedding import EmbeddingService
-from app.services.chat_service import ChatService
+from app.services.chat.service import ChatService
 from app.core.config import settings
 from app.utils.pagination import normalize_pagination
 

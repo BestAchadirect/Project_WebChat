@@ -1,9 +1,12 @@
 import pytest
 
+pytest.importorskip("sqlalchemy")
+pytest.importorskip("pydantic_settings")
+
 from app.core.config import settings
-from app.services.agent_orchestrator import AgentOrchestrator
-from app.services.agent_tools import AgentToolRegistry
-from app.services.llm_service import llm_service
+from app.services.chat.agentic.orchestrator import AgentOrchestrator
+from app.services.chat.agentic.tool_registry import AgentToolRegistry
+from app.services.ai.llm_service import llm_service
 
 
 @pytest.mark.asyncio

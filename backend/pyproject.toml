@@ -1,0 +1,36 @@
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["app", "tests"]
+extend-exclude = [
+  "alembic",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "B",
+  "UP",
+]
+ignore = [
+  "E501",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config -p no:cacheprovider"
+asyncio_mode = "auto"
+markers = [
+  "adapter: compatibility adapter tests",
+  "regression: behavior regression tests",
+  "agentic: agent orchestration/tool path tests",
+  "imports: import pipeline tests",
+]
+filterwarnings = [
+  "default::DeprecationWarning:app.services.*",
+]

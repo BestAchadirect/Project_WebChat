@@ -6,7 +6,7 @@ import sys
 sys.path.append(os.getcwd())
 
 from app.db.session import AsyncSessionLocal
-from app.services.rag_service import rag_service
+from app.services.legacy.rag_service_deprecated import rag_service
 import logging
 
 # Suppress INFO logs

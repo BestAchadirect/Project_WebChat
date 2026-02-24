@@ -1,10 +1,13 @@
 import pytest
 
+pytest.importorskip("sqlalchemy")
+pytest.importorskip("pydantic_settings")
+
 from app.core.config import settings
 from app.schemas.chat import ChatRequest, ChatResponse
-from app.services.agent_orchestrator import AgentRunResult
-from app.services.chat_service import ChatService
-from app.services.llm_service import llm_service
+from app.services.chat.agentic.orchestrator import AgentRunResult
+from app.services.chat.service import ChatService
+from app.services.ai.llm_service import llm_service
 
 
 class _DummyUser:
@@ -19,7 +22,7 @@ class _DummyConversation:
 
 @pytest.mark.asyncio
 async def test_process_chat_returns_agentic_response_and_skips_cache(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.services import chat_service as chat_service_module
+    from app.services.chat import service as chat_service_module
 
     monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", True)
     monkeypatch.setattr(settings, "AGENTIC_ALLOWED_CHANNELS", "widget,qa_console")
