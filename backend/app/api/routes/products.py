@@ -2,16 +2,20 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, desc, or_, func, and_, false
+from sqlalchemy import select, update, delete, desc, or_, func, and_, false, text
 
 from app.api.deps import get_db
-from app.models.product import Product, StockStatus
+from app.models.product import Product, ProductEmbedding, StockStatus
 from app.models.product_group import ProductGroup
+from app.models.product_change import ProductChange
 from app.models.product_attribute import ProductAttributeValue
 from app.schemas.product import Product as ProductSchema, ProductUpdate, ProductListResponse, ProductBulkUpdateRequest
-from app.services.eav_service import eav_service
+from app.services.catalog.attributes_service import eav_service
+from app.services.imports.service import data_import_service
+from app.services.catalog.attribute_sync_service import product_attribute_sync_service
+from app.utils.pagination import normalize_pagination
 
 router = APIRouter()
 
@@ -200,10 +204,34 @@ async def _apply_attribute_filters(db, query, count_query, filters: Dict[str, Li
     count_query = count_query.where(Product.id.in_(select(subq.c.product_id)))
     return query, count_query
 
+
+def _normalize_id_list(ids: List[UUID]) -> List[UUID]:
+    deduped: List[UUID] = []
+    seen: set[UUID] = set()
+    for item in ids:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _normalize_sku_list(skus: List[str]) -> List[str]:
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for sku in skus:
+        item = (sku or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
 @router.get("/", response_model=ProductListResponse)
 async def list_products(
-    limit: int = 50,
-    offset: int = 0,
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, alias="pageSize", ge=1, le=9999),
     search: Optional[str] = None,
     category: Optional[List[str]] = Query(None),
     visibility: Optional[bool] = None,
@@ -233,6 +261,12 @@ async def list_products(
     max_price: Optional[float] = None,
     db: AsyncSession = Depends(get_db)
 ):
+    if "limit" in request.query_params or "offset" in request.query_params:
+        raise HTTPException(
+            status_code=400,
+            detail="limit/offset pagination is no longer supported. Use page and pageSize.",
+        )
+
     # Base query for products
     query = select(Product).order_by(desc(Product.created_at))
     
@@ -289,8 +323,14 @@ async def list_products(
     count_result = await db.execute(count_query)
     total = count_result.scalar() or 0
     
+    safe_page, total_pages, offset = normalize_pagination(
+        total_items=total,
+        page=page,
+        page_size=page_size,
+    )
+
     # Apply pagination and execute product list
-    query = query.offset(offset).limit(limit)
+    query = query.offset(offset).limit(page_size)
     result = await db.execute(query)
     products = result.scalars().all()
     
@@ -304,9 +344,10 @@ async def list_products(
     
     return ProductListResponse(
         items=item_schemas,
-        total=total,
-        offset=offset,
-        limit=limit
+        totalItems=total,
+        page=safe_page,
+        pageSize=page_size,
+        totalPages=total_pages,
     )
 
 
@@ -415,7 +456,8 @@ async def list_product_filters(
 async def update_product(
     product_id: UUID,
     product_in: ProductUpdate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
 ):
     product = await db.get(Product, product_id)
     if not product:
@@ -423,34 +465,53 @@ async def update_product(
         # But if the input is a string that looks like UUID it should work.
         raise HTTPException(status_code=404, detail="Product not found")
 
-    update_data = product_in.model_dump(exclude_unset=True, exclude_none=True)
+    update_data = product_in.model_dump(exclude_unset=True, exclude_none=False)
     attr_updates = {k: v for k, v in update_data.items() if k in ATTRIBUTE_FIELDS}
     base_updates = {k: v for k, v in update_data.items() if k not in ATTRIBUTE_FIELDS}
+    stock_status_updated = False
     for field, value in base_updates.items():
+        if field == "master_code":
+            continue
+        if value is None and field != "description":
+            continue
         setattr(product, field, value)
+        if field == "stock_status" and value is not None:
+            stock_status_updated = True
 
-    if "master_code" in update_data:
-        master_code = update_data.get("master_code")
-        if master_code:
-            stmt = select(ProductGroup).where(ProductGroup.master_code == master_code)
-            result = await db.execute(stmt)
-            group = result.scalar_one_or_none()
-            if not group:
-                group = ProductGroup(master_code=master_code)
-                db.add(group)
-                await db.flush()
-            product.group_id = group.id
+    if "master_code" in base_updates and base_updates.get("master_code"):
+        master_code = str(base_updates.get("master_code"))
+        stmt = select(ProductGroup).where(ProductGroup.master_code == master_code)
+        result = await db.execute(stmt)
+        group = result.scalar_one_or_none()
+        if not group:
+            group = ProductGroup(master_code=master_code)
+            db.add(group)
+            await db.flush()
+        product.master_code = master_code
+        product.group_id = group.id
+
+    if stock_status_updated:
+        product.last_stock_sync_at = datetime.utcnow()
 
     if attr_updates:
-        if not base_updates:
-            product.updated_at = datetime.utcnow()
-        await eav_service.upsert_product_attributes(
-            db,
-            product_id=product.id,
-            attributes=attr_updates,
+        await product_attribute_sync_service.apply_dual_canonical(
+            db=db,
+            product=product,
+            attribute_updates=attr_updates,
+            drop_empty=True,
         )
+
+    search_changed = False
+    if base_updates or attr_updates:
+        search_changed = product_attribute_sync_service.recompute_product_search_fields(product=product)
+    product.updated_at = datetime.utcnow()
         
     await db.commit()
+    if search_changed and background_tasks:
+        background_tasks.add_task(
+            data_import_service._generate_product_embeddings_background,
+            [product.id],
+        )
     await db.refresh(product)
     attr_map = await eav_service.get_product_attributes(db, [product.id])
     return _build_product_schema(product, attr_map.get(product.id, {}))
@@ -484,33 +545,223 @@ async def bulk_show_products(
 @router.post("/bulk/update")
 async def bulk_update_products(
     payload: ProductBulkUpdateRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
 ):
-    if not payload.product_ids:
+    product_ids = _normalize_id_list(payload.product_ids)
+    if not product_ids:
         raise HTTPException(status_code=400, detail="product_ids cannot be empty")
 
-    update_data = payload.updates.model_dump(exclude_unset=True)
+    update_data = payload.updates.model_dump(exclude_unset=True, exclude_none=False)
     attr_updates = {k: v for k, v in update_data.items() if k in ALLOWED_BULK_UPDATE_FIELDS}
     base_updates = {k: v for k, v in update_data.items() if k not in ALLOWED_BULK_UPDATE_FIELDS}
 
     if not base_updates and not attr_updates:
         raise HTTPException(status_code=400, detail="No valid fields to update")
 
-    base_updates["updated_at"] = datetime.utcnow()
+    result = await db.execute(select(Product).where(Product.id.in_(product_ids)))
+    products = list(result.scalars().all())
+    if not products:
+        return {"status": "success", "updated": 0, "attribute_updates": len(attr_updates)}
 
-    result = None
-    if base_updates:
-        result = await db.execute(
-            update(Product)
-            .where(Product.id.in_(payload.product_ids))
-            .values(**base_updates)
-        )
-    if attr_updates:
-        await eav_service.bulk_upsert_product_attributes(
-            db,
-            product_ids=payload.product_ids,
-            attributes=attr_updates,
-        )
+    master_code = base_updates.get("master_code")
+    target_group_id = None
+    if master_code:
+        stmt = select(ProductGroup).where(ProductGroup.master_code == str(master_code))
+        group_result = await db.execute(stmt)
+        group = group_result.scalar_one_or_none()
+        if not group:
+            group = ProductGroup(master_code=str(master_code))
+            db.add(group)
+            await db.flush()
+        target_group_id = group.id
+
+    now_utc = datetime.utcnow()
+    embed_ids: List[UUID] = []
+    for product in products:
+        stock_status_updated = False
+        for field, value in base_updates.items():
+            if field == "master_code":
+                if value:
+                    product.master_code = str(value)
+                    if target_group_id:
+                        product.group_id = target_group_id
+                continue
+            if value is None and field != "description":
+                continue
+            setattr(product, field, value)
+            if field == "stock_status" and value is not None:
+                stock_status_updated = True
+
+        if stock_status_updated:
+            product.last_stock_sync_at = now_utc
+
+        if attr_updates:
+            await product_attribute_sync_service.apply_dual_canonical(
+                db=db,
+                product=product,
+                attribute_updates=attr_updates,
+                drop_empty=True,
+            )
+        if base_updates or attr_updates:
+            if product_attribute_sync_service.recompute_product_search_fields(product=product):
+                embed_ids.append(product.id)
+        product.updated_at = now_utc
+
     await db.commit()
-    updated_count = result.rowcount if result is not None else 0
-    return {"status": "success", "updated": updated_count, "attribute_updates": len(attr_updates)}
+    if embed_ids and background_tasks:
+        background_tasks.add_task(
+            data_import_service._generate_product_embeddings_background,
+            _normalize_id_list(embed_ids),
+        )
+    return {"status": "success", "updated": len(products), "attribute_updates": len(attr_updates)}
+
+
+@router.post("/bulk/delete-sku")
+async def hard_delete_products_by_sku(
+    skus: List[str],
+    db: AsyncSession = Depends(get_db),
+):
+    normalized_skus = _normalize_sku_list(skus)
+    if not normalized_skus:
+        raise HTTPException(status_code=400, detail="skus cannot be empty")
+
+    result = await db.execute(
+        select(Product.id, Product.sku).where(Product.sku.in_(normalized_skus))
+    )
+    rows = result.all()
+    if not rows:
+        return {
+            "status": "success",
+            "requested": len(normalized_skus),
+            "deleted": 0,
+            "deleted_skus": [],
+            "not_found_skus": normalized_skus,
+        }
+
+    product_ids = [row.id for row in rows]
+    deleted_skus = [row.sku for row in rows]
+    deleted_lookup = set(deleted_skus)
+    not_found_skus = [sku for sku in normalized_skus if sku not in deleted_lookup]
+
+    await db.execute(delete(ProductEmbedding).where(ProductEmbedding.product_id.in_(product_ids)))
+    await db.execute(delete(ProductAttributeValue).where(ProductAttributeValue.product_id.in_(product_ids)))
+    await db.execute(delete(ProductChange).where(ProductChange.product_id.in_(product_ids)))
+    await db.execute(delete(Product).where(Product.id.in_(product_ids)))
+    await db.commit()
+
+    return {
+        "status": "success",
+        "requested": len(normalized_skus),
+        "deleted": len(deleted_skus),
+        "deleted_skus": deleted_skus,
+        "not_found_skus": not_found_skus,
+    }
+
+
+@router.delete("/sku/{sku}")
+async def hard_delete_product_by_sku(
+    sku: str,
+    db: AsyncSession = Depends(get_db),
+):
+    normalized_list = _normalize_sku_list([sku])
+    normalized_sku = normalized_list[0] if normalized_list else ""
+    if not normalized_sku:
+        raise HTTPException(status_code=400, detail="SKU cannot be empty")
+
+    result = await db.execute(select(Product).where(Product.sku == normalized_sku))
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    product_id = product.id
+
+    await db.execute(delete(ProductEmbedding).where(ProductEmbedding.product_id == product_id))
+    await db.execute(delete(ProductAttributeValue).where(ProductAttributeValue.product_id == product_id))
+    await db.execute(delete(ProductChange).where(ProductChange.product_id == product_id))
+    await db.execute(delete(Product).where(Product.id == product_id))
+    await db.commit()
+
+    return {"status": "success", "sku": normalized_sku, "deleted": True}
+
+
+@router.get("/health/attribute-drift")
+async def product_attribute_drift_health(
+    sample_limit: int = Query(20, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    count_sql = text(
+        """
+        WITH eav AS (
+            SELECT pav.product_id, ad.name, NULLIF(BTRIM(pav.value), '') AS value
+            FROM product_attribute_values pav
+            JOIN attribute_definitions ad ON ad.id = pav.attribute_id
+        ),
+        json_pairs AS (
+            SELECT p.id AS product_id, kv.key AS name, NULLIF(BTRIM(kv.value), '') AS value
+            FROM products p
+            LEFT JOIN LATERAL jsonb_each_text(COALESCE(p.attributes, '{}'::jsonb)) kv ON TRUE
+        ),
+        paired AS (
+            SELECT
+                COALESCE(e.product_id, j.product_id) AS product_id,
+                COALESCE(e.name, j.name) AS name,
+                e.value AS eav_value,
+                j.value AS json_value
+            FROM eav e
+            FULL OUTER JOIN json_pairs j
+              ON e.product_id = j.product_id
+             AND e.name = j.name
+        )
+        SELECT COUNT(*)
+        FROM paired
+        WHERE COALESCE(eav_value, '') <> COALESCE(json_value, '')
+        """
+    )
+    sample_sql = text(
+        """
+        WITH eav AS (
+            SELECT pav.product_id, ad.name, NULLIF(BTRIM(pav.value), '') AS value
+            FROM product_attribute_values pav
+            JOIN attribute_definitions ad ON ad.id = pav.attribute_id
+        ),
+        json_pairs AS (
+            SELECT p.id AS product_id, kv.key AS name, NULLIF(BTRIM(kv.value), '') AS value
+            FROM products p
+            LEFT JOIN LATERAL jsonb_each_text(COALESCE(p.attributes, '{}'::jsonb)) kv ON TRUE
+        ),
+        paired AS (
+            SELECT
+                COALESCE(e.product_id, j.product_id) AS product_id,
+                COALESCE(e.name, j.name) AS name,
+                e.value AS eav_value,
+                j.value AS json_value
+            FROM eav e
+            FULL OUTER JOIN json_pairs j
+              ON e.product_id = j.product_id
+             AND e.name = j.name
+        )
+        SELECT p.sku, paired.name, paired.eav_value, paired.json_value
+        FROM paired
+        JOIN products p ON p.id = paired.product_id
+        WHERE COALESCE(paired.eav_value, '') <> COALESCE(paired.json_value, '')
+        ORDER BY p.sku, paired.name
+        LIMIT :sample_limit
+        """
+    )
+    mismatch_count = int((await db.execute(count_sql)).scalar() or 0)
+    sample_rows = (await db.execute(sample_sql, {"sample_limit": sample_limit})).all()
+    samples = [
+        {
+            "sku": row.sku,
+            "attribute": row.name,
+            "eav_value": row.eav_value,
+            "json_value": row.json_value,
+        }
+        for row in sample_rows
+    ]
+    return {
+        "mismatch_count": mismatch_count,
+        "sample_limit": sample_limit,
+        "samples": samples,
+    }

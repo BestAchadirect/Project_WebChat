@@ -8,7 +8,7 @@ sys.path.append(os.getcwd())
 from sqlalchemy import select
 from app.db.session import AsyncSessionLocal
 from app.models.knowledge import KnowledgeArticle, KnowledgeArticleVersion, KnowledgeChunk, KnowledgeEmbedding
-from app.services.data_import_service import data_import_service
+from app.services.imports.service import data_import_service
 from fastapi import UploadFile
 
 class MockUploadFile:

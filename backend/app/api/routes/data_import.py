@@ -1,13 +1,17 @@
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Response, BackgroundTasks, Header
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Response, BackgroundTasks, Header, Request, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Dict, List
 from uuid import UUID
 
 from app.dependencies import get_db
-from app.services.data_import_service import data_import_service
-from app.schemas import KnowledgeUploadResponse, KnowledgeImportResponse, ProductUploadResponse
+from app.services.imports.service import data_import_service
+from app.schemas import (
+    KnowledgeUploadListResponse,
+    KnowledgeImportResponse,
+    ProductUploadListResponse,
+)
 from app.models.knowledge import KnowledgeUploadStatus
+from app.utils.pagination import normalize_pagination
 
 router = APIRouter()
 
@@ -51,10 +55,31 @@ async def import_products(
     )
     return result
 
-@router.get("/products/uploads", response_model=List[ProductUploadResponse])
-async def list_product_uploads(db: AsyncSession = Depends(get_db)):
+@router.get("/products/uploads", response_model=ProductUploadListResponse)
+async def list_product_uploads(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, alias="pageSize", ge=1, le=9999),
+    db: AsyncSession = Depends(get_db),
+):
     """List historical product uploads."""
-    return await data_import_service.list_product_uploads(db)
+    if "limit" in request.query_params or "offset" in request.query_params:
+        raise HTTPException(
+            status_code=400,
+            detail="limit/offset pagination is no longer supported. Use page and pageSize.",
+        )
+
+    uploads, total = await data_import_service.list_product_uploads(db, page=page, page_size=page_size)
+    safe_page, total_pages, _ = normalize_pagination(total_items=total, page=page, page_size=page_size)
+    if safe_page != page:
+        uploads, _ = await data_import_service.list_product_uploads(db, page=safe_page, page_size=page_size)
+    return ProductUploadListResponse(
+        items=uploads,
+        totalItems=total,
+        page=safe_page,
+        pageSize=page_size,
+        totalPages=total_pages,
+    )
 
 @router.get("/products/uploads/{upload_id}/download")
 async def download_product_upload(upload_id: UUID, db: AsyncSession = Depends(get_db)):
@@ -105,10 +130,31 @@ async def import_knowledge(
         status=result["status"]
     )
 
-@router.get("/knowledge/uploads", response_model=List[KnowledgeUploadResponse])
-async def list_knowledge_uploads(db: AsyncSession = Depends(get_db)):
+@router.get("/knowledge/uploads", response_model=KnowledgeUploadListResponse)
+async def list_knowledge_uploads(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, alias="pageSize", ge=1, le=9999),
+    db: AsyncSession = Depends(get_db),
+):
     """List knowledge upload sessions with status and counts."""
-    return await data_import_service.list_knowledge_uploads(db)
+    if "limit" in request.query_params or "offset" in request.query_params:
+        raise HTTPException(
+            status_code=400,
+            detail="limit/offset pagination is no longer supported. Use page and pageSize.",
+        )
+
+    uploads, total = await data_import_service.list_knowledge_uploads(db, page=page, page_size=page_size)
+    safe_page, total_pages, _ = normalize_pagination(total_items=total, page=page, page_size=page_size)
+    if safe_page != page:
+        uploads, _ = await data_import_service.list_knowledge_uploads(db, page=safe_page, page_size=page_size)
+    return KnowledgeUploadListResponse(
+        items=uploads,
+        totalItems=total,
+        page=safe_page,
+        pageSize=page_size,
+        totalPages=total_pages,
+    )
 
 @router.get("/knowledge/uploads/{upload_id}/download")
 async def download_knowledge_upload(upload_id: UUID, db: AsyncSession = Depends(get_db)):

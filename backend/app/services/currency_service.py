@@ -1,7 +1,7 @@
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Dict, List, Optional
 
 from app.core.config import settings
 from app.schemas.chat import ProductCard
@@ -26,18 +26,18 @@ class CurrencyService:
         "usd": "USD",
         "dollar": "USD",
         "dollars": "USD",
-        "€": "EUR",
+        "\u20AC": "EUR",
         "eur": "EUR",
         "euro": "EUR",
         "euros": "EUR",
-        "฿": "THB",
+        "\u0E3F": "THB",
         "thb": "THB",
         "baht": "THB",
-        "£": "GBP",
+        "\u00A3": "GBP",
         "gbp": "GBP",
         "pound": "GBP",
         "pounds": "GBP",
-        "¥": "JPY",
+        "\u00A5": "JPY",
         "jpy": "JPY",
         "yen": "JPY",
         "aud": "AUD",
@@ -98,8 +98,12 @@ class CurrencyService:
 
         # Convert from -> base -> to
         # rates[c] is (1 base = rate[c] c)
-        usd_amount = float(amount) / float(self.rates[from_cur]) if from_cur != self.base_currency else float(amount)
-        out = usd_amount * float(self.rates[to_cur]) if to_cur != self.base_currency else usd_amount
+        base_amount = (
+            float(amount) / float(self.rates[from_cur])
+            if from_cur != self.base_currency
+            else float(amount)
+        )
+        out = base_amount * float(self.rates[to_cur]) if to_cur != self.base_currency else base_amount
         return ConversionResult(amount=out, currency=to_cur)
 
     def extract_requested_currency(self, text: str) -> Optional[str]:
@@ -121,8 +125,8 @@ class CurrencyService:
                 if self.supports(code):
                     return code
 
-        # Symbol-based aliases (€, ฿, £, ¥)
-        for symbol in ["€", "฿", "£", "¥"]:
+        # Symbol-based aliases (\u20AC, \u0E3F, \u00A3, \u00A5)
+        for symbol in ["\u20AC", "\u0E3F", "\u00A3", "\u00A5"]:
             if symbol in t:
                 code = self._CODE_ALIASES.get(symbol)
                 if code and self.supports(code):

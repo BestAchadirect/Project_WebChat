@@ -5,7 +5,7 @@ from typing import List
 
 from app.dependencies import get_db
 from app.schemas.task import TaskResponse
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 router = APIRouter()
 

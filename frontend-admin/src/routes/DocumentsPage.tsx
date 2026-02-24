@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { importApi } from '../api/import';
 import { FileUploadForm } from '../components/documents/DocumentUploadForm';
 import { Button } from '../components/common/Button';
+import { PaginationControls } from '../components/common/PaginationControls';
+import { defaultPageSize } from '../constants/pagination';
 import { KnowledgeUpload } from '../types/knowledge';
 import { ProductUpload } from '../types/product';
 
@@ -11,16 +13,28 @@ export const DocumentsPage: React.FC = () => {
     const [activeTab, setActiveTab] = useState<Tab>('products');
     const [productUploads, setProductUploads] = useState<ProductUpload[]>([]);
     const [knowledgeUploads, setKnowledgeUploads] = useState<KnowledgeUpload[]>([]);
+    const [productPage, setProductPage] = useState(1);
+    const [productPageSize, setProductPageSize] = useState(defaultPageSize);
+    const [productTotalItems, setProductTotalItems] = useState(0);
+    const [productTotalPages, setProductTotalPages] = useState(1);
+    const [knowledgePage, setKnowledgePage] = useState(1);
+    const [knowledgePageSize, setKnowledgePageSize] = useState(defaultPageSize);
+    const [knowledgeTotalItems, setKnowledgeTotalItems] = useState(0);
+    const [knowledgeTotalPages, setKnowledgeTotalPages] = useState(1);
     const [loadingProducts, setLoadingProducts] = useState(false);
     const [loadingKnowledge, setLoadingKnowledge] = useState(false);
     const [deletingProductId, setDeletingProductId] = useState<string | null>(null);
     const [deletingKnowledgeId, setDeletingKnowledgeId] = useState<string | null>(null);
 
-    const fetchProductUploads = async () => {
+    const fetchProductUploads = async (page: number = productPage, pageSize: number = productPageSize) => {
         try {
             setLoadingProducts(true);
-            const data = await importApi.listProductUploads();
-            setProductUploads(data);
+            const data = await importApi.listProductUploads({ page, pageSize });
+            setProductUploads(data.items);
+            setProductTotalItems(data.totalItems);
+            setProductTotalPages(data.totalPages);
+            setProductPage(data.page);
+            setProductPageSize(data.pageSize);
         } catch (error) {
             console.error('Failed to load product uploads', error);
         } finally {
@@ -28,11 +42,15 @@ export const DocumentsPage: React.FC = () => {
         }
     };
 
-    const fetchKnowledgeUploads = async () => {
+    const fetchKnowledgeUploads = async (page: number = knowledgePage, pageSize: number = knowledgePageSize) => {
         try {
             setLoadingKnowledge(true);
-            const data = await importApi.listKnowledgeUploads();
-            setKnowledgeUploads(data);
+            const data = await importApi.listKnowledgeUploads({ page, pageSize });
+            setKnowledgeUploads(data.items);
+            setKnowledgeTotalItems(data.totalItems);
+            setKnowledgeTotalPages(data.totalPages);
+            setKnowledgePage(data.page);
+            setKnowledgePageSize(data.pageSize);
         } catch (error) {
             console.error('Failed to load knowledge uploads', error);
         } finally {
@@ -41,15 +59,31 @@ export const DocumentsPage: React.FC = () => {
     };
 
     useEffect(() => {
-        fetchProductUploads();
-        fetchKnowledgeUploads();
+        void fetchProductUploads(1, productPageSize);
+        void fetchKnowledgeUploads(1, knowledgePageSize);
     }, []);
+
+    const handleProductPaginationChange = ({ currentPage, pageSize }: { currentPage: number; pageSize: number }) => {
+        if (currentPage === productPage && pageSize === productPageSize) return;
+        setProductPage(currentPage);
+        setProductPageSize(pageSize);
+        void fetchProductUploads(currentPage, pageSize);
+    };
+
+    const handleKnowledgePaginationChange = ({ currentPage, pageSize }: { currentPage: number; pageSize: number }) => {
+        if (currentPage === knowledgePage && pageSize === knowledgePageSize) return;
+        setKnowledgePage(currentPage);
+        setKnowledgePageSize(pageSize);
+        void fetchKnowledgeUploads(currentPage, pageSize);
+    };
 
     const handleDeleteProduct = async (uploadId: string) => {
         try {
             setDeletingProductId(uploadId);
             await importApi.deleteProductUpload(uploadId);
-            setProductUploads((prev) => prev.filter((upload) => upload.id !== uploadId));
+            const targetPage = productUploads.length <= 1 && productPage > 1 ? productPage - 1 : productPage;
+            setProductPage(targetPage);
+            await fetchProductUploads(targetPage, productPageSize);
         } catch (error) {
             console.error('Failed to delete product upload', error);
         } finally {
@@ -61,7 +95,9 @@ export const DocumentsPage: React.FC = () => {
         try {
             setDeletingKnowledgeId(uploadId);
             await importApi.deleteKnowledgeUpload(uploadId);
-            setKnowledgeUploads((prev) => prev.filter((upload) => upload.id !== uploadId));
+            const targetPage = knowledgeUploads.length <= 1 && knowledgePage > 1 ? knowledgePage - 1 : knowledgePage;
+            setKnowledgePage(targetPage);
+            await fetchKnowledgeUploads(targetPage, knowledgePageSize);
         } catch (error) {
             console.error('Failed to delete knowledge upload', error);
         } finally {
@@ -70,11 +106,13 @@ export const DocumentsPage: React.FC = () => {
     };
 
     const handleProductUploadSuccess = () => {
-        fetchProductUploads();
+        setProductPage(1);
+        void fetchProductUploads(1, productPageSize);
     };
 
     const handleKnowledgeUploadSuccess = () => {
-        fetchKnowledgeUploads();
+        setKnowledgePage(1);
+        void fetchKnowledgeUploads(1, knowledgePageSize);
     };
 
     const formatFileSize = (size?: number | null) => {
@@ -185,7 +223,7 @@ export const DocumentsPage: React.FC = () => {
                             <h2 className="text-xl font-semibold text-gray-900">Product Upload History</h2>
                             <p className="text-sm text-gray-500">Audit product CSV imports and remove outdated uploads.</p>
                         </div>
-                        <Button variant="outline" onClick={fetchProductUploads}>
+                        <Button variant="outline" onClick={() => void fetchProductUploads(productPage, productPageSize)}>
                             Refresh
                         </Button>
                     </div>
@@ -247,6 +285,14 @@ export const DocumentsPage: React.FC = () => {
                             </tbody>
                         </table>
                     </div>
+                    <PaginationControls
+                        currentPage={productPage}
+                        pageSize={productPageSize}
+                        totalItems={productTotalItems}
+                        totalPages={productTotalPages}
+                        isLoading={loadingProducts}
+                        onChange={handleProductPaginationChange}
+                    />
                 </div>
             )}
 
@@ -257,7 +303,7 @@ export const DocumentsPage: React.FC = () => {
                             <h2 className="text-xl font-semibold text-gray-900">Knowledge Upload History</h2>
                             <p className="text-sm text-gray-500">Track imported FAQ/knowledge files and remove outdated uploads.</p>
                         </div>
-                        <Button variant="outline" onClick={fetchKnowledgeUploads}>
+                        <Button variant="outline" onClick={() => void fetchKnowledgeUploads(knowledgePage, knowledgePageSize)}>
                             Refresh
                         </Button>
                     </div>
@@ -319,6 +365,14 @@ export const DocumentsPage: React.FC = () => {
                             </tbody>
                         </table>
                     </div>
+                    <PaginationControls
+                        currentPage={knowledgePage}
+                        pageSize={knowledgePageSize}
+                        totalItems={knowledgeTotalItems}
+                        totalPages={knowledgeTotalPages}
+                        isLoading={loadingKnowledge}
+                        onChange={handleKnowledgePaginationChange}
+                    />
                 </div>
             )}
         </div>

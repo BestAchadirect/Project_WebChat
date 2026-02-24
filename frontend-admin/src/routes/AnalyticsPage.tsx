@@ -3,6 +3,8 @@ import { analyticsApi } from '../api/analytics';
 import { ChatStats, ChatLog } from '../types/analytics';
 import { ChatStatsCards } from '../components/analytics/ChatStatsCards';
 import { Spinner } from '../components/common/Spinner';
+import { PaginationControls } from '../components/common/PaginationControls';
+import { defaultPageSize } from '../constants/pagination';
 
 type Period = 'today' | 'week' | 'month' | 'all';
 
@@ -62,11 +64,25 @@ const buildActivityBuckets = (logs: ChatLog[], period: Period): ActivityBucket[]
     return buckets;
 };
 
+const buildDefaultStats = (period: Period): ChatStats => ({
+    totalChats: 0,
+    totalMessages: 0,
+    avgResponseTime: 0,
+    userSatisfaction: 0,
+    period,
+});
+
 export const AnalyticsPage: React.FC = () => {
-    const [stats, setStats] = useState<ChatStats | null>(null);
-    const [logs, setLogs] = useState<ChatLog[]>([]);
+    const [stats, setStats] = useState<ChatStats>(() => buildDefaultStats('week'));
+    const [activityLogs, setActivityLogs] = useState<ChatLog[]>([]);
+    const [recentLogs, setRecentLogs] = useState<ChatLog[]>([]);
+    const [recentPage, setRecentPage] = useState(1);
+    const [recentPageSize, setRecentPageSize] = useState(defaultPageSize);
+    const [recentTotalItems, setRecentTotalItems] = useState(0);
+    const [recentTotalPages, setRecentTotalPages] = useState(1);
     const [isStatsLoading, setIsStatsLoading] = useState(true);
-    const [isLogsLoading, setIsLogsLoading] = useState(true);
+    const [isActivityLoading, setIsActivityLoading] = useState(true);
+    const [isRecentLoading, setIsRecentLoading] = useState(true);
     const [period, setPeriod] = useState<Period>('week');
     const [expandedConversations, setExpandedConversations] = useState<Record<string, boolean>>({});
 
@@ -86,43 +102,76 @@ export const AnalyticsPage: React.FC = () => {
         setIsStatsLoading(true);
         try {
             const data = await analyticsApi.getChatStats(period);
-            setStats(data);
+            setStats(data ?? buildDefaultStats(period));
         } catch (error) {
             console.error('Failed to fetch stats:', error);
+            setStats(buildDefaultStats(period));
         } finally {
             setIsStatsLoading(false);
         }
     };
 
-    const fetchLogs = async () => {
-        setIsLogsLoading(true);
+    const fetchActivityLogs = async () => {
+        setIsActivityLoading(true);
         try {
             const data = await analyticsApi.getChatLogs({
                 startDate: dateRange.start ? dateRange.start.toISOString() : undefined,
                 endDate: dateRange.end ? dateRange.end.toISOString() : undefined,
-                limit: 120,
-                offset: 0,
+                page: 1,
+                pageSize: 200,
             });
-            setLogs(data || []);
+            setActivityLogs(data.items || []);
         } catch (error) {
-            console.error('Failed to fetch chat logs:', error);
+            console.error('Failed to fetch chat activity logs:', error);
         } finally {
-            setIsLogsLoading(false);
+            setIsActivityLoading(false);
+        }
+    };
+
+    const fetchRecentLogs = async (
+        page: number = recentPage,
+        pageSize: number = recentPageSize
+    ) => {
+        setIsRecentLoading(true);
+        try {
+            const data = await analyticsApi.getChatLogs({
+                startDate: dateRange.start ? dateRange.start.toISOString() : undefined,
+                endDate: dateRange.end ? dateRange.end.toISOString() : undefined,
+                page,
+                pageSize,
+            });
+            setRecentLogs(data.items || []);
+            setRecentPage(data.page);
+            setRecentPageSize(data.pageSize);
+            setRecentTotalItems(data.totalItems);
+            setRecentTotalPages(data.totalPages);
+        } catch (error) {
+            console.error('Failed to fetch recent chat logs:', error);
+        } finally {
+            setIsRecentLoading(false);
         }
     };
 
     useEffect(() => {
-        fetchStats();
-        fetchLogs();
+        const firstPage = 1;
+        setRecentPage(firstPage);
+        void fetchStats();
+        void fetchActivityLogs();
+        void fetchRecentLogs(firstPage, recentPageSize);
     }, [period]);
 
     const toggleConversation = (id: string) => {
         setExpandedConversations((prev) => ({ ...prev, [id]: !prev[id] }));
     };
 
-    const activityBuckets = useMemo(() => buildActivityBuckets(logs, period), [logs, period]);
+    const activityBuckets = useMemo(() => buildActivityBuckets(activityLogs, period), [activityLogs, period]);
     const maxActivity = Math.max(...activityBuckets.map((bucket) => bucket.count), 0);
-    const recentLogs = logs.slice(0, 12);
+    const handleRecentPaginationChange = ({ currentPage, pageSize }: { currentPage: number; pageSize: number }) => {
+        if (currentPage === recentPage && pageSize === recentPageSize) return;
+        setRecentPage(currentPage);
+        setRecentPageSize(pageSize);
+        void fetchRecentLogs(currentPage, pageSize);
+    };
 
     return (
         <div className="space-y-6">
@@ -156,7 +205,7 @@ export const AnalyticsPage: React.FC = () => {
                     <Spinner size="lg" />
                 </div>
             ) : (
-                stats && <ChatStatsCards stats={stats} />
+                <ChatStatsCards stats={stats} />
             )}
 
             {/* Chat Activity */}
@@ -169,11 +218,11 @@ export const AnalyticsPage: React.FC = () => {
                         </p>
                     </div>
                     <div className="text-xs text-gray-500">
-                        {logs.length.toLocaleString()} conversations loaded
+                        {activityLogs.length.toLocaleString()} conversations loaded
                     </div>
                 </div>
 
-                {isLogsLoading ? (
+                {isActivityLoading ? (
                     <div className="h-64 flex items-center justify-center">
                         <Spinner size="lg" />
                     </div>
@@ -212,7 +261,7 @@ export const AnalyticsPage: React.FC = () => {
                     </div>
                 </div>
 
-                {isLogsLoading ? (
+                {isRecentLoading ? (
                     <div className="h-40 flex items-center justify-center">
                         <Spinner size="lg" />
                     </div>
@@ -303,6 +352,14 @@ export const AnalyticsPage: React.FC = () => {
                         )}
                     </div>
                 )}
+                <PaginationControls
+                    currentPage={recentPage}
+                    pageSize={recentPageSize}
+                    totalItems={recentTotalItems}
+                    totalPages={recentTotalPages}
+                    isLoading={isRecentLoading}
+                    onChange={handleRecentPaginationChange}
+                />
             </div>
         </div>
     );

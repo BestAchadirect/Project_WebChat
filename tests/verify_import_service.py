@@ -15,7 +15,7 @@ os.environ["SUPABASE_KEY"] = "anon-key"
 os.environ["SUPABASE_SERVICE_KEY"] = "service-key"
 
 from fastapi import UploadFile
-from app.services.data_import_service import DataImportService
+from app.services.imports.service import DataImportService
 from app.models.product import Product
 from app.models.knowledge import KnowledgeArticle
 
@@ -27,7 +27,7 @@ async def test_import_logic():
     service = DataImportService()
     
     # Mock LLM Service (monkeypatch)
-    from app.services.llm_service import llm_service
+    from app.services.ai.llm_service import llm_service
     llm_service.generate_embedding = AsyncMock(return_value=[0.1] * 1536)
     
     # --- TEST 1: Product Import ---

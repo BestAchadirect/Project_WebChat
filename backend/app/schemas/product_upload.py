@@ -22,3 +22,11 @@ class ProductUploadResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ProductUploadListResponse(BaseModel):
+    items: list[ProductUploadResponse]
+    totalItems: int
+    page: int
+    pageSize: int
+    totalPages: int

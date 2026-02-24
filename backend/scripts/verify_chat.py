@@ -7,7 +7,7 @@ import logging
 # Assume running from 'backend' directory
 sys.path.append(os.getcwd())
 
-from app.services.chat_service import ChatService
+from app.services.chat.service import ChatService
 from app.schemas.chat import ChatRequest
 from app.db.session import AsyncSessionLocal
 from app.core.config import settings

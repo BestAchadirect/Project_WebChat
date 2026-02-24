@@ -1,15 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { productsApi, Product, ProductFilterValue } from '../../api/training';
+import { PaginationControls } from '../../components/common/PaginationControls';
+import { defaultPageSize } from '../../constants/pagination';
 
 type BulkFieldState = Record<string, { enabled: boolean; value: string }>;
 
 export const ProductTuningPage: React.FC = () => {
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(true);
-    const [total, setTotal] = useState(0);
-    const [offset, setOffset] = useState(0);
-    const LIMIT = 50;
+    const [totalItems, setTotalItems] = useState(0);
+    const [currentPage, setCurrentPage] = useState(1);
+    const [pageSize, setPageSize] = useState(defaultPageSize);
+    const [totalPages, setTotalPages] = useState(1);
 
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -19,7 +22,11 @@ export const ProductTuningPage: React.FC = () => {
     const [bulkEditSaving, setBulkEditSaving] = useState(false);
     const [bulkEditError, setBulkEditError] = useState<string | null>(null);
     const selectAllRef = useRef<HTMLInputElement | null>(null);
+    const productLoadSeqRef = useRef(0);
     const [showColumnMenu, setShowColumnMenu] = useState(false);
+    const [showSelectActionMenu, setShowSelectActionMenu] = useState(false);
+    const selectActionMenuRef = useRef<HTMLDivElement | null>(null);
+    const selectActionButtonRef = useRef<HTMLButtonElement | null>(null);
     // Column Definitions
     const technicalFields: Array<{ key: keyof Product; label: string; type?: 'text' | 'number' }> = [
         { key: 'material', label: 'Material' },
@@ -95,8 +102,9 @@ export const ProductTuningPage: React.FC = () => {
     const [facetLoading, setFacetLoading] = useState(false);
 
     useEffect(() => {
-        setOffset(0);
-        loadProducts(0);
+        const firstPage = 1;
+        setCurrentPage(firstPage);
+        void loadProducts(firstPage, pageSize);
         loadFacets();
     }, [filterVisibility, filterFeatured, activeFilters]);
 
@@ -104,12 +112,25 @@ export const ProductTuningPage: React.FC = () => {
         setPendingFilters(activeFilters);
     }, [activeFilters]);
 
-    const loadProducts = async (currentOffset: number) => {
+    useEffect(() => {
+        if (!showSelectActionMenu) return;
+        const handleClickOutside = (event: MouseEvent) => {
+            const target = event.target as Node;
+            if (selectActionMenuRef.current?.contains(target)) return;
+            if (selectActionButtonRef.current?.contains(target)) return;
+            setShowSelectActionMenu(false);
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [showSelectActionMenu]);
+
+    const loadProducts = async (targetPage: number, targetPageSize: number = pageSize) => {
+        const requestSeq = ++productLoadSeqRef.current;
         try {
             setLoading(true);
             const params: any = {
-                limit: LIMIT,
-                offset: currentOffset
+                page: targetPage,
+                pageSize: targetPageSize,
             };
             if (filterVisibility === 'visible') params.visibility = true;
             if (filterVisibility === 'hidden') params.visibility = false;
@@ -128,28 +149,33 @@ export const ProductTuningPage: React.FC = () => {
             if (searchQuery) params.search = searchQuery;
 
             const result = await productsApi.listProducts(params);
-            if (currentOffset === 0) {
-                setProducts(result.items);
-            } else {
-                setProducts(prev => [...prev, ...result.items]);
-            }
-            setTotal(result.total);
+            if (requestSeq !== productLoadSeqRef.current) return;
+            setProducts(result.items);
+            setTotalItems(result.totalItems);
+            setCurrentPage(result.page);
+            setPageSize(result.pageSize);
+            setTotalPages(result.totalPages);
+            setSelectedIds((prev) => new Set([...prev].filter((id) => result.items.some((p) => p.id === id))));
         } catch (error) {
             console.error('Failed to load products:', error);
         } finally {
-            setLoading(false);
+            if (requestSeq === productLoadSeqRef.current) {
+                setLoading(false);
+            }
         }
     };
 
-    const handleLoadMore = () => {
-        const nextOffset = offset + LIMIT;
-        setOffset(nextOffset);
-        loadProducts(nextOffset);
+    const handlePaginationChange = ({ currentPage: nextPage, pageSize: nextPageSize }: { currentPage: number; pageSize: number }) => {
+        if (nextPage === currentPage && nextPageSize === pageSize) return;
+        setCurrentPage(nextPage);
+        setPageSize(nextPageSize);
+        void loadProducts(nextPage, nextPageSize);
     };
 
     const handleSearch = () => {
-        setOffset(0);
-        loadProducts(0);
+        const firstPage = 1;
+        setCurrentPage(firstPage);
+        void loadProducts(firstPage, pageSize);
         loadFacets();
     };
 
@@ -205,6 +231,82 @@ export const ProductTuningPage: React.FC = () => {
         }
     };
 
+    const handleHardDeleteBySku = async (product: Product) => {
+        const sku = (product.sku || '').trim();
+        if (!sku) return;
+
+        const confirmed = window.confirm(
+            `Delete SKU "${sku}" permanently?\n\nThis will remove the product and related embeddings/attributes.`
+        );
+        if (!confirmed) return;
+
+        try {
+            await productsApi.hardDeleteBySku(sku);
+            const removedIds = products.filter((p) => p.sku === sku).map((p) => p.id);
+            const removedOnPage = removedIds.length;
+            const targetPage =
+                removedOnPage >= products.length && currentPage > 1
+                    ? currentPage - 1
+                    : currentPage;
+
+            setSelectedIds((prev) => {
+                const next = new Set(prev);
+                removedIds.forEach((id) => next.delete(id));
+                return next;
+            });
+            setSelectedProduct((prev) => (prev?.sku === sku ? null : prev));
+            setCurrentPage(targetPage);
+            await loadProducts(targetPage, pageSize);
+            loadFacets();
+        } catch (error) {
+            console.error('Failed to hard delete SKU:', error);
+            window.alert('Failed to delete SKU. Please try again.');
+        }
+    };
+
+    const handleBulkDeleteSkus = async () => {
+        if (selectedIds.size === 0) return;
+
+        const selectedProducts = products.filter((p) => selectedIds.has(p.id));
+        const skus = Array.from(
+            new Set(
+                selectedProducts
+                    .map((p) => (p.sku || '').trim())
+                    .filter((sku): sku is string => Boolean(sku))
+            )
+        );
+
+        if (skus.length === 0) return;
+
+        const confirmed = window.confirm(
+            `Delete ${skus.length} selected SKU(s) permanently?\n\nThis will remove products and related embeddings/attributes.`
+        );
+        if (!confirmed) return;
+
+        try {
+            const result = await productsApi.bulkDeleteBySku(skus);
+            const deletedSkuSet = new Set(result.deleted_skus || []);
+            const removedOnPage = products.filter((p) => deletedSkuSet.has(p.sku)).length;
+            const targetPage =
+                removedOnPage >= products.length && currentPage > 1
+                    ? currentPage - 1
+                    : currentPage;
+
+            setSelectedIds(new Set());
+            setSelectedProduct((prev) => (prev && deletedSkuSet.has(prev.sku) ? null : prev));
+            setCurrentPage(targetPage);
+            await loadProducts(targetPage, pageSize);
+            loadFacets();
+
+            if ((result.not_found_skus || []).length > 0) {
+                window.alert(`Some SKUs were not found: ${result.not_found_skus.join(', ')}`);
+            }
+        } catch (error) {
+            console.error('Failed to bulk delete SKUs:', error);
+            window.alert('Failed to delete selected SKUs. Please try again.');
+        }
+    };
+
 
 
     const handleBulkHide = async () => {
@@ -246,12 +348,39 @@ export const ProductTuningPage: React.FC = () => {
         setSelectedIds(newSet);
     };
 
+    const selectAllOnCurrentPage = () => {
+        setSelectedIds(new Set(products.map((p) => p.id)));
+    };
+
+    const deselectAll = () => {
+        setSelectedIds(new Set());
+    };
+
+    const deselectAllOnCurrentPage = () => {
+        setSelectedIds((prev) => {
+            const next = new Set(prev);
+            products.forEach((p) => next.delete(p.id));
+            return next;
+        });
+    };
+
     const handleSelectAllChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.checked) {
-            setSelectedIds(new Set(products.map(p => p.id)));
+            selectAllOnCurrentPage();
             return;
         }
-        setSelectedIds(new Set());
+        deselectAll();
+    };
+
+    const runSelectAction = (action: 'select_all' | 'deselect_all' | 'select_page' | 'deselect_page') => {
+        if (action === 'select_all' || action === 'select_page') {
+            selectAllOnCurrentPage();
+        } else if (action === 'deselect_all') {
+            deselectAll();
+        } else {
+            deselectAllOnCurrentPage();
+        }
+        setShowSelectActionMenu(false);
     };
 
     const toggleColumn = (key: string) => {
@@ -269,8 +398,9 @@ export const ProductTuningPage: React.FC = () => {
         setMinPrice('');
         setMaxPrice('');
         setSearchQuery('');
-        setOffset(0);
-        loadProducts(0);
+        const firstPage = 1;
+        setCurrentPage(firstPage);
+        void loadProducts(firstPage, pageSize);
         loadFacets();
     };
 
@@ -414,10 +544,14 @@ export const ProductTuningPage: React.FC = () => {
         }
     }, [someSelected]);
 
+    useEffect(() => {
+        setShowSelectActionMenu(false);
+    }, [currentPage, pageSize]);
+
     return (
         <div className="flex flex-col h-[calc(100vh-100px)] overflow-hidden bg-white">
             {/* Top Filter Bar */}
-            <div className="flex-shrink-0 border-b border-gray-200 bg-white z-20">
+            <div className="relative z-[80] flex-shrink-0 border-b border-gray-200 bg-white">
                 <div className="px-6 py-4 space-y-4">
                     {/* Primary Controls: Search + Global Filters */}
                     <div className="flex flex-wrap items-center justify-between gap-4">
@@ -515,9 +649,15 @@ export const ProductTuningPage: React.FC = () => {
                                     >
                                         Hide
                                     </button>
+                                    <button
+                                        onClick={handleBulkDeleteSkus}
+                                        className="px-4 py-2 bg-red-600 text-white text-sm font-semibold rounded-lg hover:bg-red-700 shadow-sm transition-all"
+                                    >
+                                        Delete
+                                    </button>
                                 </div>
                             )}
-                            <div className="relative">
+                            <div className="relative z-[120]">
                                 <button
                                     onClick={() => setShowColumnMenu((prev) => !prev)}
                                     className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg transition-colors"
@@ -526,7 +666,7 @@ export const ProductTuningPage: React.FC = () => {
                                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
                                 </button>
                                 {showColumnMenu && (
-                                    <div className="absolute right-0 mt-2 w-64 bg-white border border-gray-200 rounded-lg shadow-xl p-3 z-30 animate-in fade-in zoom-in-95 origin-top-right max-h-[400px] overflow-y-auto custom-scrollbar">
+                                    <div className="absolute right-0 mt-2 w-64 bg-white border border-gray-200 rounded-lg shadow-xl p-3 z-[130] animate-in fade-in zoom-in-95 origin-top-right max-h-[400px] overflow-y-auto custom-scrollbar">
                                         <div className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">Standard Columns</div>
                                         <div className="space-y-2 mb-4">
                                             {standardColumns.map((col) => (
@@ -627,23 +767,93 @@ export const ProductTuningPage: React.FC = () => {
 
             {/* Main Content: Product List */}
             <div className={`flex-1 overflow-hidden relative flex flex-col ${selectedProduct ? 'mr-[450px] transition-all duration-300' : ''}`}>
-                <div className="flex-1 overflow-y-auto bg-gray-50/50 p-6">
+                <div className="flex-1 overflow-hidden bg-gray-50/50 p-6">
 
-                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                        <table className="min-w-full divide-y divide-gray-200 table-fixed">
-                            <thead className="bg-gray-50/80 backdrop-blur sticky top-0 z-10">
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden h-full flex flex-col">
+                        <div className="flex-shrink-0 border-b border-gray-200 bg-white/95 backdrop-blur z-40">
+                            <PaginationControls
+                                currentPage={currentPage}
+                                pageSize={pageSize}
+                                totalItems={totalItems}
+                                totalPages={totalPages}
+                                isLoading={loading}
+                                onChange={handlePaginationChange}
+                                className="!border-0 !px-4 !py-3"
+                            />
+                        </div>
+
+                        <div className="flex-1 overflow-auto">
+                            <table className="min-w-full divide-y divide-gray-200 table-fixed">
+                            <thead className="bg-gray-100">
                                 <tr>
-                                    <th className="w-12 px-4 py-3 text-left">
-                                        <input
-                                            type="checkbox"
-                                            ref={selectAllRef}
-                                            checked={allSelected}
-                                            onChange={handleSelectAllChange}
-                                            className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                                        />
+                                    <th className="w-12 px-4 py-3 text-left sticky top-0 z-50 bg-gray-100">
+                                        <div className="relative flex items-center gap-1">
+                                            <input
+                                                type="checkbox"
+                                                ref={selectAllRef}
+                                                checked={allSelected}
+                                                onChange={handleSelectAllChange}
+                                                onClick={(e) => e.stopPropagation()}
+                                                className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                            />
+                                            <button
+                                                ref={selectActionButtonRef}
+                                                type="button"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setShowSelectActionMenu((prev) => !prev);
+                                                }}
+                                                className="inline-flex h-5 w-5 items-center justify-center rounded border border-transparent text-gray-500 hover:border-gray-300 hover:bg-white"
+                                                title="Selection options"
+                                                aria-label="Selection options"
+                                            >
+                                                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                                </svg>
+                                            </button>
+                                            {showSelectActionMenu && (
+                                                <div
+                                                    ref={selectActionMenuRef}
+                                                    className="absolute left-0 top-full mt-2 w-56 rounded-lg border border-gray-200 bg-white p-1 shadow-xl z-[140]"
+                                                >
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => runSelectAction('select_all')}
+                                                        disabled={products.length === 0 || allSelected}
+                                                        className="w-full rounded px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-300"
+                                                    >
+                                                        Select All
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => runSelectAction('deselect_all')}
+                                                        disabled={selectedIds.size === 0}
+                                                        className="w-full rounded px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-300"
+                                                    >
+                                                        Deselect All
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => runSelectAction('select_page')}
+                                                        disabled={products.length === 0 || allSelected}
+                                                        className="w-full rounded px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-300"
+                                                    >
+                                                        Select All on This Page
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => runSelectAction('deselect_page')}
+                                                        disabled={selectedIds.size === 0}
+                                                        className="w-full rounded px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-300"
+                                                    >
+                                                        Deselect All on This Page
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
                                     </th>
                                     {allColumns.map(col => visibleColumns[col.key] && (
-                                        <th key={col.key} className={`${col.width} px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider`}>
+                                        <th key={col.key} className={`${col.width} px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider sticky top-0 z-50 bg-gray-100`}>
                                             {col.label}
                                         </th>
                                     ))}
@@ -737,27 +947,15 @@ export const ProductTuningPage: React.FC = () => {
                                     </tr>
                                 ))}
                             </tbody>
-                        </table>
+                            </table>
 
-                        {/* Pagination / Load More */}
-                        {products.length < total && (
-                            <div className="p-8 text-center bg-gradient-to-t from-white via-white to-transparent sticky bottom-0">
-                                <button
-                                    onClick={handleLoadMore}
-                                    disabled={loading}
-                                    className="px-6 py-2.5 bg-white border border-gray-200 text-gray-900 font-semibold rounded-full shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all text-sm disabled:opacity-50"
-                                >
-                                    {loading ? 'Loading...' : `Load More (${total - products.length} left)`}
-                                </button>
-                            </div>
-                        )}
-
-                        {loading && products.length === 0 && (
-                            <div className="flex flex-col items-center justify-center py-24 gap-4 animate-in fade-in zoom-in">
-                                <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary-200 border-t-primary-600"></div>
-                                <p className="text-gray-500 font-medium tracking-tight">Syncing with Magento...</p>
-                            </div>
-                        )}
+                            {loading && products.length === 0 && (
+                                <div className="flex flex-col items-center justify-center py-24 gap-4 animate-in fade-in zoom-in">
+                                    <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary-200 border-t-primary-600"></div>
+                                    <p className="text-gray-500 font-medium tracking-tight">Syncing with Magento...</p>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
 
@@ -825,6 +1023,12 @@ export const ProductTuningPage: React.FC = () => {
                                         <svg className="w-4 h-4" fill={selectedProduct.is_featured ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" /></svg>
                                         {selectedProduct.is_featured ? 'Featured' : 'Feature'}
                                     </button>
+                                    <button
+                                        onClick={() => handleHardDeleteBySku(selectedProduct)}
+                                        className="col-span-2 flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 font-bold text-xs uppercase tracking-wide transition-all"
+                                    >
+                                        Delete SKU
+                                    </button>
                                 </section>
 
                                 {/* Master Code */}
@@ -887,7 +1091,7 @@ export const ProductTuningPage: React.FC = () => {
             </div>
             {/* Bulk Edit Modal */}
             {bulkEditOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4">
                     <div className="w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden">
                         <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
                             <div>

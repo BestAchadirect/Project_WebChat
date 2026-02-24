@@ -86,5 +86,20 @@ app/
 ## Testing
 API must be running for the test runners in `backend/scripts/`.
 
+## Quality checks
+```bash
+cd backend
+python scripts/check_legacy_imports.py
+ruff check app/services
+pytest tests -q
+```
+
+## Additional Docs
+- Docs index: `../docs/README.md`
+- Task system architecture: `../docs/architecture/task-system.md`
+- Services redesign: `../docs/architecture/services-redesign.md`
+- Database troubleshooting runbook: `../docs/runbooks/database-troubleshooting.md`
+- Services deprecation runbook: `../docs/runbooks/services-deprecation.md`
+
 ## License
 MIT

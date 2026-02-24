@@ -1,0 +1,3 @@
+# Legacy-wrapper import allowlist.
+# Format: <repo-relative-path>|<normalized-import-signature>
+# Hard-removal mode: intentionally empty baseline.

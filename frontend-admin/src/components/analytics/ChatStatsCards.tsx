@@ -6,10 +6,15 @@ interface ChatStatsCardsProps {
 }
 
 export const ChatStatsCards: React.FC<ChatStatsCardsProps> = ({ stats }) => {
+    const safeTotalChats = Number.isFinite(stats.totalChats) ? stats.totalChats : 0;
+    const safeTotalMessages = Number.isFinite(stats.totalMessages) ? stats.totalMessages : 0;
+    const safeAvgResponseTime = Number.isFinite(stats.avgResponseTime) ? stats.avgResponseTime : 0;
+    const safeUserSatisfaction = Number.isFinite(stats.userSatisfaction) ? stats.userSatisfaction : 0;
+
     const cards = [
         {
             title: 'Total Chats',
-            value: stats.totalChats.toLocaleString(),
+            value: safeTotalChats.toLocaleString(),
             icon: (
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -19,7 +24,7 @@ export const ChatStatsCards: React.FC<ChatStatsCardsProps> = ({ stats }) => {
         },
         {
             title: 'Total Messages',
-            value: stats.totalMessages.toLocaleString(),
+            value: safeTotalMessages.toLocaleString(),
             icon: (
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
@@ -29,7 +34,7 @@ export const ChatStatsCards: React.FC<ChatStatsCardsProps> = ({ stats }) => {
         },
         {
             title: 'Avg Response Time',
-            value: `${stats.avgResponseTime.toFixed(1)}s`,
+            value: `${safeAvgResponseTime.toFixed(1)}s`,
             icon: (
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -39,7 +44,7 @@ export const ChatStatsCards: React.FC<ChatStatsCardsProps> = ({ stats }) => {
         },
         {
             title: 'User Satisfaction',
-            value: `${(stats.userSatisfaction * 100).toFixed(0)}%`,
+            value: `${safeUserSatisfaction.toFixed(0)}%`,
             icon: (
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />

@@ -19,7 +19,7 @@ try:
     from app.models.knowledge import KnowledgeArticle
     from app.models.chat import ChatSession
     from app.schemas.chat import ChatRequest
-    from app.services.chat_service import ChatService
+    from app.services.chat.service import ChatService
     from app.api.routes import chat
 
     print("✅ Imports successful")

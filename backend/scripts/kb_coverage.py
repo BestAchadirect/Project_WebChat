@@ -7,8 +7,8 @@ from sqlalchemy import func, select
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.knowledge import KnowledgeArticle, KnowledgeChunk, KnowledgeEmbedding, KnowledgeArticleVersion
-from app.services.data_import_service import data_import_service
-from app.services.llm_service import llm_service
+from app.services.imports.service import data_import_service
+from app.services.ai.llm_service import llm_service
 
 
 async def _get_counts(db, article_id):
@@ -143,4 +143,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

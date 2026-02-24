@@ -101,6 +101,18 @@ class ChatResponse(BaseModel):
     view_button_text: str = "View Product Details"
     material_label: str = "Material"
     jewelry_type_label: str = "Jewelry Type"
+    qa_log_id: Optional[str] = None
+
+
+class ChatFeedbackRequest(BaseModel):
+    qa_log_id: uuid.UUID
+    feedback: Literal[1, -1]
+
+
+class ChatFeedbackResponse(BaseModel):
+    qa_log_id: uuid.UUID
+    feedback: Literal[1, -1]
+    saved: bool = True
 
 
 class ChatHistoryMessage(BaseModel):

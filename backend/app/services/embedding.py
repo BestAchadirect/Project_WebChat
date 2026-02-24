@@ -1,6 +1,6 @@
 from typing import List
 
-from app.services.llm_service import llm_service
+from app.services.ai.llm_service import llm_service
 
 class EmbeddingService:
     @staticmethod

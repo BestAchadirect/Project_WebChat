@@ -6,11 +6,13 @@ from app.dependencies import get_db
 from app.schemas.chat import (
     ChatRequest,
     ChatResponse,
+    ChatFeedbackRequest,
+    ChatFeedbackResponse,
     ChatHistoryResponse,
     ChatHistoryMessage,
     ActiveConversationResponse,
 )
-from app.services.chat_service import ChatService
+from app.services.chat.service import ChatService
 
 router = APIRouter()
 
@@ -30,6 +32,34 @@ async def chat(
     try:
         response = await service.process_chat(request, channel="widget")
         return response
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/feedback", response_model=ChatFeedbackResponse)
+async def submit_chat_feedback(
+    request: ChatFeedbackRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ChatFeedbackResponse:
+    service = ChatService(db)
+    try:
+        qa_log = await service.submit_feedback(
+            qa_log_id=request.qa_log_id,
+            feedback=int(request.feedback),
+        )
+        if qa_log is None:
+            raise HTTPException(status_code=404, detail="QA log not found")
+        return ChatFeedbackResponse(
+            qa_log_id=request.qa_log_id,
+            feedback=request.feedback,
+            saved=True,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
