@@ -67,6 +67,7 @@ migration_*.txt
 
 # Runtime uploads (generated files)
 backend/uploads/
+backend/backups/
 backend/tests/_checker_imports_sandbox/
 backend/tests/_tmp_checker_imports/
 backend/tests/_tmp_legacy_imports/
