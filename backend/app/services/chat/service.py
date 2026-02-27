@@ -24,9 +24,12 @@ from app.services.catalog.product_search import CatalogProductSearchService
 from app.services.ai.response_renderer import ResponseRenderer
 from app.services.semantic_cache_service import semantic_cache_service
 from app.services.chat.agentic.orchestrator import AgentOrchestrator
+from app.services.chat.detail_query_parser import DetailQueryParser
+from app.services.chat.detail_response_builder import DetailResponseBuilder
 from app.services.chat.intent_router import IntentRouter
 from app.services.chat.knowledge_context import KnowledgeContextAssembler
 from app.services.chat.product_context import ProductContextAssembler
+from app.services.chat.product_detail_resolver import ProductDetailResolver
 from app.services.chat.response_consistency import ResponseConsistencyPolicy
 from app.services.chat.retrieval_gate import RetrievalGate
 from app.services.chat.agentic.tool_registry import AgentToolRegistry
@@ -270,6 +273,9 @@ class ChatService:
                 "intent": "knowledge_query",
                 "show_products": False,
                 "currency": "",
+                "requested_fields": [],
+                "attribute_filters": {},
+                "wants_image": False,
             }
 
         supported = currency_service.supported_currencies()
@@ -281,6 +287,28 @@ class ChatService:
             model=getattr(settings, "NLU_MODEL", None),
             max_tokens=int(getattr(settings, "NLU_MAX_TOKENS", 250)),
         )
+        if not isinstance(data, dict):
+            data = {}
+
+        raw_fields = data.get("requested_fields")
+        if not isinstance(raw_fields, list):
+            data["requested_fields"] = []
+        else:
+            data["requested_fields"] = [str(item).strip().lower() for item in raw_fields if str(item).strip()]
+
+        raw_filters = data.get("attribute_filters")
+        if not isinstance(raw_filters, dict):
+            data["attribute_filters"] = {}
+        else:
+            clean_filters: Dict[str, str] = {}
+            for key, value in raw_filters.items():
+                clean_key = str(key or "").strip().lower()
+                clean_val = str(value or "").strip()
+                if clean_key and clean_val:
+                    clean_filters[clean_key] = clean_val
+            data["attribute_filters"] = clean_filters
+
+        data["wants_image"] = bool(data.get("wants_image", False))
 
         self._log_event(
             run_id=run_id,
@@ -508,6 +536,27 @@ class ChatService:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
 
+    def is_conversation_active(self, conversation: Optional[Conversation]) -> bool:
+        if conversation is None:
+            return False
+
+        now = datetime.now(timezone.utc)
+        started_at = self._ensure_utc(conversation.started_at)
+        last_message_at = self._ensure_utc(conversation.last_message_at) or started_at
+
+        idle_minutes = int(getattr(settings, "CONVERSATION_IDLE_TIMEOUT_MINUTES", 30) or 0)
+        hard_cap_hours = int(getattr(settings, "CONVERSATION_HARD_CAP_HOURS", 24) or 0)
+
+        if idle_minutes > 0 and last_message_at:
+            if last_message_at < (now - timedelta(minutes=idle_minutes)):
+                return False
+
+        if hard_cap_hours > 0 and started_at:
+            if started_at < (now - timedelta(hours=hard_cap_hours)):
+                return False
+
+        return True
+
     @staticmethod
     def _is_agentic_channel_enabled(channel: Optional[str]) -> bool:
         if not bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)):
@@ -517,6 +566,45 @@ class ChatService:
         if not allowed:
             return True
         return str(channel or "").strip().lower() in allowed
+
+    async def get_user(self, user_id: str) -> Optional[AppUser]:
+        stmt = select(AppUser).where(AppUser.id == user_id)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_conversation_for_user(
+        self,
+        user: AppUser,
+        conversation_id: int,
+    ) -> Optional[Conversation]:
+        stmt = select(Conversation).where(
+            Conversation.id == conversation_id,
+            Conversation.user_id == user.id,
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_active_conversation(
+        self,
+        user: AppUser,
+        conversation_id: Optional[int] = None,
+    ) -> Optional[Conversation]:
+        if conversation_id:
+            conversation = await self.get_conversation_for_user(user, conversation_id)
+            if self.is_conversation_active(conversation):
+                return conversation
+
+        stmt = (
+            select(Conversation)
+            .where(Conversation.user_id == user.id)
+            .order_by(Conversation.last_message_at.desc(), Conversation.id.desc())
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        latest = result.scalar_one_or_none()
+        if self.is_conversation_active(latest):
+            return latest
+        return None
 
     async def get_or_create_user(
         self,
@@ -556,24 +644,8 @@ class ChatService:
             )
             result = await self.db.execute(stmt)
             existing = result.scalar_one_or_none()
-            if existing:
-                now = datetime.now(timezone.utc)
-                started_at = self._ensure_utc(existing.started_at)
-                last_message_at = self._ensure_utc(existing.last_message_at) or started_at
-
-                idle_minutes = int(getattr(settings, "CONVERSATION_IDLE_TIMEOUT_MINUTES", 30) or 0)
-                hard_cap_hours = int(getattr(settings, "CONVERSATION_HARD_CAP_HOURS", 24) or 0)
-
-                idle_expired = False
-                hard_cap_expired = False
-
-                if idle_minutes > 0 and last_message_at:
-                    idle_expired = last_message_at < (now - timedelta(minutes=idle_minutes))
-                if hard_cap_hours > 0 and started_at:
-                    hard_cap_expired = started_at < (now - timedelta(hours=hard_cap_hours))
-
-                if not (idle_expired or hard_cap_expired):
-                    return existing
+            if self.is_conversation_active(existing):
+                return existing
 
         conversation = Conversation(user_id=user.id)
         self.db.add(conversation)
@@ -711,7 +783,7 @@ class ChatService:
         stmt = (
             select(Message)
             .where(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at.desc())
+            .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(limit)
         )
         result = await self.db.execute(stmt)
@@ -720,7 +792,8 @@ class ChatService:
             {
                 "role": m.role, 
                 "content": m.content,
-                "product_data": m.product_data
+                "product_data": m.product_data,
+                "created_at": m.created_at,
             } for m in reversed(msgs)
         ]
 
@@ -937,12 +1010,31 @@ class ChatService:
         show_products_flag = intent_decision.show_products_flag
         nlu_product_code = intent_decision.nlu_product_code
         sku_token = intent_decision.sku_token
+        detail_request = DetailQueryParser.parse(user_text=text, nlu_data=nlu_data)
+        detail_mode_enabled = bool(getattr(settings, "CHAT_FIELD_AWARE_DETAIL_ENABLED", True)) and bool(
+            detail_request.is_detail_request
+        )
+        debug_meta["detail_mode_enabled"] = detail_mode_enabled
+        debug_meta["requested_fields"] = list(detail_request.requested_fields)
+        debug_meta["attribute_filters"] = dict(detail_request.attribute_filters)
+        nlu_fields = [str(item).strip().lower() for item in list(nlu_data.get("requested_fields", []) or [])]
+        if sorted(set(nlu_fields)) != sorted(set(detail_request.requested_fields)):
+            logger.warning(
+                "detail parser adjusted requested_fields from nlu",
+                extra={
+                    "event": "detail_parser_nlu_mismatch",
+                    "nlu_fields": sorted(set(nlu_fields)),
+                    "parser_fields": sorted(set(detail_request.requested_fields)),
+                },
+            )
 
         retrieval_decision = RetrievalGate.decide(
             intent=intent,
             show_products_flag=show_products_flag,
             is_product_intent=intent_decision.is_product_intent,
             sku_token=sku_token,
+            has_attribute_filters=bool(detail_request.attribute_filters),
+            detail_request=bool(detail_request.is_detail_request),
             user_text=text,
             infer_jewelry_type_filter=self._infer_jewelry_type_filter,
             is_question_like_fn=self._is_question_like,
@@ -1096,7 +1188,9 @@ class ChatService:
         if use_products or use_knowledge:
             query_embedding = await llm_service.generate_embedding(search_query)
 
-        if query_embedding is not None:
+        allow_detail_cache = bool(getattr(settings, "CHAT_DETAIL_ENABLE_SEMANTIC_CACHE", False))
+        allow_semantic_cache = not detail_mode_enabled or allow_detail_cache
+        if query_embedding is not None and allow_semantic_cache:
             debug_meta["semantic_cache_hit"] = False
             cache_hit = await semantic_cache_service.get_hit(
                 self.db,
@@ -1142,16 +1236,71 @@ class ChatService:
                     token_usage=token_usage,
                     channel=channel,
                 )
+        elif query_embedding is not None:
+            debug_meta["semantic_cache_skipped"] = "detail_mode"
 
         product_cards: List[ProductCard] = []
         best_distance: Optional[float] = None
+        distance_by_id: Dict[str, float] = {}
         if use_products and query_embedding is not None:
-            product_cards, _distances, best_distance, _dist_map = await self.smart_product_search(
+            product_search_limit = 20 if detail_mode_enabled else 10
+            product_cards, _distances, best_distance, distance_by_id = await self.smart_product_search(
                 query=search_query,
                 query_embedding=query_embedding,
-                limit=10,
+                limit=product_search_limit,
                 run_id=run_id,
                 extracted_code=nlu_product_code,
+            )
+
+        if detail_mode_enabled:
+            resolver = ProductDetailResolver()
+            resolution = resolver.resolve_detail_request(
+                candidate_cards=product_cards,
+                distance_by_id=distance_by_id,
+                requested_fields=detail_request.requested_fields,
+                attribute_filters=detail_request.attribute_filters,
+                sku_token=sku_token,
+                nlu_product_code=nlu_product_code,
+                max_matches=int(getattr(settings, "CHAT_DETAIL_MAX_MATCHES", 3)),
+                min_confidence=float(getattr(settings, "CHAT_DETAIL_MIN_CONFIDENCE", 0.55)),
+            )
+            detail_builder = DetailResponseBuilder()
+            detail_payload = detail_builder.build_detail_reply(
+                matches=resolution.matches,
+                requested_fields=resolution.requested_fields,
+                attribute_filters=resolution.attribute_filters,
+                missing_fields_by_product=resolution.missing_fields_by_product,
+                wants_image=detail_request.wants_image,
+                max_matches=int(getattr(settings, "CHAT_DETAIL_MAX_MATCHES", 3)),
+            )
+            debug_meta["detail_match_count"] = len(resolution.matches)
+            debug_meta["detail_card_policy_reason"] = detail_payload.card_policy_reason
+            debug_meta["detail_has_exact_match"] = resolution.has_exact_match
+
+            response = await self._response_renderer.render(
+                conversation_id=conversation.id,
+                route="detail_mode",
+                reply_data={
+                    "reply": detail_payload.reply_text,
+                    "carousel_hint": detail_payload.carousel_msg,
+                    "recommended_questions": list(detail_payload.follow_up_questions),
+                },
+                product_carousel=list(detail_payload.product_carousel),
+                follow_up_questions=list(detail_payload.follow_up_questions),
+                sources=[],
+                debug=debug_meta,
+                reply_language=reply_language,
+                target_currency=target_currency,
+                user_text=text,
+                apply_polish=False,
+            )
+            token_usage = llm_service.consume_token_usage()
+            return await self._finalize_response(
+                conversation_id=conversation.id,
+                user_text=text,
+                response=response,
+                token_usage=token_usage,
+                channel=channel,
             )
 
         max_sub_questions = int(getattr(settings, "RAG_DECOMPOSE_MAX_SUBQUESTIONS", 5))
@@ -1183,6 +1332,7 @@ class ChatService:
             show_products_flag=show_products_flag,
             intent=intent,
             default_threshold=float(getattr(settings, "PRODUCT_DISTANCE_THRESHOLD", 0.45)),
+            allow_fallback_products=intent in {"browse_products", "search_specific"},
         )
         sources.extend(product_sources)
         if product_fallback_used:

@@ -4,13 +4,16 @@ from typing import Optional
 def unified_nlu_prompt(supported_currencies: Optional[list[str]] = None) -> str:
     codes = f" Supported: {', '.join(sorted(set(supported_currencies)))}" if supported_currencies else ""
     return (
-        "Return ONLY strict JSON: {\"language\": \"\", \"locale\": \"\", \"intent\": \"\", \"show_products\": bool, \"currency\": \"\", \"refined_query\": \"\", \"product_code\": \"\"}.\n"
+        "Return ONLY strict JSON: {\"language\": \"\", \"locale\": \"\", \"intent\": \"\", \"show_products\": bool, \"currency\": \"\", \"refined_query\": \"\", \"product_code\": \"\", \"requested_fields\": [], \"attribute_filters\": {}, \"wants_image\": bool}.\n"
         "1. Language: Detect primary language and BCP-47 locale.\n"
         "2. Intent: 'browse_products', 'search_specific', 'knowledge_query' (policies, help, or bot identity), 'off_topic'.\n"
         "3. show_products: true if intent is browse/search.\n"
         f"4. Currency: Detect ISO 4217 code if requested.{codes}\n"
         "5. refined_query: Rewrite the user's message into a standalone search query in English.\n"
-        "6. product_code: Extract any specific SKU, Model Number, or Master Code if present (e.g., from 'find code ACCO' -> 'ACCO'). If none, return empty string."
+        "6. product_code: Extract any specific SKU, Model Number, or Master Code if present (e.g., from 'find code ACCO' -> 'ACCO'). If none, return empty string.\n"
+        "7. requested_fields: Return subset of ['price','stock','image','attributes','name','sku'] explicitly asked by user.\n"
+        "8. attribute_filters: Extract concrete filters (e.g., jewelry_type, material, color, gauge, threading).\n"
+        "9. wants_image: true when user asks for image/photo/picture."
     )
 
 def rag_answer_prompt(reply_language: str) -> str:

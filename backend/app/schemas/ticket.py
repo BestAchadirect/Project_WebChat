@@ -4,7 +4,6 @@ from typing import Optional
 
 class TicketBase(BaseModel):
     description: str
-    image_url: Optional[str] = None
     image_urls: Optional[list[str]] = None
 
 class TicketCreate(TicketBase):
@@ -16,7 +15,6 @@ class TicketUpdate(BaseModel):
     admin_reply: Optional[str] = None
     admin_replies: Optional[list[dict[str, str]]] = None
     description: Optional[str] = None
-    image_url: Optional[str] = None
     image_urls: Optional[list[str]] = None
 
 class TicketRead(TicketBase):

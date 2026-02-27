@@ -12,7 +12,6 @@ class Ticket(Base):
     user_id = Column(String(64), ForeignKey("app_user.id"), nullable=False)
     
     description = Column(Text, nullable=False)
-    image_url = Column(String(511), nullable=True)
     image_urls = Column(JSON, nullable=True) # List of strings
     status = Column(String(50), default="pending")  # pending, in_progress, resolved, closed
     ai_summary = Column(Text, nullable=True)

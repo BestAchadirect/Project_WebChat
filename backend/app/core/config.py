@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     SEMANTIC_CACHE_ENABLED: bool = True
     SEMANTIC_CACHE_THRESHOLD: float = 0.96
     SEMANTIC_CACHE_TTL_DAYS: int = 7
+    CHAT_FIELD_AWARE_DETAIL_ENABLED: bool = True
+    CHAT_DETAIL_MAX_MATCHES: int = 3
+    CHAT_DETAIL_MIN_CONFIDENCE: float = 0.55
+    CHAT_DETAIL_ENABLE_SEMANTIC_CACHE: bool = False
 
     # Logging
     LOG_DIR: str = "logs"

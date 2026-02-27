@@ -54,7 +54,6 @@ class TicketService:
         ticket = Ticket(
             user_id=user_id,
             description=description,
-            image_url=image_urls[0] if image_urls else None,
             image_urls=image_urls,
             ai_summary=ai_summary,
             admin_replies=[],
@@ -155,19 +154,10 @@ class TicketService:
             # Combine or replace? User said "upload or update", if they upload more, we should probably append or replace based on intent.
             # Usually "Update detail" with new images replaces the old ones, or appends.
             # Given the request "multiple image upload", I'll append to existing image_urls if they exist.
-            current_urls = ticket.image_urls or []
-            if ticket.image_url and ticket.image_url not in current_urls:
-                current_urls.append(ticket.image_url)
+            current_urls = list(ticket.image_urls or [])
             
             updated_urls = current_urls + new_image_urls
             ticket.image_urls = updated_urls
-            ticket.image_url = updated_urls[0] if updated_urls else None
-            if actor == "admin":
-                admin_activity = True
-            else:
-                customer_activity = True
-        elif updates.image_url is not None:
-            ticket.image_url = updates.image_url
             if actor == "admin":
                 admin_activity = True
             else:

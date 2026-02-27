@@ -24,6 +24,13 @@ def _absolute_image_url(request: Request, image_url: Optional[str]) -> Optional[
     base_url = str(request.base_url).rstrip("/")
     return f"{base_url}{image_url}"
 
+
+def _absolute_image_urls(request: Request, image_urls: Optional[List[str]]) -> List[str]:
+    if not image_urls:
+        return []
+    return [_absolute_image_url(request, url) for url in image_urls if url]
+
+
 @router.post("/", response_model=TicketRead)
 async def create_ticket(
     request: Request,
@@ -38,9 +45,7 @@ async def create_ticket(
         raise HTTPException(status_code=404, detail="User not found")
     
     ticket = await service.create_ticket(user_id, description, images)
-    ticket.image_url = _absolute_image_url(request, ticket.image_url)
-    if ticket.image_urls:
-        ticket.image_urls = [_absolute_image_url(request, url) for url in ticket.image_urls if url]
+    ticket.image_urls = _absolute_image_urls(request, ticket.image_urls)
     return ticket
 
 @router.get("/", response_model=List[TicketRead])
@@ -52,9 +57,7 @@ async def list_tickets(
     service = TicketService(db)
     tickets = await service.get_tickets(user_id)
     for t in tickets:
-        t.image_url = _absolute_image_url(request, t.image_url)
-        if t.image_urls:
-            t.image_urls = [_absolute_image_url(request, url) for url in t.image_urls if url]
+        t.image_urls = _absolute_image_urls(request, t.image_urls)
     return tickets
 
 @router.get("/all", response_model=TicketListResponse)
@@ -80,9 +83,7 @@ async def list_all_tickets(
     if safe_page != page:
         tickets, _ = await service.get_all_tickets(page=safe_page, page_size=page_size)
     for t in tickets:
-        t.image_url = _absolute_image_url(request, t.image_url)
-        if t.image_urls:
-            t.image_urls = [_absolute_image_url(request, url) for url in t.image_urls if url]
+        t.image_urls = _absolute_image_urls(request, t.image_urls)
     return TicketListResponse(
         items=tickets,
         totalItems=total,
@@ -109,9 +110,7 @@ async def mark_customer_open(
     ticket = await service.mark_customer_open(ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    ticket.image_url = _absolute_image_url(request, ticket.image_url)
-    if ticket.image_urls:
-        ticket.image_urls = [_absolute_image_url(request, url) for url in ticket.image_urls if url]
+    ticket.image_urls = _absolute_image_urls(request, ticket.image_urls)
     return ticket
 
 @router.post("/{ticket_id}/mark-read", response_model=TicketRead)
@@ -124,9 +123,7 @@ async def mark_admin_read(
     ticket = await service.mark_admin_read(ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    ticket.image_url = _absolute_image_url(request, ticket.image_url)
-    if ticket.image_urls:
-        ticket.image_urls = [_absolute_image_url(request, url) for url in ticket.image_urls if url]
+    ticket.image_urls = _absolute_image_urls(request, ticket.image_urls)
     return ticket
 
 @router.patch("/{ticket_id}", response_model=TicketRead)
@@ -154,7 +151,5 @@ async def update_ticket(
     ticket = await service.update_ticket(ticket_id, updates, images, actor=effective_actor)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    ticket.image_url = _absolute_image_url(request, ticket.image_url)
-    if ticket.image_urls:
-        ticket.image_urls = [_absolute_image_url(request, url) for url in ticket.image_urls if url]
+    ticket.image_urls = _absolute_image_urls(request, ticket.image_urls)
     return ticket

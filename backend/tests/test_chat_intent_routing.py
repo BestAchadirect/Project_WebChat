@@ -46,7 +46,9 @@ def test_intent_router_extracts_nlu_and_sku_signal() -> None:
         ("browse_products", True, None, True, False),
         ("search_specific", False, None, True, False),
         ("knowledge_query", False, None, False, True),
+        ("knowledge_query", True, None, False, True),
         ("off_topic", False, None, False, True),
+        ("off_topic", True, None, False, True),
     ],
 )
 def test_retrieval_gate_intent_matrix(
@@ -70,3 +72,23 @@ def test_retrieval_gate_intent_matrix(
 
     assert decision.use_products is expected_products
     assert decision.use_knowledge is expected_knowledge
+
+
+@pytest.mark.regression
+def test_retrieval_gate_off_topic_allows_products_only_with_explicit_signal() -> None:
+    decision = RetrievalGate.decide(
+        intent="off_topic",
+        show_products_flag=True,
+        is_product_intent=False,
+        sku_token=None,
+        has_attribute_filters=True,
+        detail_request=True,
+        user_text="show stock for barbell black 25mm gauge",
+        infer_jewelry_type_filter=lambda _: "Barbell",
+        is_question_like_fn=lambda _: False,
+        is_complex_query_fn=lambda _: False,
+        count_policy_topics_fn=lambda _: 0,
+    )
+
+    assert decision.use_products is True
+    assert decision.use_knowledge is True

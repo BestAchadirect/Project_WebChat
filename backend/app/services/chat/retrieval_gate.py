@@ -23,15 +23,24 @@ class RetrievalGate:
         show_products_flag: bool,
         is_product_intent: bool,
         sku_token: Optional[str],
+        has_attribute_filters: bool = False,
+        detail_request: bool = False,
         user_text: str,
         infer_jewelry_type_filter: Callable[[str], Optional[str]],
         is_question_like_fn: Callable[[str], bool],
         is_complex_query_fn: Callable[[str], bool],
         count_policy_topics_fn: Callable[[str], int],
     ) -> RetrievalDecision:
-        if intent in {"knowledge_query", "off_topic"}:
+        explicit_product_signal = bool(
+            sku_token or has_attribute_filters or detail_request or infer_jewelry_type_filter(user_text)
+        )
+
+        if intent == "off_topic":
             use_knowledge = True
-            use_products = show_products_flag or bool(sku_token)
+            use_products = explicit_product_signal
+        elif intent == "knowledge_query":
+            use_knowledge = True
+            use_products = explicit_product_signal
         elif intent in {"browse_products", "search_specific"}:
             use_products = True
             use_knowledge = False

@@ -14,6 +14,7 @@ class ProductContextAssembler:
         show_products_flag: bool,
         intent: str,
         default_threshold: float,
+        allow_fallback_products: bool = True,
     ) -> Tuple[List[ProductCard], List[KnowledgeSource], bool]:
         top_products: List[ProductCard] = []
         sources: List[KnowledgeSource] = []
@@ -45,7 +46,7 @@ class ProductContextAssembler:
                     relevance=1.0 - best_distance,
                 )
             )
-        elif show_products_flag and product_cards:
+        elif show_products_flag and product_cards and allow_fallback_products:
             top_products = product_cards[:10]
             product_text = "\n".join(
                 [
