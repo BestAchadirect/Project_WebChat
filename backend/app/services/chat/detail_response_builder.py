@@ -82,6 +82,61 @@ class DetailResponseBuilder:
             parts.append("Missing: " + ", ".join(labels))
         return f"{index}. " + "; ".join(parts)
 
+    @staticmethod
+    def _append_unique(items: List[str], value: str) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        if text in items:
+            return
+        items.append(text)
+
+    @classmethod
+    def _build_follow_ups(
+        cls,
+        *,
+        display_items: List[Any],
+        requested_fields: List[str],
+        attribute_filters: Dict[str, str],
+        wants_image: bool,
+    ) -> List[str]:
+        follow_ups: List[str] = []
+        requested = {str(field or "").strip().lower() for field in requested_fields}
+        first_sku = str(getattr(display_items[0], "sku", "") or "").strip() if display_items else ""
+        second_sku = str(getattr(display_items[1], "sku", "") or "").strip() if len(display_items) > 1 else ""
+
+        if len(display_items) > 1:
+            if first_sku:
+                cls._append_unique(follow_ups, f"Show full details for SKU {first_sku}.")
+            if first_sku and second_sku:
+                cls._append_unique(follow_ups, f"Compare SKU {first_sku} and SKU {second_sku}.")
+            if "stock" not in requested:
+                cls._append_unique(follow_ups, "Show in-stock items only.")
+            if "price" not in requested:
+                cls._append_unique(follow_ups, "Show prices for these items.")
+            for key, label in (
+                ("material", "material"),
+                ("color", "color"),
+                ("gauge", "gauge"),
+                ("threading", "threading"),
+            ):
+                if key not in attribute_filters:
+                    cls._append_unique(follow_ups, f"Filter these results by {label}.")
+                    break
+        elif first_sku:
+            if "price" not in requested:
+                cls._append_unique(follow_ups, f"Show price for SKU {first_sku}.")
+            if "stock" not in requested:
+                cls._append_unique(follow_ups, f"Show stock for SKU {first_sku}.")
+            if "image" not in requested:
+                cls._append_unique(follow_ups, f"Show image for SKU {first_sku}.")
+            if "attributes" not in requested:
+                cls._append_unique(follow_ups, f"Show specs for SKU {first_sku}.")
+
+        if wants_image and any(not getattr(card, "image_url", None) for card in display_items):
+            cls._append_unique(follow_ups, "Some items have no image. Ask for price/stock instead.")
+        return follow_ups[:5]
+
     @classmethod
     def build_detail_reply(
         cls,
@@ -98,14 +153,10 @@ class DetailResponseBuilder:
             if attribute_filters:
                 filters_text = ", ".join([f"{k}={v}" for k, v in sorted(attribute_filters.items())])
                 reply += f" Checked filters: {filters_text}."
-            follow_ups = [
-                "Share a SKU or product code for an exact match.",
-                "Try fewer filters and ask again.",
-            ]
             return DetailResponsePayload(
                 reply_text=reply,
                 carousel_msg="",
-                follow_up_questions=follow_ups,
+                follow_up_questions=[],
                 product_carousel=[],
                 card_policy_reason="no_matches",
             )
@@ -139,11 +190,12 @@ class DetailResponseBuilder:
             show_cards = False
             reason = "single_match_text_only"
 
-        follow_ups: List[str] = []
-        if len(display_items) > 1:
-            follow_ups.append("Tell me the SKU for exact item details.")
-        if wants_image and any(not card.image_url for card in display_items):
-            follow_ups.append("Some items have no image. Ask for price/stock instead.")
+        follow_ups = cls._build_follow_ups(
+            display_items=display_items,
+            requested_fields=requested_fields,
+            attribute_filters=attribute_filters,
+            wants_image=wants_image,
+        )
 
         return DetailResponsePayload(
             reply_text=reply_text,

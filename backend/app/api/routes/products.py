@@ -7,12 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, desc, or_, func, and_, false, text
 
 from app.api.deps import get_db
+from app.core.config import settings
 from app.models.product import Product, ProductEmbedding, StockStatus
 from app.models.product_group import ProductGroup
 from app.models.product_change import ProductChange
 from app.models.product_attribute import ProductAttributeValue
 from app.schemas.product import Product as ProductSchema, ProductUpdate, ProductListResponse, ProductBulkUpdateRequest
 from app.services.catalog.attributes_service import eav_service
+from app.services.catalog.projection_service import product_projection_sync_service
 from app.services.imports.service import data_import_service
 from app.services.catalog.attribute_sync_service import product_attribute_sync_service
 from app.utils.pagination import normalize_pagination
@@ -67,6 +69,31 @@ FILTER_FACETS = [
     "category",
 ]
 
+MATERIAL_FALLBACK_TOKENS: Dict[str, List[str]] = {
+    "Titanium G23": ["titanium g23", "g23", "implant grade", "implant-grade"],
+    "Titanium": ["titanium"],
+    "Steel": ["surgical steel", "stainless steel", "316l", "steel"],
+    "Gold": ["gold"],
+    "Silver": ["silver"],
+    "Niobium": ["niobium"],
+    "Acrylic": ["acrylic"],
+}
+
+JEWELRY_TYPE_FALLBACK_TOKENS: Dict[str, List[str]] = {
+    "Barbell": ["barbell", "barbells"],
+    "Circular Barbell": ["circular barbell", "horseshoe"],
+    "Labret": ["labret", "labrets"],
+    "Ring": ["ring", "rings"],
+    "Stud": ["stud", "studs"],
+    "Tunnel": ["tunnel", "tunnels"],
+    "Plug": ["plug", "plugs"],
+}
+
+DUAL_SOURCE_FALLBACKS: Dict[str, Dict[str, List[str]]] = {
+    "material": MATERIAL_FALLBACK_TOKENS,
+    "jewelry_type": JEWELRY_TYPE_FALLBACK_TOKENS,
+}
+
 
 def _normalize_filter_values(values: Optional[List[str]]) -> List[str]:
     if not values:
@@ -98,6 +125,94 @@ def _collect_attr_filters(**kwargs: Optional[List[str]]) -> Dict[str, List[str]]
         if values:
             filters[name] = values
     return filters
+
+
+def _normalize_casefold_values(values: List[str]) -> List[str]:
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip().lower()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _json_attr_text_expr(field: str):
+    return func.lower(func.btrim(Product.attributes[field].astext))
+
+
+def _search_text_token_condition(tokens: List[str]):
+    clean_tokens = [str(token or "").strip().lower() for token in tokens if str(token or "").strip()]
+    if not clean_tokens:
+        return false()
+    search_text = func.lower(func.coalesce(Product.search_text, ""))
+    return or_(*[search_text.like(f"%{token}%") for token in clean_tokens])
+
+
+def _fallback_filter_tokens(field: str, raw_value: str) -> List[str]:
+    key = str(raw_value or "").strip().lower()
+    if not key:
+        return []
+    mapping = DUAL_SOURCE_FALLBACKS.get(field, {})
+    for label, tokens in mapping.items():
+        if label.lower() == key:
+            return list(tokens)
+    return [key]
+
+
+def _infer_fallback_attribute_value(field: str, search_text: Optional[str]) -> Optional[str]:
+    text = str(search_text or "").strip().lower()
+    if not text:
+        return None
+    mapping = DUAL_SOURCE_FALLBACKS.get(field, {})
+    for label, tokens in mapping.items():
+        for token in tokens:
+            needle = str(token or "").strip().lower()
+            if needle and needle in text:
+                return label
+    return None
+
+
+def _apply_dual_source_attr_filter(
+    query,
+    count_query,
+    *,
+    field: str,
+    raw_values: List[str],
+    normalized_values: List[str],
+    attribute_id: Optional[UUID],
+):
+    if not normalized_values:
+        return query, count_query
+
+    json_condition = _json_attr_text_expr(field).in_(normalized_values)
+    condition = json_condition
+    if attribute_id is not None:
+        eav_subq = (
+            select(ProductAttributeValue.product_id)
+            .where(
+                and_(
+                    ProductAttributeValue.attribute_id == attribute_id,
+                    func.lower(func.btrim(ProductAttributeValue.value)).in_(normalized_values),
+                )
+            )
+        ).subquery()
+        condition = or_(json_condition, Product.id.in_(select(eav_subq.c.product_id)))
+
+    fallback_conditions = []
+    for value in raw_values:
+        tokens = _fallback_filter_tokens(field, value)
+        if not tokens:
+            continue
+        fallback_conditions.append(_search_text_token_condition(tokens))
+    if fallback_conditions:
+        condition = or_(condition, or_(*fallback_conditions))
+
+    query = query.where(condition)
+    count_query = count_query.where(condition)
+    return query, count_query
 
 
 def _apply_base_filters(
@@ -137,6 +252,24 @@ def _apply_base_filters(
     return query
 
 def _build_product_schema(product: Product, attrs: dict) -> ProductSchema:
+    merged_attrs: Dict[str, Any] = dict(getattr(product, "attributes", {}) or {})
+    for key, value in (attrs or {}).items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        merged_attrs[key] = value
+
+    if not merged_attrs.get("material"):
+        inferred_material = _infer_fallback_attribute_value("material", getattr(product, "search_text", None))
+        if inferred_material:
+            merged_attrs["material"] = inferred_material
+
+    if not merged_attrs.get("jewelry_type"):
+        inferred_type = _infer_fallback_attribute_value("jewelry_type", getattr(product, "search_text", None))
+        if inferred_type:
+            merged_attrs["jewelry_type"] = inferred_type
+
     return ProductSchema(
         id=str(product.id),
         object_id=product.object_id,
@@ -149,30 +282,31 @@ def _build_product_schema(product: Product, attrs: dict) -> ProductSchema:
         description=product.description,
         in_stock=product.stock_status == StockStatus.in_stock,
         stock_status=product.stock_status,
+        stock_qty=product.stock_qty,
         visibility=product.visibility,
         is_featured=product.is_featured,
         priority=product.priority,
         master_code=product.master_code,
-        jewelry_type=attrs.get("jewelry_type"),
-        material=attrs.get("material"),
-        length=attrs.get("length"),
-        size=attrs.get("size"),
-        cz_color=attrs.get("cz_color"),
-        design=attrs.get("design"),
-        crystal_color=attrs.get("crystal_color"),
-        color=attrs.get("color"),
-        gauge=attrs.get("gauge"),
-        size_in_pack=attrs.get("size_in_pack"),
-        rack=attrs.get("rack"),
-        height=attrs.get("height"),
-        packing_option=attrs.get("packing_option"),
-        pincher_size=attrs.get("pincher_size"),
-        ring_size=attrs.get("ring_size"),
-        quantity_in_bulk=attrs.get("quantity_in_bulk"),
-        opal_color=attrs.get("opal_color"),
-        threading=attrs.get("threading"),
-        outer_diameter=attrs.get("outer_diameter"),
-        pearl_color=attrs.get("pearl_color"),
+        jewelry_type=merged_attrs.get("jewelry_type"),
+        material=merged_attrs.get("material"),
+        length=merged_attrs.get("length"),
+        size=merged_attrs.get("size"),
+        cz_color=merged_attrs.get("cz_color"),
+        design=merged_attrs.get("design"),
+        crystal_color=merged_attrs.get("crystal_color"),
+        color=merged_attrs.get("color"),
+        gauge=merged_attrs.get("gauge"),
+        size_in_pack=merged_attrs.get("size_in_pack"),
+        rack=merged_attrs.get("rack"),
+        height=merged_attrs.get("height"),
+        packing_option=merged_attrs.get("packing_option"),
+        pincher_size=merged_attrs.get("pincher_size"),
+        ring_size=merged_attrs.get("ring_size"),
+        quantity_in_bulk=merged_attrs.get("quantity_in_bulk"),
+        opal_color=merged_attrs.get("opal_color"),
+        threading=merged_attrs.get("threading"),
+        outer_diameter=merged_attrs.get("outer_diameter"),
+        pearl_color=merged_attrs.get("pearl_color"),
     )
 
 
@@ -187,13 +321,17 @@ async def _apply_attribute_filters(db, query, count_query, filters: Dict[str, Li
         definition = definitions.get(name)
         if not definition:
             return query.where(false()), count_query.where(false())
-        for value in values:
-            conditions.append(
-                and_(
-                    ProductAttributeValue.attribute_id == definition.id,
-                    ProductAttributeValue.value == str(value),
-                )
+        normalized_values = _normalize_casefold_values(values)
+        if not normalized_values:
+            continue
+        conditions.append(
+            and_(
+                ProductAttributeValue.attribute_id == definition.id,
+                func.lower(func.btrim(ProductAttributeValue.value)).in_(normalized_values),
             )
+        )
+    if not conditions:
+        return query.where(false()), count_query.where(false())
     subq = (
         select(ProductAttributeValue.product_id)
         .where(or_(*conditions))
@@ -315,7 +453,28 @@ async def list_products(
         quantity_in_bulk=quantity_in_bulk,
         category=category,
     )
-        
+
+    dual_source_fields = ("material", "jewelry_type")
+    dual_source_filters: Dict[str, List[str]] = {}
+    for field in dual_source_fields:
+        values = attr_filters.pop(field, [])
+        if values:
+            dual_source_filters[field] = values
+
+    if dual_source_filters:
+        definitions = await eav_service.get_definitions_by_name(db, list(dual_source_filters.keys()))
+        for field, values in dual_source_filters.items():
+            normalized_values = _normalize_casefold_values(values)
+            definition = definitions.get(field) if definitions else None
+            query, count_query = _apply_dual_source_attr_filter(
+                query,
+                count_query,
+                field=field,
+                raw_values=values,
+                normalized_values=normalized_values,
+                attribute_id=(definition.id if definition else None),
+            )
+
     if attr_filters:
         query, count_query = await _apply_attribute_filters(db, query, count_query, attr_filters)
     
@@ -417,6 +576,27 @@ async def list_product_filters(
         category=category,
     )
 
+    dual_source_fields = ("material", "jewelry_type")
+    dual_source_filters: Dict[str, List[str]] = {}
+    for field in dual_source_fields:
+        values = attr_filters.pop(field, [])
+        if values:
+            dual_source_filters[field] = values
+
+    if dual_source_filters:
+        definitions = await eav_service.get_definitions_by_name(db, list(dual_source_filters.keys()))
+        for field, values in dual_source_filters.items():
+            normalized_values = _normalize_casefold_values(values)
+            definition = definitions.get(field) if definitions else None
+            base_query, _ = _apply_dual_source_attr_filter(
+                base_query,
+                base_query,
+                field=field,
+                raw_values=values,
+                normalized_values=normalized_values,
+                attribute_id=(definition.id if definition else None),
+            )
+
     if attr_filters:
         base_query, _ = await _apply_attribute_filters(db, base_query, base_query, attr_filters)
 
@@ -424,31 +604,71 @@ async def list_product_filters(
     total_result = await db.execute(select(func.count()).select_from(base_subq))
     total = total_result.scalar() or 0
 
-    definitions = await eav_service.get_definitions_by_name(db, FILTER_FACETS)
-    if not definitions:
-        return {"total": total, "filters": {}}
-
-    attr_id_to_name = {definition.id: name for name, definition in definitions.items()}
-    stmt = (
-        select(
-            ProductAttributeValue.attribute_id,
-            ProductAttributeValue.value,
-            func.count(func.distinct(ProductAttributeValue.product_id)).label("count"),
-        )
-        .join(base_subq, ProductAttributeValue.product_id == base_subq.c.id)
-        .where(ProductAttributeValue.attribute_id.in_(attr_id_to_name.keys()))
-        .group_by(ProductAttributeValue.attribute_id, ProductAttributeValue.value)
-        .order_by(ProductAttributeValue.attribute_id, func.count(func.distinct(ProductAttributeValue.product_id)).desc())
-    )
-    result = await db.execute(stmt)
-    rows = result.all()
-
     filters_payload: Dict[str, List[Dict[str, Any]]] = {name: [] for name in FILTER_FACETS}
-    for attribute_id, value, count in rows:
-        name = attr_id_to_name.get(attribute_id)
-        if not name or value is None:
+
+    definitions = await eav_service.get_definitions_by_name(db, FILTER_FACETS)
+    attr_id_to_name = {definition.id: name for name, definition in (definitions or {}).items()}
+    if attr_id_to_name:
+        stmt = (
+            select(
+                ProductAttributeValue.attribute_id,
+                ProductAttributeValue.value,
+                func.count(func.distinct(ProductAttributeValue.product_id)).label("count"),
+            )
+            .join(base_subq, ProductAttributeValue.product_id == base_subq.c.id)
+            .where(ProductAttributeValue.attribute_id.in_(attr_id_to_name.keys()))
+            .group_by(ProductAttributeValue.attribute_id, ProductAttributeValue.value)
+            .order_by(ProductAttributeValue.attribute_id, func.count(func.distinct(ProductAttributeValue.product_id)).desc())
+        )
+        result = await db.execute(stmt)
+        rows = result.all()
+        for attribute_id, value, count in rows:
+            name = attr_id_to_name.get(attribute_id)
+            if not name or value is None:
+                continue
+            filters_payload.setdefault(name, []).append({"value": value, "count": int(count)})
+
+    for field in ("material", "jewelry_type"):
+        if filters_payload.get(field):
             continue
-        filters_payload.setdefault(name, []).append({"value": value, "count": int(count)})
+        fallback_stmt = (
+            select(
+                func.min(Product.attributes[field].astext).label("value"),
+                func.count(func.distinct(Product.id)).label("count"),
+            )
+            .join(base_subq, Product.id == base_subq.c.id)
+            .where(Product.attributes[field].astext.isnot(None))
+            .where(func.btrim(Product.attributes[field].astext) != "")
+            .group_by(_json_attr_text_expr(field))
+            .order_by(func.count(func.distinct(Product.id)).desc())
+        )
+        fallback_rows = (await db.execute(fallback_stmt)).all()
+        if fallback_rows:
+            filters_payload[field] = [
+                {"value": row.value, "count": int(row.count)}
+                for row in fallback_rows
+                if row.value is not None
+            ]
+
+    for field in ("material", "jewelry_type"):
+        if filters_payload.get(field):
+            continue
+        inferred_rows: List[Dict[str, Any]] = []
+        fallback_map = DUAL_SOURCE_FALLBACKS.get(field, {})
+        for label, tokens in fallback_map.items():
+            if not tokens:
+                continue
+            inferred_stmt = (
+                select(func.count(func.distinct(Product.id)).label("count"))
+                .join(base_subq, Product.id == base_subq.c.id)
+                .where(_search_text_token_condition(tokens))
+            )
+            inferred_count = int((await db.execute(inferred_stmt)).scalar() or 0)
+            if inferred_count > 0:
+                inferred_rows.append({"value": label, "count": inferred_count})
+        if inferred_rows:
+            inferred_rows.sort(key=lambda item: int(item.get("count", 0)), reverse=True)
+            filters_payload[field] = inferred_rows
 
     return {"total": total, "filters": filters_payload}
 
@@ -504,6 +724,8 @@ async def update_product(
     search_changed = False
     if base_updates or attr_updates:
         search_changed = product_attribute_sync_service.recompute_product_search_fields(product=product)
+        if bool(getattr(settings, "CHAT_PROJECTION_DUAL_WRITE_ENABLED", True)):
+            await product_projection_sync_service.sync_products(db, products=[product])
     product.updated_at = datetime.utcnow()
         
     await db.commit()
@@ -606,6 +828,8 @@ async def bulk_update_products(
         if base_updates or attr_updates:
             if product_attribute_sync_service.recompute_product_search_fields(product=product):
                 embed_ids.append(product.id)
+        if (base_updates or attr_updates) and bool(getattr(settings, "CHAT_PROJECTION_DUAL_WRITE_ENABLED", True)):
+            await product_projection_sync_service.sync_products(db, products=[product])
         product.updated_at = now_utc
 
     await db.commit()
@@ -757,6 +981,122 @@ async def product_attribute_drift_health(
             "attribute": row.name,
             "eav_value": row.eav_value,
             "json_value": row.json_value,
+        }
+        for row in sample_rows
+    ]
+    return {
+        "mismatch_count": mismatch_count,
+        "sample_limit": sample_limit,
+        "samples": samples,
+    }
+
+
+@router.get("/health/projection-drift")
+async def product_projection_drift_health(
+    sample_limit: int = Query(20, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    count_sql = text(
+        """
+        WITH expected AS (
+            SELECT
+                p.id AS product_id,
+                p.sku AS sku,
+                LOWER(BTRIM(COALESCE(p.sku, ''))) AS sku_norm,
+                LOWER(BTRIM(COALESCE(p.attributes->>'material', ''))) AS material_norm,
+                LOWER(BTRIM(COALESCE(p.attributes->>'jewelry_type', p.attributes->>'type', ''))) AS jewelry_type_norm,
+                LOWER(BTRIM(COALESCE(p.attributes->>'gauge', ''))) AS gauge_norm,
+                LOWER(BTRIM(COALESCE(p.attributes->>'threading', ''))) AS threading_norm,
+                LOWER(BTRIM(COALESCE(p.attributes->>'color', ''))) AS color_norm,
+                LOWER(BTRIM(COALESCE(p.attributes->>'opal_color', ''))) AS opal_color_norm,
+                LOWER(BTRIM(COALESCE(p.search_text, ''))) AS search_text_norm,
+                LOWER(BTRIM(COALESCE(p.stock_status::text, ''))) AS stock_status_norm,
+                COALESCE(p.is_active, TRUE) AS is_active
+            FROM products p
+        )
+        SELECT COUNT(*)
+        FROM expected e
+        LEFT JOIN product_search_projection psp ON psp.product_id = e.product_id
+        WHERE psp.product_id IS NULL
+           OR COALESCE(psp.sku_norm, '') <> e.sku_norm
+           OR COALESCE(psp.material_norm, '') <> e.material_norm
+           OR COALESCE(psp.jewelry_type_norm, '') <> e.jewelry_type_norm
+           OR COALESCE(psp.gauge_norm, '') <> e.gauge_norm
+           OR COALESCE(psp.threading_norm, '') <> e.threading_norm
+           OR COALESCE(psp.color_norm, '') <> e.color_norm
+           OR COALESCE(psp.opal_color_norm, '') <> e.opal_color_norm
+           OR COALESCE(psp.search_text_norm, '') <> e.search_text_norm
+           OR COALESCE(psp.stock_status_norm, '') <> e.stock_status_norm
+           OR COALESCE(psp.is_active, FALSE) <> e.is_active
+        """
+    )
+    sample_sql = text(
+        """
+        WITH expected AS (
+            SELECT
+                p.id AS product_id,
+                p.sku AS sku,
+                LOWER(BTRIM(COALESCE(p.sku, ''))) AS sku_norm,
+                LOWER(BTRIM(COALESCE(p.attributes->>'material', ''))) AS material_norm,
+                LOWER(BTRIM(COALESCE(p.attributes->>'jewelry_type', p.attributes->>'type', ''))) AS jewelry_type_norm,
+                LOWER(BTRIM(COALESCE(p.attributes->>'gauge', ''))) AS gauge_norm,
+                LOWER(BTRIM(COALESCE(p.attributes->>'threading', ''))) AS threading_norm,
+                LOWER(BTRIM(COALESCE(p.attributes->>'color', ''))) AS color_norm,
+                LOWER(BTRIM(COALESCE(p.attributes->>'opal_color', ''))) AS opal_color_norm,
+                LOWER(BTRIM(COALESCE(p.search_text, ''))) AS search_text_norm,
+                LOWER(BTRIM(COALESCE(p.stock_status::text, ''))) AS stock_status_norm,
+                COALESCE(p.is_active, TRUE) AS is_active
+            FROM products p
+        )
+        SELECT
+            e.sku,
+            e.sku_norm AS expected_sku_norm,
+            psp.sku_norm AS actual_sku_norm,
+            e.material_norm AS expected_material_norm,
+            psp.material_norm AS actual_material_norm,
+            e.color_norm AS expected_color_norm,
+            psp.color_norm AS actual_color_norm,
+            e.opal_color_norm AS expected_opal_color_norm,
+            psp.opal_color_norm AS actual_opal_color_norm
+        FROM expected e
+        LEFT JOIN product_search_projection psp ON psp.product_id = e.product_id
+        WHERE psp.product_id IS NULL
+           OR COALESCE(psp.sku_norm, '') <> e.sku_norm
+           OR COALESCE(psp.material_norm, '') <> e.material_norm
+           OR COALESCE(psp.jewelry_type_norm, '') <> e.jewelry_type_norm
+           OR COALESCE(psp.gauge_norm, '') <> e.gauge_norm
+           OR COALESCE(psp.threading_norm, '') <> e.threading_norm
+           OR COALESCE(psp.color_norm, '') <> e.color_norm
+           OR COALESCE(psp.opal_color_norm, '') <> e.opal_color_norm
+           OR COALESCE(psp.search_text_norm, '') <> e.search_text_norm
+           OR COALESCE(psp.stock_status_norm, '') <> e.stock_status_norm
+           OR COALESCE(psp.is_active, FALSE) <> e.is_active
+        ORDER BY e.sku
+        LIMIT :sample_limit
+        """
+    )
+    try:
+        mismatch_count = int((await db.execute(count_sql)).scalar() or 0)
+        sample_rows = (await db.execute(sample_sql, {"sample_limit": sample_limit})).all()
+    except Exception as exc:
+        return {
+            "available": False,
+            "error": str(exc),
+            "sample_limit": sample_limit,
+            "mismatch_count": None,
+            "samples": [],
+        }
+    samples = [
+        {
+            "sku": row.sku,
+            "expected_sku_norm": row.expected_sku_norm,
+            "actual_sku_norm": row.actual_sku_norm,
+            "expected_material_norm": row.expected_material_norm,
+            "actual_material_norm": row.actual_material_norm,
+            "expected_color_norm": row.expected_color_norm,
+            "actual_color_norm": row.actual_color_norm,
+            "expected_opal_color_norm": row.expected_opal_color_norm,
+            "actual_opal_color_norm": row.actual_opal_color_norm,
         }
         for row in sample_rows
     ]

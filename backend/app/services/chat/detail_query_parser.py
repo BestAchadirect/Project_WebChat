@@ -51,6 +51,11 @@ _KNOWN_COLORS = {
     "silver",
     "gold",
     "rose gold",
+    "opal",
+}
+
+_COLOR_SYNONYMS = {
+    "opal color": "opal",
 }
 
 _JEWELRY_TYPE_PATTERNS = {
@@ -65,7 +70,13 @@ _JEWELRY_TYPE_PATTERNS = {
 
 _MATERIAL_PATTERNS = {
     "titanium g23": "titanium g23",
+    "implant grade": "titanium g23",
+    "implant-grade": "titanium g23",
+    "g23": "titanium g23",
     "titanium": "titanium",
+    "surgical steel": "steel",
+    "stainless steel": "steel",
+    "316l": "steel",
     "steel": "steel",
     "gold": "gold",
     "silver": "silver",
@@ -182,9 +193,15 @@ class DetailQueryParser:
             if re.search(rf"\b{re.escape(color)}\b", text):
                 attribute_filters.setdefault("color", color)
                 break
+        for phrase, normalized in _COLOR_SYNONYMS.items():
+            if re.search(rf"\b{re.escape(phrase)}\b", text):
+                attribute_filters.setdefault("color", normalized)
+                break
 
         deduped_fields = sorted(set(requested_fields), key=lambda field: FIELD_ORDER.get(field, 999))
-        is_detail_request = bool(deduped_fields or attribute_filters or wants_image)
+        # Treat filter-only queries as browse/list requests.
+        # Detail mode should trigger when user asks for explicit fields (price/stock/image/specs).
+        is_detail_request = bool(deduped_fields or wants_image)
         return DetailQuery(
             requested_fields=deduped_fields,
             attribute_filters=attribute_filters,

@@ -92,3 +92,24 @@ def test_retrieval_gate_off_topic_allows_products_only_with_explicit_signal() ->
 
     assert decision.use_products is True
     assert decision.use_knowledge is True
+
+
+@pytest.mark.regression
+def test_retrieval_gate_strict_separation_disables_mixed_mode() -> None:
+    decision = RetrievalGate.decide(
+        intent="off_topic",
+        show_products_flag=True,
+        is_product_intent=False,
+        sku_token="SKU123",
+        strict_separation=True,
+        has_attribute_filters=True,
+        detail_request=True,
+        user_text="show stock for titanium ring",
+        infer_jewelry_type_filter=lambda _: "Ring",
+        is_question_like_fn=lambda _: True,
+        is_complex_query_fn=lambda _: False,
+        count_policy_topics_fn=lambda _: 2,
+    )
+
+    assert decision.use_products is False
+    assert decision.use_knowledge is True

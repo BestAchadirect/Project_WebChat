@@ -13,6 +13,8 @@ interface Message {
     qaLogId?: string;
     feedbackValue?: 1 | -1;
     feedbackPending?: boolean;
+    components?: ChatComponent[];
+    meta?: ChatResponseMeta;
 }
 
 interface KnowledgeSource {
@@ -38,6 +40,35 @@ interface ChatResponse {
     material_label?: string;
     jewelry_type_label?: string;
     qa_log_id?: string | null;
+    components?: ChatComponent[];
+    meta?: ChatResponseMeta;
+}
+
+type ChatComponentType =
+    | 'query_summary'
+    | 'result_count'
+    | 'product_cards'
+    | 'product_table'
+    | 'product_bullets'
+    | 'product_detail'
+    | 'compare'
+    | 'recommendations'
+    | 'clarify'
+    | 'knowledge_answer'
+    | 'action_result'
+    | 'error';
+
+interface ChatComponent {
+    type: ChatComponentType | string;
+    data?: Record<string, unknown>;
+}
+
+interface ChatResponseMeta {
+    query_summary?: string;
+    latency_ms?: number;
+    source?: 'sql' | 'vector' | 'tool' | 'knowledge' | 'error' | string;
+    llm_calls?: number;
+    embedding_calls?: number;
 }
 
 interface ChatHistoryMessage {
@@ -483,6 +514,296 @@ const ProductCarousel: React.FC<{
     );
 };
 
+const asRecord = (value: unknown): Record<string, unknown> | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    return value as Record<string, unknown>;
+};
+
+const asString = (value: unknown, fallback = ''): string => {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    return fallback;
+};
+
+const asNumber = (value: unknown, fallback = 0): number => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return fallback;
+};
+
+const asBoolean = (value: unknown): boolean => {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === 'true') return true;
+        if (normalized === 'false') return false;
+    }
+    if (typeof value === 'number') return value !== 0;
+    return false;
+};
+
+const asRecordArray = (value: unknown): Record<string, unknown>[] => {
+    if (!Array.isArray(value)) return [];
+    return value.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => item !== null);
+};
+
+const componentProductToCard = (raw: Record<string, unknown>): ProductCard => {
+    const productId = asString(raw.product_id || raw.id || raw.sku || '');
+    const sku = asString(raw.sku || raw.object_id || productId || '');
+    const title = asString(raw.title || raw.name || sku || 'Product');
+    return {
+        id: productId || sku,
+        object_id: asString(raw.object_id || sku),
+        sku,
+        legacy_sku: [],
+        name: title,
+        description: asString(raw.description || ''),
+        price: asNumber(raw.price, 0),
+        currency: asString(raw.currency, 'USD'),
+        stock_status: asBoolean(raw.in_stock)
+            ? 'in_stock'
+            : asString(raw.stock_status || 'out_of_stock'),
+        image_url: asString(raw.image_url || '') || null,
+        product_url: asString(raw.product_url || '') || null,
+        attributes: asRecord(raw.attributes) || {},
+    };
+};
+
+const ChatComponentsRenderer: React.FC<{
+    message: Message;
+    primaryColor: string;
+    displayCurrency: string;
+    thbToUsdRate?: number;
+    viewButtonText?: string;
+    materialLabel?: string;
+    jewelryTypeLabel?: string;
+    onQuickReply: (text: string) => void;
+}> = ({
+    message,
+    primaryColor,
+    displayCurrency,
+    thbToUsdRate,
+    viewButtonText,
+    materialLabel,
+    jewelryTypeLabel,
+    onQuickReply,
+}) => {
+    const components = Array.isArray(message.components) ? message.components : [];
+    if (components.length === 0) return null;
+    const hasLegacyCarousel = Boolean(message.productCarousel && message.productCarousel.length > 0);
+
+    return (
+        <div className="w-full mt-2 space-y-2">
+            {components.map((component, index) => {
+                const type = String(component.type || '').trim().toLowerCase();
+                const data = asRecord(component.data) || {};
+
+                if (type === 'query_summary') {
+                    const text = asString(data.text).trim();
+                    if (!text || text === message.content.trim()) return null;
+                    return (
+                        <div key={`${type}-${index}`} className="text-[11px] uppercase tracking-wider font-bold text-gray-500 px-1">
+                            {text}
+                        </div>
+                    );
+                }
+
+                if (type === 'result_count') {
+                    const count = asNumber(data.count, 0);
+                    return (
+                        <div key={`${type}-${index}`} className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-gray-100 text-gray-700 border border-gray-200">
+                            {count} result{count === 1 ? '' : 's'}
+                        </div>
+                    );
+                }
+
+                if (type === 'product_cards') {
+                    if (hasLegacyCarousel) return null;
+                    const cards = asRecordArray(data.cards).map(componentProductToCard);
+                    if (cards.length === 0) return null;
+                    return (
+                        <ProductCarousel
+                            key={`${type}-${index}`}
+                            items={cards}
+                            primaryColor={primaryColor}
+                            displayCurrency={displayCurrency}
+                            viewButtonText={viewButtonText}
+                            materialLabel={materialLabel}
+                            jewelryTypeLabel={jewelryTypeLabel}
+                            thbToUsdRate={thbToUsdRate}
+                        />
+                    );
+                }
+
+                if (type === 'product_detail') {
+                    if (hasLegacyCarousel) return null;
+                    const product = asRecord(data.product);
+                    if (!product) return null;
+                    return (
+                        <ProductCarousel
+                            key={`${type}-${index}`}
+                            items={[componentProductToCard(product)]}
+                            primaryColor={primaryColor}
+                            displayCurrency={displayCurrency}
+                            viewButtonText={viewButtonText}
+                            materialLabel={materialLabel}
+                            jewelryTypeLabel={jewelryTypeLabel}
+                            thbToUsdRate={thbToUsdRate}
+                        />
+                    );
+                }
+
+                if (type === 'product_table') {
+                    const columns = Array.isArray(data.columns) ? data.columns.map((item) => asString(item)) : [];
+                    const rows = asRecordArray(data.rows);
+                    if (columns.length === 0 || rows.length === 0) return null;
+                    return (
+                        <div key={`${type}-${index}`} className="w-full overflow-x-auto rounded-xl border border-gray-200 bg-white">
+                            <table className="min-w-full text-xs">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        {columns.map((column) => (
+                                            <th key={column} className="text-left px-3 py-2 font-black uppercase tracking-wide text-gray-500">
+                                                {column.replace(/_/g, ' ')}
+                                            </th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {rows.map((row, rowIndex) => (
+                                        <tr key={`${type}-row-${rowIndex}`} className="border-t border-gray-100">
+                                            {columns.map((column) => (
+                                                <td key={`${rowIndex}-${column}`} className="px-3 py-2 text-gray-700">
+                                                    {asString(row[column])}
+                                                </td>
+                                            ))}
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    );
+                }
+
+                if (type === 'product_bullets') {
+                    const items = Array.isArray(data.items) ? data.items.map((item) => asString(item).trim()).filter(Boolean) : [];
+                    if (items.length === 0) return null;
+                    return (
+                        <ul key={`${type}-${index}`} className="list-disc pl-5 text-sm text-gray-700 space-y-1">
+                            {items.map((item, itemIndex) => (
+                                <li key={`${type}-item-${itemIndex}`}>{item}</li>
+                            ))}
+                        </ul>
+                    );
+                }
+
+                if (type === 'compare') {
+                    const items = asRecordArray(data.items);
+                    if (items.length === 0) return null;
+                    return (
+                        <div key={`${type}-${index}`} className="w-full overflow-x-auto rounded-xl border border-gray-200 bg-white">
+                            <table className="min-w-full text-xs">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="text-left px-3 py-2 font-black uppercase tracking-wide text-gray-500">SKU</th>
+                                        <th className="text-left px-3 py-2 font-black uppercase tracking-wide text-gray-500">Title</th>
+                                        <th className="text-left px-3 py-2 font-black uppercase tracking-wide text-gray-500">Price</th>
+                                        <th className="text-left px-3 py-2 font-black uppercase tracking-wide text-gray-500">Stock</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {items.map((item, itemIndex) => (
+                                        <tr key={`${type}-item-${itemIndex}`} className="border-t border-gray-100">
+                                            <td className="px-3 py-2 font-semibold text-gray-800">{asString(item.sku)}</td>
+                                            <td className="px-3 py-2 text-gray-700">{asString(item.title)}</td>
+                                            <td className="px-3 py-2 text-gray-700">
+                                                {asNumber(item.price, 0).toFixed(2)} {asString(item.currency, 'USD')}
+                                            </td>
+                                            <td className="px-3 py-2 text-gray-700">{asBoolean(item.in_stock) ? 'In stock' : 'Out of stock'}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    );
+                }
+
+                if (type === 'recommendations') {
+                    const items = asRecordArray(data.items);
+                    if (items.length === 0) return null;
+                    return (
+                        <div key={`${type}-${index}`} className="w-full">
+                            <div className="text-[11px] uppercase tracking-wider font-bold text-gray-500 mb-1">Recommendations</div>
+                            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+                                {items.map((item, itemIndex) => {
+                                    const sku = asString(item.sku).trim();
+                                    const label = asString(item.title).trim() || sku || `Item ${itemIndex + 1}`;
+                                    if (!sku) return null;
+                                    return (
+                                        <button
+                                            key={`${type}-item-${itemIndex}`}
+                                            onClick={() => onQuickReply(`Show details for SKU ${sku}`)}
+                                            className="whitespace-nowrap flex-shrink-0 px-3 py-2 rounded-full border-2 bg-white text-xs font-bold text-gray-700 hover:bg-gray-50"
+                                            style={{ borderColor: primaryColor }}
+                                        >
+                                            {label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    );
+                }
+
+                if (type === 'clarify') {
+                    const messageText = asString(data.message).trim();
+                    if (!messageText || messageText === message.content.trim()) return null;
+                    return (
+                        <div key={`${type}-${index}`} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                            {messageText}
+                        </div>
+                    );
+                }
+
+                if (type === 'knowledge_answer') {
+                    const answer = asString(data.answer).trim();
+                    if (!answer || answer === message.content.trim()) return null;
+                    return (
+                        <div key={`${type}-${index}`} className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800">
+                            {answer}
+                        </div>
+                    );
+                }
+
+                if (type === 'action_result' || type === 'error') {
+                    const messageText = asString(data.message).trim();
+                    if (!messageText || messageText === message.content.trim()) return null;
+                    const isError = type === 'error';
+                    return (
+                        <div
+                            key={`${type}-${index}`}
+                            className={`rounded-xl px-3 py-2 text-sm border ${isError ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}
+                        >
+                            {messageText}
+                        </div>
+                    );
+                }
+
+                return null;
+            })}
+
+            {message.meta && (
+                <div className="text-[10px] text-gray-400 px-1">
+                    {asString(message.meta.source).toUpperCase()} · {asNumber(message.meta.latency_ms, 0).toFixed(0)}ms
+                </div>
+            )}
+        </div>
+    );
+};
+
 export const ChatWidget: React.FC<ChatWidgetProps> = ({
     isInline = false,
     title,
@@ -907,6 +1228,8 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                     jewelryTypeLabel: data.jewelry_type_label,
                     followUpQuestions: data.follow_up_questions || [],
                     qaLogId: data.qa_log_id || undefined,
+                    components: Array.isArray(data.components) ? data.components : [],
+                    meta: data.meta,
                 };
                 const updated: Message[] = [...prev, assistantMessage];
                 return updated;
@@ -1118,6 +1441,18 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                     </div>
                                 )}
                                 {messages.map((msg, idx) => (
+                                    (() => {
+                                        const componentTypes = new Set(
+                                            (msg.components || []).map((component) => String(component?.type || '').trim().toLowerCase())
+                                        );
+                                        const hasComponentProductView =
+                                            componentTypes.has('product_cards') ||
+                                            componentTypes.has('product_detail') ||
+                                            componentTypes.has('product_table') ||
+                                            componentTypes.has('product_bullets') ||
+                                            componentTypes.has('compare');
+
+                                        return (
                                     <div key={idx} className={`flex flex-col mb-4 animate-fade-in-up ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                                         <div className="max-w-[85%]">
                                             <div
@@ -1133,13 +1468,13 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                             </div>
                                         </div>
 
-                                        {msg.role === 'assistant' && msg.carouselMsg && (
+                                        {msg.role === 'assistant' && msg.carouselMsg && !hasComponentProductView && (
                                             <div className="max-w-[90%] mt-2 px-4 py-2 bg-gray-100/50 text-gray-500 rounded-xl text-[11px] font-bold uppercase tracking-wider border border-gray-100/50">
                                                 {msg.carouselMsg}
                                             </div>
                                         )}
 
-                                        {msg.role === 'assistant' && msg.productCarousel && msg.productCarousel.length > 0 && (
+                                        {msg.role === 'assistant' && msg.productCarousel && msg.productCarousel.length > 0 && !hasComponentProductView && (
                                             <div className="max-w-full w-full">
                                                 <ProductCarousel
                                                     items={msg.productCarousel}
@@ -1149,6 +1484,23 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                                     materialLabel={msg.materialLabel}
                                                     jewelryTypeLabel={msg.jewelryTypeLabel}
                                                     thbToUsdRate={config.thbToUsdRate}
+                                                />
+                                            </div>
+                                        )}
+
+                                        {msg.role === 'assistant' && msg.components && msg.components.length > 0 && (
+                                            <div className="max-w-full w-full">
+                                                <ChatComponentsRenderer
+                                                    message={msg}
+                                                    primaryColor={config.primaryColor}
+                                                    displayCurrency={config.displayCurrency}
+                                                    thbToUsdRate={config.thbToUsdRate}
+                                                    viewButtonText={msg.viewButtonText}
+                                                    materialLabel={msg.materialLabel}
+                                                    jewelryTypeLabel={msg.jewelryTypeLabel}
+                                                    onQuickReply={(question) => {
+                                                        void sendMessage(question);
+                                                    }}
                                                 />
                                             </div>
                                         )}
@@ -1201,6 +1553,8 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                             </div>
                                         )}
                                     </div>
+                                        );
+                                    })()
                                 ))}
 
 

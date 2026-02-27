@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     # OpenAI
     OPENAI_API_KEY: str
     OPENAI_MODEL: str = "gpt-4-turbo-preview"
+    OPENAI_TIMEOUT_SECONDS: float = 12.0
+    OPENAI_MAX_RETRIES: int = 1
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     EMBEDDING_CACHE_MAX_ITEMS: int = 512
     EMBEDDING_CACHE_TTL_SECONDS: int = 3600
@@ -41,6 +43,7 @@ class Settings(BaseSettings):
     CURRENCY_RATES_JSON: str = "{}"
     NLU_MODEL: str = "gpt-4o-mini"
     NLU_MAX_TOKENS: int = 250
+    NLU_FAST_PATH_ENABLED: bool = True
 
     UI_LOCALIZATION_ENABLED: bool = True
     UI_LOCALIZATION_MODEL: str = "gpt-4o-mini"
@@ -92,6 +95,38 @@ class Settings(BaseSettings):
     CHAT_DETAIL_MAX_MATCHES: int = 3
     CHAT_DETAIL_MIN_CONFIDENCE: float = 0.55
     CHAT_DETAIL_ENABLE_SEMANTIC_CACHE: bool = False
+    CHAT_FAIL_FAST_ON_EMBEDDING_ERROR: bool = True
+    CHAT_HOT_CACHE_ENABLED: bool = True
+    CHAT_HOT_CACHE_MAX_ITEMS: int = 3000
+    CHAT_HOT_CACHE_TTL_SECONDS: int = 300
+    CHAT_HOT_CACHE_VERSION: str = "v1"
+    CHAT_SQL_FIRST_ENABLED: bool = True
+    CHAT_PROJECTION_READ_ENABLED: bool = False
+    CHAT_PROJECTION_DUAL_WRITE_ENABLED: bool = True
+    CHAT_STRUCTURED_CANDIDATE_CAP: int = 300
+    CHAT_STRUCTURED_QUERY_CACHE_ENABLED: bool = True
+    CHAT_STRUCTURED_QUERY_CACHE_MAX_ITEMS: int = 2000
+    CHAT_STRUCTURED_QUERY_CACHE_TTL_SECONDS: int = 600
+    CHAT_NLU_HEURISTIC_THRESHOLD: float = 0.85
+    CHAT_EXTERNAL_CALL_BUDGET: int = 3
+    CHAT_EXTERNAL_CALL_FAIL_FAST_SECONDS: float = 3.5
+    CHAT_EXTERNAL_CALL_RETRY_MAX: int = 1
+    CHAT_VECTOR_TOP_K: int = 12
+    CHAT_CROSS_SELL_MODE: str = "off"  # off | inline
+    CHAT_MAX_HISTORY_TOKENS: int = 1200
+    CHAT_LLM_RENDER_ONLY_GUARD: bool = True
+    CHAT_HARD_MAX_LLM_CALLS_PER_REQUEST: int = 0
+    CHAT_HARD_MAX_EMBEDDINGS_PER_REQUEST: int = 1
+    CHAT_STRICT_RETRIEVAL_SEPARATION_ENABLED: bool = False
+    CHAT_CATALOG_VERSION: str = "v1"
+    CHAT_PROMPT_VERSION: str = "v1"
+    CHAT_CACHE_LOG_INTERVAL_SECONDS: int = 60
+    CHAT_COMPONENT_BUCKETS_ENABLED: bool = False
+    CHAT_COMPONENT_BUCKETS_SHADOW_MODE: bool = False
+    CHAT_COMPONENT_BUCKETS_REQUIRE_COMPONENTS: bool = False
+    CHAT_REDIS_CACHE_ENABLED: bool = False
+    CHAT_REDIS_URL: str = ""
+    CHAT_REDIS_KEY_PREFIX: str = "chat:components"
 
     # Logging
     LOG_DIR: str = "logs"

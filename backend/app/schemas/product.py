@@ -22,6 +22,7 @@ class Product(BaseModel):
     description: Optional[str] = None
     in_stock: bool = True
     stock_status: StockStatus = StockStatus.in_stock
+    stock_qty: Optional[int] = None
     
     # Control fields
     visibility: bool = True
@@ -57,6 +58,7 @@ class ProductUpdate(BaseModel):
     priority: Optional[int] = None
     master_code: Optional[str] = None
     stock_status: Optional[StockStatus] = None
+    stock_qty: Optional[int] = None
     description: Optional[str] = None
     jewelry_type: Optional[str] = None
     material: Optional[str] = None

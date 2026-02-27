@@ -16,3 +16,4 @@ aiofiles
 supabase
 pytest
 pytest-asyncio
+redis>=5

@@ -59,6 +59,27 @@ def test_detail_query_parser_extracts_fields_and_filters() -> None:
     assert parsed.attribute_filters.get("gauge") == "25mm"
 
 
+def test_detail_query_parser_supports_opal_and_material_synonyms() -> None:
+    parsed = DetailQueryParser.parse(
+        user_text="Need opal color with implant grade titanium barbell",
+        nlu_data={},
+    )
+    assert parsed.attribute_filters.get("color") == "opal"
+    assert parsed.attribute_filters.get("material") == "titanium g23"
+    assert parsed.attribute_filters.get("jewelry_type") == "barbell"
+
+
+def test_detail_query_parser_filter_only_query_is_not_detail_mode() -> None:
+    parsed = DetailQueryParser.parse(
+        user_text="Give me a Labret with 14g with steel",
+        nlu_data={},
+    )
+    assert parsed.is_detail_request is False
+    assert parsed.attribute_filters.get("jewelry_type") == "labret"
+    assert parsed.attribute_filters.get("gauge") == "14g"
+    assert parsed.attribute_filters.get("material") == "steel"
+
+
 def test_detail_resolver_filters_and_limits_top_matches() -> None:
     cards = [
         _card(
@@ -110,3 +131,34 @@ def test_detail_response_builder_reports_missing_image() -> None:
     assert "Image: unavailable" in payload.reply_text
     assert payload.card_policy_reason == "image_requested"
     assert len(payload.product_carousel) == 1
+    assert "Show price for SKU A-1." in payload.follow_up_questions
+    assert "Show stock for SKU A-1." in payload.follow_up_questions
+    assert "Some items have no image. Ask for price/stock instead." in payload.follow_up_questions
+
+
+def test_detail_response_builder_multi_match_followups_use_context() -> None:
+    first = _card(
+        sku="B-25-BLK",
+        name="Black Barbell 25mm",
+        image_url="https://example.com/b-25-blk.jpg",
+        attributes={"jewelry_type": "Barbell", "color": "Black", "gauge": "25mm"},
+    )
+    second = _card(
+        sku="B-25-WHT",
+        name="White Barbell 25mm",
+        image_url="https://example.com/b-25-wht.jpg",
+        attributes={"jewelry_type": "Barbell", "color": "White", "gauge": "25mm"},
+    )
+    payload = DetailResponseBuilder.build_detail_reply(
+        matches=[first, second],
+        requested_fields=["attributes"],
+        attribute_filters={"jewelry_type": "barbell"},
+        missing_fields_by_product={},
+        wants_image=False,
+        max_matches=3,
+    )
+    assert payload.card_policy_reason == "multiple_matches"
+    assert payload.product_carousel
+    assert "Show full details for SKU B-25-BLK." in payload.follow_up_questions
+    assert "Compare SKU B-25-BLK and SKU B-25-WHT." in payload.follow_up_questions
+    assert "Show in-stock items only." in payload.follow_up_questions

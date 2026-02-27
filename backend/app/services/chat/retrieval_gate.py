@@ -23,6 +23,7 @@ class RetrievalGate:
         show_products_flag: bool,
         is_product_intent: bool,
         sku_token: Optional[str],
+        strict_separation: bool = False,
         has_attribute_filters: bool = False,
         detail_request: bool = False,
         user_text: str,
@@ -35,18 +36,29 @@ class RetrievalGate:
             sku_token or has_attribute_filters or detail_request or infer_jewelry_type_filter(user_text)
         )
 
-        if intent == "off_topic":
-            use_knowledge = True
-            use_products = explicit_product_signal
-        elif intent == "knowledge_query":
-            use_knowledge = True
-            use_products = explicit_product_signal
-        elif intent in {"browse_products", "search_specific"}:
-            use_products = True
-            use_knowledge = False
+        if strict_separation:
+            if intent in {"browse_products", "search_specific"}:
+                use_products = True
+                use_knowledge = False
+            elif intent in {"knowledge_query", "off_topic"}:
+                use_products = False
+                use_knowledge = True
+            else:
+                use_products = False
+                use_knowledge = False
         else:
-            use_products = False
-            use_knowledge = False
+            if intent == "off_topic":
+                use_knowledge = True
+                use_products = explicit_product_signal
+            elif intent == "knowledge_query":
+                use_knowledge = True
+                use_products = explicit_product_signal
+            elif intent in {"browse_products", "search_specific"}:
+                use_products = True
+                use_knowledge = False
+            else:
+                use_products = False
+                use_knowledge = False
 
         is_question_like = is_question_like_fn(user_text)
         is_complex = is_complex_query_fn(user_text)

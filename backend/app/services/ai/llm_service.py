@@ -138,9 +138,35 @@ _token_tracker: ContextVar[Optional[TokenTracker]] = ContextVar("token_tracker",
 
 class LLMService:
     """Service for interacting with OpenAI LLM and embeddings."""
-    
+
+    @staticmethod
+    def _safe_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+
+    @staticmethod
+    def _safe_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
     def __init__(self):
-        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        timeout_seconds = max(
+            1.0,
+            self._safe_float(getattr(settings, "OPENAI_TIMEOUT_SECONDS", 12.0), 12.0),
+        )
+        max_retries = max(
+            0,
+            self._safe_int(getattr(settings, "OPENAI_MAX_RETRIES", 1), 1),
+        )
+        self.client = AsyncOpenAI(
+            api_key=settings.OPENAI_API_KEY,
+            timeout=timeout_seconds,
+            max_retries=max_retries,
+        )
         self.model = settings.OPENAI_MODEL
         self.embedding_model = settings.EMBEDDING_MODEL
         self._embedding_cache = _EmbeddingCache(

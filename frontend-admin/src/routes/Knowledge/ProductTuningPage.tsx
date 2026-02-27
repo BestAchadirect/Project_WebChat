@@ -423,6 +423,11 @@ export const ProductTuningPage: React.FC = () => {
         return Array.from(map.entries()).map(([value, count]) => ({ value, count }));
     };
 
+    const prioritizedFilterKeys = ['material', 'jewelry_type'];
+    const orderedFilterKeys = Array.from(
+        new Set([...prioritizedFilterKeys, ...Object.keys(facetData).sort()])
+    );
+
     const applyProductUpdate = async (productId: string, updates: Partial<Product>) => {
         try {
             const updated = await productsApi.updateProduct(productId, updates);
@@ -706,7 +711,7 @@ export const ProductTuningPage: React.FC = () => {
                         <div className="text-xs font-bold text-gray-400 uppercase tracking-wider mr-2 flex-shrink-0">Filters:</div>
                         {facetLoading && <div className="text-xs text-gray-400 italic animate-pulse">Loading...</div>}
 
-                        {Object.keys(facetData).sort().map((key) => {
+                        {orderedFilterKeys.map((key) => {
                             const options = mergeFacetOptions(
                                 facetData[key],
                                 pendingFilters[key] || []

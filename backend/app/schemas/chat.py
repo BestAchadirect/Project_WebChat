@@ -1,3 +1,4 @@
+from enum import Enum
 from pydantic import BaseModel, Field
 from typing import Literal, Optional, List, Dict, Any
 from datetime import datetime
@@ -89,6 +90,34 @@ class ParsedQuery(BaseModel):
     price_max: Optional[float] = None
 
 
+class ChatComponentType(str, Enum):
+    QUERY_SUMMARY = "query_summary"
+    RESULT_COUNT = "result_count"
+    PRODUCT_CARDS = "product_cards"
+    PRODUCT_TABLE = "product_table"
+    PRODUCT_BULLETS = "product_bullets"
+    PRODUCT_DETAIL = "product_detail"
+    COMPARE = "compare"
+    RECOMMENDATIONS = "recommendations"
+    CLARIFY = "clarify"
+    KNOWLEDGE_ANSWER = "knowledge_answer"
+    ACTION_RESULT = "action_result"
+    ERROR = "error"
+
+
+class ChatComponent(BaseModel):
+    type: ChatComponentType
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ChatResponseMeta(BaseModel):
+    query_summary: str = ""
+    latency_ms: float = 0.0
+    source: Literal["sql", "vector", "tool", "knowledge", "error"] = "error"
+    llm_calls: int = 0
+    embedding_calls: int = 0
+
+
 class ChatResponse(BaseModel):
     conversation_id: int
     reply_text: str
@@ -101,6 +130,8 @@ class ChatResponse(BaseModel):
     view_button_text: str = "View Product Details"
     material_label: str = "Material"
     jewelry_type_label: str = "Jewelry Type"
+    components: List[ChatComponent] = Field(default_factory=list)
+    meta: Optional[ChatResponseMeta | Dict[str, Any]] = None
     qa_log_id: Optional[str] = None
 
 

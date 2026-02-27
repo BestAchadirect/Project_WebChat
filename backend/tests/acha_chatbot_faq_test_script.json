@@ -1,0 +1,664 @@
+{
+  "test_suite": "Acha Direct - E-Commerce Chatbot FAQ Test Script",
+  "version": "1.0",
+  "description": "Automated test cases for the Acha Direct chatbot covering FAQ topics and product catalog queries.",
+  "total_test_cases": 41,
+  "categories": [
+    {
+      "category": "Contact & Support",
+      "test_cases": [
+        {
+          "id": "TC_CONTACT_001",
+          "description": "User asks how to contact Acha",
+          "user_input": "How can I contact you?",
+          "expected_intent": "contact_info",
+          "expected_keywords": [
+            "sales@achadirect.com",
+            "email",
+            "1 to 48 hours"
+          ],
+          "expected_response_contains": "You can reach Acha by email at sales@achadirect.com",
+          "pass_criteria": "Response includes email address and reply time",
+          "priority": "high"
+        },
+        {
+          "id": "TC_CONTACT_002",
+          "description": "Non-English speaker asks about language support",
+          "user_input": "Je ne parle pas anglais. Pouvez-vous m'aider?",
+          "expected_intent": "language_support",
+          "expected_keywords": [
+            "German",
+            "Spanish",
+            "French",
+            "Thai"
+          ],
+          "expected_response_contains": "our team also speaks German, Spanish, French, and Thai",
+          "pass_criteria": "Response acknowledges multilingual support",
+          "priority": "medium"
+        },
+        {
+          "id": "TC_CONTACT_003",
+          "description": "User asks about support languages",
+          "user_input": "Do you support other languages besides English?",
+          "expected_intent": "language_support",
+          "expected_keywords": [
+            "language",
+            "email"
+          ],
+          "pass_criteria": "Response mentions available languages",
+          "priority": "medium"
+        }
+      ]
+    },
+    {
+      "category": "Product Quality",
+      "test_cases": [
+        {
+          "id": "TC_QUALITY_001",
+          "description": "User asks about product quality",
+          "user_input": "Are your piercing products high quality?",
+          "expected_intent": "product_quality",
+          "expected_keywords": [
+            "quality control",
+            "materials"
+          ],
+          "pass_criteria": "Response affirms strict quality standards",
+          "priority": "high"
+        },
+        {
+          "id": "TC_QUALITY_002",
+          "description": "User asks about surgical steel products",
+          "user_input": "Are your 316L surgical steel items body-safe?",
+          "expected_intent": "product_quality",
+          "expected_keywords": [
+            "316L",
+            "surgical steel",
+            "quality"
+          ],
+          "pass_criteria": "Response addresses material safety",
+          "priority": "high"
+        },
+        {
+          "id": "TC_QUALITY_003",
+          "description": "User asks about sterilization process",
+          "user_input": "How do you sterilize your piercing tools?",
+          "expected_intent": "sterilization_info",
+          "expected_keywords": [
+            "EO",
+            "ethylene oxide",
+            "55°C",
+            "12 hours"
+          ],
+          "expected_response_contains": "EO (ethylene oxide) gas at 55°C for 12 hours",
+          "pass_criteria": "Response includes sterilization method and temperature",
+          "priority": "high"
+        }
+      ]
+    },
+    {
+      "category": "Ordering",
+      "test_cases": [
+        {
+          "id": "TC_ORDER_001",
+          "description": "User asks about minimum order value",
+          "user_input": "What is your minimum order amount?",
+          "expected_intent": "minimum_order",
+          "expected_keywords": [
+            "USD 150",
+            "USD 500",
+            "5,000 Baht"
+          ],
+          "pass_criteria": "Response includes all three minimum order tiers",
+          "priority": "high"
+        },
+        {
+          "id": "TC_ORDER_002",
+          "description": "User wants to add items after checkout",
+          "user_input": "I already placed an order. Can I add more items?",
+          "expected_intent": "modify_order",
+          "expected_keywords": [
+            "email",
+            "sales representative",
+            "revised invoice"
+          ],
+          "pass_criteria": "Response explains how to add items via email",
+          "priority": "medium"
+        },
+        {
+          "id": "TC_ORDER_003",
+          "description": "User asks about custom jewelry",
+          "user_input": "Can I order custom-made jewelry?",
+          "expected_intent": "custom_order",
+          "expected_keywords": [
+            "custom",
+            "email",
+            "specific needs"
+          ],
+          "pass_criteria": "Response invites user to email for custom requests",
+          "priority": "medium"
+        },
+        {
+          "id": "TC_ORDER_004",
+          "description": "User asks about minimum order (edge case - showroom)",
+          "user_input": "What is the minimum if I visit your showroom?",
+          "expected_intent": "minimum_order",
+          "expected_keywords": [
+            "5,000 Baht",
+            "showroom"
+          ],
+          "pass_criteria": "Response includes showroom minimum of 5,000 Baht",
+          "priority": "low"
+        }
+      ]
+    },
+    {
+      "category": "Pricing & Discounts",
+      "test_cases": [
+        {
+          "id": "TC_PRICE_001",
+          "description": "User asks about VAT",
+          "user_input": "Do your prices include VAT or taxes?",
+          "expected_intent": "pricing_vat",
+          "expected_keywords": [
+            "VAT",
+            "Thailand",
+            "customer",
+            "responsible"
+          ],
+          "pass_criteria": "Response clarifies prices exclude VAT and taxes",
+          "priority": "high"
+        },
+        {
+          "id": "TC_PRICE_002",
+          "description": "User asks about bulk discounts",
+          "user_input": "Do you offer discounts for large orders?",
+          "expected_intent": "bulk_discount",
+          "expected_keywords": [
+            "USD 350",
+            "free shipping",
+            "USD 800",
+            "3%"
+          ],
+          "expected_response_contains": "Orders over USD 350",
+          "pass_criteria": "Response lists discount tiers correctly",
+          "priority": "high"
+        },
+        {
+          "id": "TC_PRICE_003",
+          "description": "User asks about currency display",
+          "user_input": "Can I see prices in Euros?",
+          "expected_intent": "currency_setting",
+          "expected_keywords": [
+            "currency",
+            "top right",
+            "website"
+          ],
+          "pass_criteria": "Response guides user to the currency selector on the website",
+          "priority": "medium"
+        },
+        {
+          "id": "TC_PRICE_004",
+          "description": "Product price verification - in stock item",
+          "user_input": "How much does the PVD plated 316L surgical steel helix or eyebrow barbell, 1.2 cost?",
+          "expected_intent": "product_price_query",
+          "expected_sku": "BBERT23-F02B01",
+          "expected_price_usd": 3.67,
+          "pass_criteria": "Response returns correct price of USD 3.67 for SKU BBERT23-F02B01",
+          "priority": "high"
+        }
+      ]
+    },
+    {
+      "category": "Payment",
+      "test_cases": [
+        {
+          "id": "TC_PAYMENT_001",
+          "description": "User asks about payment methods",
+          "user_input": "What payment methods do you accept?",
+          "expected_intent": "payment_options",
+          "expected_keywords": [
+            "PayPal",
+            "Credit Card",
+            "Bank Transfer"
+          ],
+          "pass_criteria": "Response lists all accepted payment methods",
+          "priority": "high"
+        },
+        {
+          "id": "TC_PAYMENT_002",
+          "description": "User asks about payment for large orders",
+          "user_input": "I want to place an order for USD 5,000. How do I pay?",
+          "expected_intent": "payment_options",
+          "expected_keywords": [
+            "Bank Transfer",
+            "USD 3,000"
+          ],
+          "pass_criteria": "Response recommends Bank Transfer for orders over USD 3,000",
+          "priority": "medium"
+        },
+        {
+          "id": "TC_PAYMENT_003",
+          "description": "User asks about PayPal for small order",
+          "user_input": "Can I pay with PayPal for a $200 order?",
+          "expected_intent": "payment_options",
+          "expected_keywords": [
+            "PayPal",
+            "Credit Card"
+          ],
+          "pass_criteria": "Response confirms PayPal is available for orders under USD 3,000",
+          "priority": "medium"
+        }
+      ]
+    },
+    {
+      "category": "Shipping",
+      "test_cases": [
+        {
+          "id": "TC_SHIP_001",
+          "description": "User asks about shipping cost and time",
+          "user_input": "How much does shipping cost and how long will it take?",
+          "expected_intent": "shipping_info",
+          "expected_keywords": [
+            "DHL",
+            "UPS",
+            "FedEx",
+            "3–5 business days",
+            "USD 25–30"
+          ],
+          "pass_criteria": "Response includes carrier names, timeframe, and cost estimate",
+          "priority": "high"
+        },
+        {
+          "id": "TC_SHIP_002",
+          "description": "User asks about free shipping threshold",
+          "user_input": "When do I get free shipping?",
+          "expected_intent": "free_shipping",
+          "expected_keywords": [
+            "USD 350",
+            "free shipping"
+          ],
+          "pass_criteria": "Response states free shipping is available on orders over USD 350",
+          "priority": "high"
+        },
+        {
+          "id": "TC_SHIP_003",
+          "description": "User asks about Incoterms",
+          "user_input": "What are your shipping Incoterms?",
+          "expected_intent": "incoterm_info",
+          "expected_keywords": [
+            "CIF",
+            "Cost, Insurance, and Freight"
+          ],
+          "pass_criteria": "Response states CIF Incoterm and explains responsibility split",
+          "priority": "medium"
+        },
+        {
+          "id": "TC_SHIP_004",
+          "description": "User asks about lost package",
+          "user_input": "What happens if my package is lost in transit?",
+          "expected_intent": "lost_package",
+          "expected_keywords": [
+            "insured",
+            "replacement",
+            "resend",
+            "free of charge"
+          ],
+          "pass_criteria": "Response confirms full insurance and replacement policy",
+          "priority": "high"
+        }
+      ]
+    },
+    {
+      "category": "Customs & Import",
+      "test_cases": [
+        {
+          "id": "TC_CUSTOMS_001",
+          "description": "User asks about import taxes",
+          "user_input": "Will I have to pay import taxes?",
+          "expected_intent": "import_tax",
+          "expected_keywords": [
+            "customer",
+            "responsibility",
+            "country"
+          ],
+          "pass_criteria": "Response clarifies import taxes are the customer's responsibility",
+          "priority": "high"
+        },
+        {
+          "id": "TC_CUSTOMS_002",
+          "description": "User asks what happens if customs refuses the package",
+          "user_input": "What if customs refuses my shipment?",
+          "expected_intent": "customs_refusal",
+          "expected_keywords": [
+            "customer's responsibility",
+            "returned"
+          ],
+          "pass_criteria": "Response states all associated costs are customer's responsibility",
+          "priority": "medium"
+        }
+      ]
+    },
+    {
+      "category": "Refunds & Returns",
+      "test_cases": [
+        {
+          "id": "TC_REFUND_001",
+          "description": "User asks about money-back guarantee",
+          "user_input": "Do you offer a money-back guarantee?",
+          "expected_intent": "money_back_guarantee",
+          "expected_keywords": [
+            "30 days",
+            "Return Authorization",
+            "quality"
+          ],
+          "pass_criteria": "Response confirms 30-day money-back guarantee",
+          "priority": "high"
+        },
+        {
+          "id": "TC_REFUND_002",
+          "description": "User received defective products",
+          "user_input": "Some of the items I received are damaged. What can I do?",
+          "expected_intent": "refund_defective",
+          "expected_keywords": [
+            "30-day",
+            "defective",
+            "damaged",
+            "refund",
+            "Return Authorization"
+          ],
+          "pass_criteria": "Response explains partial refund process for defective items",
+          "priority": "high"
+        },
+        {
+          "id": "TC_REFUND_003",
+          "description": "User asks about full refund",
+          "user_input": "Can I get a full refund if I'm not happy?",
+          "expected_intent": "refund_policy",
+          "expected_keywords": [
+            "refund",
+            "30 days",
+            "conditions"
+          ],
+          "pass_criteria": "Response outlines refund conditions clearly",
+          "priority": "medium"
+        }
+      ]
+    },
+    {
+      "category": "Samples",
+      "test_cases": [
+        {
+          "id": "TC_SAMPLE_001",
+          "description": "User asks about samples",
+          "user_input": "Can I get samples before placing a bulk order?",
+          "expected_intent": "product_samples",
+          "expected_keywords": [
+            "free",
+            "samples",
+            "qualified",
+            "Sales Team"
+          ],
+          "pass_criteria": "Response confirms free samples available for qualified customers",
+          "priority": "high"
+        }
+      ]
+    },
+    {
+      "category": "Product Catalog",
+      "test_cases": [
+        {
+          "id": "TC_PROD_001",
+          "description": "User searches for an in-stock product by SKU",
+          "user_input": "Is SKU APGVV-D17000 available?",
+          "expected_intent": "product_availability",
+          "expected_sku": "APGVV-D17000",
+          "expected_stock_status": "in_stock",
+          "pass_criteria": "Response confirms APGVV-D17000 is in stock",
+          "priority": "high"
+        },
+        {
+          "id": "TC_PROD_002",
+          "description": "User searches for an out-of-stock product",
+          "user_input": "Can I order SKU BBLS7-000000?",
+          "expected_intent": "product_availability",
+          "expected_sku": "BBLS7-000000",
+          "expected_stock_status": "out_of_stock",
+          "pass_criteria": "Response informs user that BBLS7-000000 is out of stock and presents alternatives",
+          "priority": "high"
+        },
+        {
+          "id": "TC_PROD_003",
+          "description": "User asks about piercing tools / needles",
+          "user_input": "Do you sell piercing needles?",
+          "expected_intent": "product_category_query",
+          "expected_keywords": [
+            "EO-gas-sterilized",
+            "needles",
+            "lot number",
+            "expiration date"
+          ],
+          "pass_criteria": "Response confirms needle availability and mentions sterilization/labeling",
+          "priority": "medium"
+        },
+        {
+          "id": "TC_PROD_004",
+          "description": "User asks about displays and boards",
+          "user_input": "Do you have display boards for jewelry?",
+          "expected_intent": "product_category_query",
+          "expected_keywords": [
+            "prefilled",
+            "empty boards",
+            "displays"
+          ],
+          "pass_criteria": "Response describes available display options",
+          "priority": "medium"
+        },
+        {
+          "id": "TC_PROD_005",
+          "description": "User cannot find a specific size or color",
+          "user_input": "I can't find a 10mm gauge nose ring in blue. Do you have it?",
+          "expected_intent": "product_not_found",
+          "expected_keywords": [
+            "Sales Team",
+            "custom orders",
+            "specific requests"
+          ],
+          "pass_criteria": "Response directs user to Sales Team for custom size/color requests",
+          "priority": "medium"
+        },
+        {
+          "id": "TC_PROD_006",
+          "description": "User asks about a specific product price",
+          "user_input": "What is the price for Flexible acrylic labret, 1.2mm (16g) with 3mm UV ball?",
+          "expected_intent": "product_price_query",
+          "expected_sku": "ALBEVB-F04A20",
+          "expected_price_usd": 0.14,
+          "pass_criteria": "Response returns correct price USD 0.14 for SKU ALBEVB-F04A20",
+          "priority": "high"
+        },
+        {
+          "id": "TC_PROD_007",
+          "description": "User asks about tongue barbells",
+          "user_input": "Do you have acrylic tongue barbells in 14g?",
+          "expected_intent": "product_search",
+          "expected_keywords": [
+            "tongue barbell",
+            "14g",
+            "acrylic"
+          ],
+          "expected_sample_sku": "ABBSA-A07000",
+          "pass_criteria": "Response returns matching 14g acrylic tongue barbell products",
+          "priority": "high"
+        }
+      ]
+    },
+    {
+      "category": "Trust & Marketing Assets",
+      "test_cases": [
+        {
+          "id": "TC_TRUST_001",
+          "description": "User asks for references",
+          "user_input": "Can you provide references from customers in my country?",
+          "expected_intent": "customer_references",
+          "expected_keywords": [
+            "references",
+            "Bangkok",
+            "showroom"
+          ],
+          "pass_criteria": "Response confirms references are available upon request",
+          "priority": "medium"
+        },
+        {
+          "id": "TC_TRUST_002",
+          "description": "User asks for product images without watermark",
+          "user_input": "Can I get product photos without your watermark for my website?",
+          "expected_intent": "marketing_assets",
+          "expected_keywords": [
+            "watermark",
+            "images",
+            "request"
+          ],
+          "pass_criteria": "Response confirms watermark-free images available on request",
+          "priority": "medium"
+        }
+      ]
+    },
+    {
+      "category": "Negative & Edge Cases",
+      "test_cases": [
+        {
+          "id": "TC_EDGE_001",
+          "description": "User inputs a completely off-topic question",
+          "user_input": "What is the weather like in Bangkok today?",
+          "expected_intent": "out_of_scope",
+          "expected_response_behavior": "Politely redirect to jewelry/piercing topics or offer human support",
+          "pass_criteria": "Chatbot does not answer off-topic question and redirects appropriately",
+          "priority": "medium"
+        },
+        {
+          "id": "TC_EDGE_002",
+          "description": "User sends empty message",
+          "user_input": "",
+          "expected_intent": "empty_input",
+          "expected_response_behavior": "Prompt user to type a question",
+          "pass_criteria": "Chatbot handles empty input gracefully without crashing",
+          "priority": "high"
+        },
+        {
+          "id": "TC_EDGE_003",
+          "description": "User sends a non-existent SKU",
+          "user_input": "Do you have SKU XYZ-99999?",
+          "expected_intent": "product_not_found",
+          "expected_response_behavior": "Inform user the SKU was not found and offer alternatives or contact info",
+          "pass_criteria": "Chatbot returns a 'not found' message without error",
+          "priority": "high"
+        },
+        {
+          "id": "TC_EDGE_004",
+          "description": "User sends a question with typos",
+          "user_input": "Wht is yor minmum ordeer?",
+          "expected_intent": "minimum_order",
+          "expected_keywords": [
+            "USD 150"
+          ],
+          "pass_criteria": "Chatbot correctly interprets typo-ridden question about minimum order",
+          "priority": "medium"
+        },
+        {
+          "id": "TC_EDGE_005",
+          "description": "User sends a very long message",
+          "user_input": "I am a jewelry retailer from Germany and I am interested in purchasing a large variety of piercing jewelry including barbells, rings, tunnels, and other items. I want to know everything about your pricing, discounts, shipping, payment options, and whether you can provide samples before I commit to a full order. Also, what is your return policy?",
+          "expected_intent": "multi_intent",
+          "expected_response_behavior": "Address multiple topics: pricing, discounts, shipping, payment, samples, returns",
+          "pass_criteria": "Chatbot handles multi-intent query and covers at least 3 of the topics",
+          "priority": "medium"
+        }
+      ]
+    }
+  ],
+  "product_sample_reference": {
+    "description": "Sample products used in test cases for validation",
+    "in_stock_samples": [
+      {
+        "sku": "BBERT23-F02B01",
+        "description": "PVD plated 316L surgical steel helix or eyebrow barbell, 1.2mm (16g) with two 3m",
+        "price_usd": 3.67,
+        "stock_status": "in_stock"
+      },
+      {
+        "sku": "APGVV-D17000",
+        "description": "Black acrylic double flared plug with skull logo in tattoo art design",
+        "price_usd": 0.89,
+        "stock_status": "in_stock"
+      },
+      {
+        "sku": "ALBEVB-F04A20",
+        "description": "Flexible acrylic labret, 1.2mm (16g) with 3mm UV ball",
+        "price_usd": 0.14,
+        "stock_status": "in_stock"
+      },
+      {
+        "sku": "BBCS-F13B16",
+        "description": "316L surgical steel tongue barbell, 1.6mm (14g) with a 5mm jewel ball on top and",
+        "price_usd": 0.51,
+        "stock_status": "in_stock"
+      },
+      {
+        "sku": "BEDR14-F08000",
+        "description": "Annealed 316L surgical steel fixed bead ring, 1.6mm (14g) with a 4mm ball",
+        "price_usd": 0.27,
+        "stock_status": "in_stock"
+      }
+    ],
+    "out_of_stock_samples": [
+      {
+        "sku": "BBLS7-000000",
+        "description": "Black PVD plated 316L surgical steel tongue barbell, 1.6mm (14g) with an 8mm rou",
+        "price_usd": 0.59,
+        "stock_status": "out_of_stock"
+      },
+      {
+        "sku": "BBTCSL-A12000",
+        "description": "PVD plated 316L surgical steel tongue barbell, 1.6mm (14g) with a top 6mm bezel ",
+        "price_usd": 0.67,
+        "stock_status": "out_of_stock"
+      },
+      {
+        "sku": "BBSSC6-B04000",
+        "description": "316L surgical steel tongue barbell, 1.6mm (14g) with a 6mm starship crystal ball",
+        "price_usd": 1.16,
+        "stock_status": "out_of_stock"
+      }
+    ]
+  },
+  "metadata": {
+    "created_date": "2026-02-27",
+    "data_sources": [
+      "acha_faq_25_topics.csv (25 FAQ entries)",
+      "Product_catalog_upload_-_5000SKU_V-01.csv (5,000 SKUs)",
+      "Product_catalog_upload_-_10000_SKU_V-02.csv (10,000 SKUs)"
+    ],
+    "chatbot_type": "E-Commerce FAQ Chatbot",
+    "brand": "Acha Direct",
+    "industry": "Body Jewelry & Piercing Supplies",
+    "test_environment": "Staging",
+    "faq_categories_covered": [
+      "Contact",
+      "Support",
+      "Product Quality",
+      "Ordering",
+      "Pricing",
+      "Discounts",
+      "Payment",
+      "Samples",
+      "Shipping",
+      "Customs",
+      "Refunds",
+      "Trust & Compliance",
+      "Marketing Assets",
+      "Custom Orders",
+      "Products",
+      "Stock"
+    ]
+  }
+}

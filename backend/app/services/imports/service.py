@@ -32,6 +32,7 @@ from app.services.ai.llm_service import llm_service
 from app.services.tasks.service import task_service
 from app.services.catalog.attributes_service import eav_service
 from app.services.catalog.attribute_sync_service import product_attribute_sync_service
+from app.services.catalog.projection_service import product_projection_sync_service
 from app.services.imports.knowledge.chunking import chunk_text
 from app.services.imports.knowledge.embeddings import hash_text
 from app.services.imports.knowledge.parser import parse_csv_knowledge
@@ -208,7 +209,7 @@ class DataImportService:
         """Returns the CSV header for products."""
         # master_code allows grouping multiple SKUs. stock_status can be 'in_stock' or 'out_of_stock'.
         return (
-            "sku,master_code,price,stock_status,description,category,image_url,product_url,object_id,"
+            "sku,master_code,price,stock_status,stock_qty,description,category,image_url,product_url,object_id,"
             "legacy_sku,visibility,is_featured,priority,search_keywords,attributes_json,"
             "jewelry_type,material,"
             "length,size,cz_color,design,crystal_color,color,gauge,size_in_pack,rack,height,"
@@ -245,6 +246,7 @@ class DataImportService:
         group_cache: Dict[str, UUID] = {}
         pending_eav_rows: List[Tuple[UUID, str, Any]] = []
         pending_new_eav: List[Tuple[Product, Dict[str, Any]]] = []
+        pending_projection_products: List[Product] = []
 
         try:
             await self._update_product_upload_status(db, upload_record.id, ProductUploadStatus.PROCESSING)
@@ -286,6 +288,7 @@ class DataImportService:
                         legacy_skus = [s.strip() for s in re.split(r"[|,]", legacy_raw) if s.strip()]
 
                     stock_status = self._parse_stock_status(row.get("stock_status"))
+                    stock_qty = self._parse_int(row.get("stock_qty"))
                     visibility = self._parse_bool(row.get("visibility"))
                     is_featured = self._parse_bool(row.get("is_featured"))
                     priority = self._parse_int(row.get("priority"))
@@ -348,6 +351,8 @@ class DataImportService:
                             stock_status = existing_product.stock_status
                         else:
                             stock_status = "in_stock"
+                    if stock_qty is None and existing_product:
+                        stock_qty = existing_product.stock_qty
 
                     if visibility is None and existing_product:
                         visibility = existing_product.visibility
@@ -396,6 +401,7 @@ class DataImportService:
                             "attributes": effective_attributes or (existing_product.attributes or {}),
                             "object_id": object_id,
                             "stock_status": stock_status,
+                            "stock_qty": stock_qty,
                             "legacy_sku": legacy_skus,
                         }
 
@@ -433,7 +439,7 @@ class DataImportService:
                                     new_values=new_values,
                                 )
                             )
-                        
+                        pending_projection_products.append(existing_product)
                         stats["updated"] += 1
                     else:
                         new_product = Product(
@@ -450,6 +456,7 @@ class DataImportService:
                             search_text=search_text,
                             search_hash=search_hash,
                             stock_status=stock_status,
+                            stock_qty=stock_qty,
                             last_stock_sync_at=stock_synced_at,
                             search_keywords=search_keywords,
                             attributes=attributes or {},
@@ -464,6 +471,7 @@ class DataImportService:
                         db.add(new_product)
                         if attributes:
                             pending_new_eav.append((new_product, attributes))
+                        pending_projection_products.append(new_product)
                         stats["created"] += 1
                 except Exception as row_error:
                     logger.error(f"Error importing row {row}: {row_error}")
@@ -487,6 +495,13 @@ class DataImportService:
                     metrics.get("insert_rows"),
                     metrics.get("drop_empty"),
                 )
+
+            if pending_projection_products and bool(getattr(settings, "CHAT_PROJECTION_DUAL_WRITE_ENABLED", True)):
+                projection_synced = await product_projection_sync_service.sync_products(
+                    db,
+                    products=pending_projection_products,
+                )
+                logger.info("Projection import sync rows=%s", projection_synced)
 
             await db.commit()
 

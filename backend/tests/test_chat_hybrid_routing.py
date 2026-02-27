@@ -106,3 +106,127 @@ async def test_process_chat_returns_agentic_response_and_skips_cache(monkeypatch
     assert response.intent == "agentic_tools"
     assert response.debug.get("agentic", {}).get("used_tools") is True
 
+
+@pytest.mark.asyncio
+async def test_process_chat_embedding_error_returns_fail_fast_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.chat import service as chat_service_module
+
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)
+    monkeypatch.setattr(settings, "CHAT_FAIL_FAST_ON_EMBEDDING_ERROR", True)
+
+    async def fake_get_or_create_user(self, user_id, name=None, email=None):
+        return _DummyUser()
+
+    async def fake_get_or_create_conversation(self, user, conversation_id):
+        return _DummyConversation()
+
+    async def fake_get_history(self, conversation_id, limit=5):
+        return []
+
+    async def fake_run_nlu(self, **kwargs):
+        return {
+            "intent": "search_specific",
+            "show_products": True,
+            "product_code": "ABC-1",
+            "refined_query": "ABC-1",
+        }
+
+    async def fake_resolve_language(self, **kwargs):
+        return "en-US"
+
+    async def fake_resolve_currency(self, **kwargs):
+        return "USD"
+
+    async def fake_render(**kwargs):
+        return ChatResponse(
+            conversation_id=kwargs["conversation_id"],
+            reply_text=kwargs["reply_data"]["reply"],
+            carousel_msg=kwargs["reply_data"].get("carousel_hint"),
+            product_carousel=kwargs["product_carousel"],
+            follow_up_questions=kwargs["follow_up_questions"],
+            intent=kwargs["route"],
+            sources=kwargs["sources"],
+            debug=kwargs["debug"],
+        )
+
+    async def fake_finalize_response(self, *, conversation_id, user_text, response, token_usage=None, channel=None):
+        return response
+
+    async def fake_generate_embedding(*args, **kwargs):
+        raise TimeoutError("embedding timeout")
+
+    async def should_not_be_called(*args, **kwargs):
+        raise AssertionError("semantic cache should be skipped after fail-fast fallback")
+
+    monkeypatch.setattr(ChatService, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(ChatService, "get_or_create_conversation", fake_get_or_create_conversation)
+    monkeypatch.setattr(ChatService, "get_history", fake_get_history)
+    monkeypatch.setattr(ChatService, "_run_nlu", fake_run_nlu)
+    monkeypatch.setattr(ChatService, "_resolve_reply_language", fake_resolve_language)
+    monkeypatch.setattr(ChatService, "_resolve_target_currency", fake_resolve_currency)
+    monkeypatch.setattr(ChatService, "_finalize_response", fake_finalize_response)
+    monkeypatch.setattr(chat_service_module.semantic_cache_service, "get_hit", should_not_be_called)
+    monkeypatch.setattr(llm_service, "begin_token_tracking", lambda: None)
+    monkeypatch.setattr(llm_service, "consume_token_usage", lambda: {})
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
+
+    service = ChatService(db=object())
+    monkeypatch.setattr(service._response_renderer, "render", fake_render)
+
+    response = await service.process_chat(
+        ChatRequest(user_id="guest-1", message="check ABC-1"),
+        channel="widget",
+    )
+
+    assert response.intent == "fallback_general"
+    reply_lower = response.reply_text.lower()
+    assert ("search" in reply_lower or "product" in reply_lower) and ("limited" in reply_lower or "trouble" in reply_lower)
+    assert response.debug.get("embedding_fail_fast") is True
+    assert response.debug.get("embedding_error_type") == "TimeoutError"
+
+
+def test_filter_follow_ups_drops_irrelevant_product_flow() -> None:
+    filtered = ChatService._filter_follow_up_questions(
+        questions=[
+            "Shipping & policies",
+            "See more labret",
+            "Check return policy",
+        ],
+        user_text="Find in-stock labret with 1.2mm gauge",
+        route="rag_strict",
+        has_products=True,
+        retrieval_gate={"use_products": True, "use_knowledge": False, "is_policy_intent": False},
+        limit=5,
+    )
+    assert filtered == ["See more labret"]
+
+
+def test_filter_follow_ups_keeps_detail_mode_prompts() -> None:
+    filtered = ChatService._filter_follow_up_questions(
+        questions=[
+            "Share a SKU or product code for an exact match.",
+            "Try fewer filters and ask again.",
+        ],
+        user_text="Find in-stock labret with 1.2mm gauge",
+        route="detail_mode",
+        has_products=False,
+        retrieval_gate={"use_products": True, "use_knowledge": False, "is_policy_intent": False},
+        limit=5,
+    )
+    assert filtered == [
+        "Share a SKU or product code for an exact match.",
+        "Try fewer filters and ask again.",
+    ]
+
+
+def test_filter_follow_ups_removes_fallback_quick_replies() -> None:
+    filtered = ChatService._filter_follow_up_questions(
+        questions=["Browse products", "Check a SKU price", "Shipping & policies"],
+        user_text="hello",
+        route="fallback_general",
+        has_products=False,
+        retrieval_gate={"use_products": False, "use_knowledge": True, "is_policy_intent": False},
+        limit=5,
+    )
+    assert filtered == []
+
