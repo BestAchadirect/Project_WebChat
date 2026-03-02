@@ -5,18 +5,12 @@ from typing import Dict, List, Set, Type
 from app.schemas.chat import ChatComponent
 from app.services.chat.components.base import BaseComponent
 from app.services.chat.components.builders import (
-    ActionResultComponent,
     ClarifyComponent,
-    CompareComponent,
     ErrorComponent,
     KnowledgeAnswerComponent,
-    ProductBulletsComponent,
     ProductCardsComponent,
-    ProductDetailComponent,
-    ProductTableComponent,
     QuerySummaryComponent,
     RecommendationsComponent,
-    ResultCountComponent,
 )
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.types import ComponentType
@@ -25,16 +19,10 @@ from app.services.chat.components.types import ComponentType
 class ComponentRegistry:
     _registry: Dict[ComponentType, Type[BaseComponent]] = {
         ComponentType.QUERY_SUMMARY: QuerySummaryComponent,
-        ComponentType.RESULT_COUNT: ResultCountComponent,
         ComponentType.PRODUCT_CARDS: ProductCardsComponent,
-        ComponentType.PRODUCT_TABLE: ProductTableComponent,
-        ComponentType.PRODUCT_BULLETS: ProductBulletsComponent,
-        ComponentType.PRODUCT_DETAIL: ProductDetailComponent,
-        ComponentType.COMPARE: CompareComponent,
         ComponentType.RECOMMENDATIONS: RecommendationsComponent,
         ComponentType.CLARIFY: ClarifyComponent,
         ComponentType.KNOWLEDGE_ANSWER: KnowledgeAnswerComponent,
-        ComponentType.ACTION_RESULT: ActionResultComponent,
         ComponentType.ERROR: ErrorComponent,
     }
 
@@ -65,4 +53,3 @@ class ComponentRegistry:
             builder = cls.builder_for(component_type)
             built.append(await builder.build(context))
         return built
-

@@ -128,26 +128,26 @@ def test_detail_response_builder_reports_missing_image() -> None:
         wants_image=True,
         max_matches=3,
     )
+    assert "I found 1 matching product." in payload.reply_text
     assert "Image: unavailable" in payload.reply_text
-    assert payload.card_policy_reason == "image_requested"
+    assert payload.card_policy_reason == "single_match_text_only"
     assert len(payload.product_carousel) == 1
-    assert "Show price for SKU A-1." in payload.follow_up_questions
-    assert "Show stock for SKU A-1." in payload.follow_up_questions
-    assert "Some items have no image. Ask for price/stock instead." in payload.follow_up_questions
+    assert payload.carousel_msg == "Master code Example Product has 1 variant. Expand to view each SKU detail."
+    assert payload.follow_up_questions == []
 
 
 def test_detail_response_builder_multi_match_followups_use_context() -> None:
     first = _card(
         sku="B-25-BLK",
-        name="Black Barbell 25mm",
+        name="BLK466",
         image_url="https://example.com/b-25-blk.jpg",
-        attributes={"jewelry_type": "Barbell", "color": "Black", "gauge": "25mm"},
+        attributes={"master_code": "BLK466", "jewelry_type": "Barbell", "color": "Black", "gauge": "25mm"},
     )
     second = _card(
         sku="B-25-WHT",
-        name="White Barbell 25mm",
+        name="BLK466",
         image_url="https://example.com/b-25-wht.jpg",
-        attributes={"jewelry_type": "Barbell", "color": "White", "gauge": "25mm"},
+        attributes={"master_code": "BLK466", "jewelry_type": "Barbell", "color": "White", "gauge": "25mm"},
     )
     payload = DetailResponseBuilder.build_detail_reply(
         matches=[first, second],
@@ -158,7 +158,37 @@ def test_detail_response_builder_multi_match_followups_use_context() -> None:
         max_matches=3,
     )
     assert payload.card_policy_reason == "multiple_matches"
+    assert payload.carousel_msg == "Master code BLK466 has 2 variants. Expand to view each SKU detail."
     assert payload.product_carousel
-    assert "Show full details for SKU B-25-BLK." in payload.follow_up_questions
-    assert "Compare SKU B-25-BLK and SKU B-25-WHT." in payload.follow_up_questions
-    assert "Show in-stock items only." in payload.follow_up_questions
+    assert "Key details:" in payload.reply_text
+    assert "[JEWELRY TYPE] Barbell" in payload.reply_text
+    assert "Attributes:" not in payload.reply_text
+    assert "Top master code: [MASTER] BLK466" in payload.reply_text
+    assert payload.follow_up_questions == []
+
+
+def test_detail_response_builder_attribute_focus_highlights_filters() -> None:
+    first = _card(
+        sku="BLK466-F02A12",
+        name="BLK466",
+        attributes={"color": "Gold", "gauge": "16g", "jewelry_type": "Labret", "material": "Gold"},
+    )
+    second = _card(
+        sku="BLK466-F04A12",
+        name="BLK466",
+        attributes={"color": "Gold", "gauge": "16g", "jewelry_type": "Labret", "material": "Gold"},
+    )
+    payload = DetailResponseBuilder.build_detail_reply(
+        matches=[first, second],
+        requested_fields=["attributes"],
+        attribute_filters={"material": "gold", "color": "gold"},
+        missing_fields_by_product={},
+        wants_image=False,
+        max_matches=3,
+    )
+    assert "Key details:" in payload.reply_text
+    assert "[MATERIAL] Gold" in payload.reply_text
+    assert "[COLOR] Gold" in payload.reply_text
+    assert "Top master code: [MASTER] BLK466" in payload.reply_text
+    assert "Attributes:" not in payload.reply_text
+    assert payload.carousel_msg == "Master code BLK466 has 2 variants. Expand to view each SKU detail."

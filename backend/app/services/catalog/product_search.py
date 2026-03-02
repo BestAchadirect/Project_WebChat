@@ -292,7 +292,7 @@ class CatalogProductSearchService:
             )
             .join(Product, Product.id == ProductEmbedding.product_id)
             .where(Product.is_active.is_(True))
-            .where(or_(ProductEmbedding.model.is_(None), ProductEmbedding.model == model))
+            .where(ProductEmbedding.model == model)
             .order_by(distance_col)
             .limit(cap)
             .subquery()

@@ -52,6 +52,11 @@ class FieldDependencyResolver:
             material=str(material) if material is not None else None,
             gauge=str(gauge) if gauge is not None else None,
             image_url=(str(getattr(product, "image_url", "")) if getattr(product, "image_url", None) else None),
+            description=(
+                str(getattr(product, "description", ""))
+                if getattr(product, "description", None) is not None
+                else None
+            ),
             attributes=attrs,
             product_url=(str(getattr(product, "product_url", "")) if getattr(product, "product_url", None) else None),
         )
@@ -153,4 +158,3 @@ class FieldDependencyResolver:
             "db_round_trips": db_round_trips,
             "redis_cache_hits": redis_hits,
         }
-

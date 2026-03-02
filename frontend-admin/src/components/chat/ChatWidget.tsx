@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import apiClient from '../../api/client';
 
 interface Message {
@@ -343,8 +345,20 @@ const ProductCarousel: React.FC<{
     materialLabel?: string;
     jewelryTypeLabel?: string;
     thbToUsdRate?: number;
-}> = ({ items, primaryColor, displayCurrency, viewButtonText, materialLabel, jewelryTypeLabel, thbToUsdRate }) => {
+    onQuickReply?: (text: string) => void;
+}> = ({ items, primaryColor, displayCurrency, viewButtonText, materialLabel, jewelryTypeLabel, thbToUsdRate, onQuickReply }) => {
     if (!items || items.length === 0) return null;
+    const [expandedMasters, setExpandedMasters] = useState<Record<string, boolean>>({});
+    type VariantFeedState = {
+        items: ProductCard[];
+        page: number;
+        totalItems: number;
+        totalPages: number;
+        loading: boolean;
+        error: string;
+        inStockOnly: boolean;
+    };
+    const [variantFeedByMaster, setVariantFeedByMaster] = useState<Record<string, VariantFeedState>>({});
 
     const formatPrice = (p: ProductCard) => {
         const currency = (p.currency || '').toUpperCase();
@@ -414,99 +428,316 @@ const ProductCarousel: React.FC<{
         return Object.entries(attributes).filter(([key, value]) => !blockedKeys.has(key) && !isHiddenAttributeValue(value));
     };
 
+    const getMasterCode = (p: ProductCard): string => {
+        const fromAttr = asString(p.attributes?.master_code || '').trim();
+        if (fromAttr) return fromAttr;
+        const fromName = asString(p.name || '').trim();
+        if (fromName) return fromName;
+        return asString(p.sku || '').trim();
+    };
+
+    const groupedProducts = (() => {
+        const map = new Map<string, { masterCode: string; items: ProductCard[] }>();
+        for (const item of items) {
+            const masterCode = getMasterCode(item);
+            const key = masterCode.toLowerCase();
+            const existing = map.get(key);
+            if (existing) {
+                existing.items.push(item);
+                continue;
+            }
+            map.set(key, { masterCode, items: [item] });
+        }
+        return Array.from(map.values());
+    })();
+
+    const mergeUniqueCards = (cards: ProductCard[]): ProductCard[] => {
+        const out: ProductCard[] = [];
+        const seen = new Set<string>();
+        for (const card of cards) {
+            const key = `${card.id || ''}|${card.sku || ''}`.toLowerCase();
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            out.push(card);
+        }
+        return out;
+    };
+
+    const VARIANTS_PAGE_SIZE = 10;
+
+    const fetchMasterVariants = async (
+        masterCode: string,
+        opts?: { page?: number; append?: boolean; inStockOnly?: boolean },
+    ) => {
+        const key = masterCode.toLowerCase();
+        const current = variantFeedByMaster[key];
+        const page = Math.max(1, Number(opts?.page || 1));
+        const append = !!opts?.append;
+        const inStockOnly = opts?.inStockOnly ?? current?.inStockOnly ?? false;
+
+        setVariantFeedByMaster((prev) => {
+            const existing = prev[key] || {
+                items: [],
+                page: 0,
+                totalItems: 0,
+                totalPages: 1,
+                loading: false,
+                error: '',
+                inStockOnly: false,
+            };
+            return {
+                ...prev,
+                [key]: {
+                    ...existing,
+                    loading: true,
+                    error: '',
+                    inStockOnly,
+                },
+            };
+        });
+
+        try {
+            const response = await apiClient.get(`/products/master/${encodeURIComponent(masterCode)}/variants`, {
+                params: {
+                    page,
+                    pageSize: VARIANTS_PAGE_SIZE,
+                    in_stock: inStockOnly ? true : undefined,
+                },
+            });
+            const payload = asRecord(response?.data) || {};
+            const fetched = asRecordArray(payload.items).map(apiVariantToCard);
+            const safePage = Math.max(1, asNumber(payload.page, page));
+            const totalItems = Math.max(0, asNumber(payload.totalItems, fetched.length));
+            const totalPages = Math.max(1, asNumber(payload.totalPages, 1));
+
+            setVariantFeedByMaster((prev) => {
+                const existing = prev[key] || {
+                    items: [],
+                    page: 0,
+                    totalItems: 0,
+                    totalPages: 1,
+                    loading: false,
+                    error: '',
+                    inStockOnly,
+                };
+                const nextItems = append ? mergeUniqueCards([...existing.items, ...fetched]) : fetched;
+                return {
+                    ...prev,
+                    [key]: {
+                        ...existing,
+                        items: nextItems,
+                        page: safePage,
+                        totalItems,
+                        totalPages,
+                        loading: false,
+                        error: '',
+                        inStockOnly,
+                    },
+                };
+            });
+        } catch (error) {
+            setVariantFeedByMaster((prev) => {
+                const existing = prev[key] || {
+                    items: [],
+                    page: 0,
+                    totalItems: 0,
+                    totalPages: 1,
+                    loading: false,
+                    error: '',
+                    inStockOnly,
+                };
+                return {
+                    ...prev,
+                    [key]: {
+                        ...existing,
+                        loading: false,
+                        error: 'Unable to load variants right now.',
+                    },
+                };
+            });
+        }
+    };
+
+    const toggleMaster = (masterCode: string) => {
+        const key = masterCode.toLowerCase();
+        const nextExpanded = !expandedMasters[key];
+        setExpandedMasters((prev) => ({ ...prev, [key]: nextExpanded }));
+        if (!nextExpanded) {
+            return;
+        }
+        const feed = variantFeedByMaster[key];
+        if (feed && (feed.page > 0 || feed.loading)) {
+            return;
+        }
+        void fetchMasterVariants(masterCode, {
+            page: 1,
+            append: false,
+            inStockOnly: !!feed?.inStockOnly,
+        });
+    };
+
     return (
         <div className="mt-3">
             <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-custom">
-                {items.map((p) => {
-                    const visibleAttributes = getVisibleAttributes(p.attributes);
-                    return (
-                    <div
-                        key={p.id}
-                        className="min-w-[240px] max-w-[240px] bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md transition-shadow flex flex-col"
-                    >
-                        {/* 1. Header for Image */}
-                        <div className="h-[160px] bg-gray-50 flex items-center justify-center overflow-hidden border-b border-gray-50 group/img">
-                            {p.image_url ? (
-                                <a
-                                    href={p.image_url.replace('/wholesale1_t/', '/wholesale1_b/')}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="w-full h-full flex items-center justify-center cursor-zoom-in"
-                                    title="Click to view full image"
-                                >
-                                    <img src={p.image_url} alt={p.name} className="h-full w-full object-contain transition-transform group-hover/img:scale-105" />
-                                </a>
-                            ) : (
-                                <div className="text-sm text-gray-400 font-medium">No image available</div>
-                            )}
-                        </div>
+                {groupedProducts.map((group) => {
+                    const { masterCode } = group;
+                    const masterKey = masterCode.toLowerCase();
+                    const localGroupItems = group.items;
+                    const feed = variantFeedByMaster[masterKey];
+                    const groupItems = (feed && feed.items.length > 0) ? feed.items : localGroupItems;
+                    const totalVariants = (feed && feed.totalItems > 0) ? feed.totalItems : localGroupItems.length;
+                    const totalPages = feed?.totalPages || 1;
+                    const currentPage = feed?.page || 0;
+                    const canLoadMore = currentPage > 0 && currentPage < totalPages;
 
-                        {/* 2. Body for Product name, SKU, Description */}
-                        <div className="p-3 flex-1">
-                            <h4 className="text-base font-bold text-gray-900 line-clamp-2 uppercase leading-tight mb-1" title={p.name}>
-                                {p.name}
-                            </h4>
-                            <div className="text-xs font-mono text-gray-500 uppercase flex items-center gap-1.5 mb-2">
-                                <span className="px-1.5 py-0.5 bg-gray-100 rounded text-[10px] font-black text-gray-600">SKU</span>
-                                <span className="font-bold tracking-wider">{p.sku}</span>
-                                {p.attributes?.master_code && (
-                                    <>
-                                        <span className="text-gray-300">|</span>
-                                        <span className="font-medium">{p.attributes.master_code}</span>
-                                    </>
+                    const rep = groupItems.find((item) => !!item.image_url) || groupItems[0];
+                    const prices = groupItems
+                        .map((item) => Number(item.price))
+                        .filter((value) => Number.isFinite(value));
+                    const minPrice = prices.length ? Math.min(...prices) : null;
+                    const maxPrice = prices.length ? Math.max(...prices) : null;
+                    const inStockCount = groupItems.filter((item) => !isOutOfStock(item.stock_status)).length;
+                    const expanded = !!expandedMasters[masterCode.toLowerCase()];
+
+                    return (
+                        <div
+                            key={`group-${masterCode}`}
+                            className="min-w-[300px] max-w-[300px] bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md transition-shadow flex flex-col"
+                        >
+                            <div className="h-[160px] bg-gray-50 flex items-center justify-center overflow-hidden border-b border-gray-50">
+                                {rep.image_url ? (
+                                    <a
+                                        href={rep.image_url.replace('/wholesale1_t/', '/wholesale1_b/')}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="w-full h-full flex items-center justify-center cursor-zoom-in"
+                                        title="Click to view full image"
+                                    >
+                                        <img src={rep.image_url} alt={masterCode} className="h-full w-full object-contain transition-transform hover:scale-105" />
+                                    </a>
+                                ) : (
+                                    <div className="text-sm text-gray-400 font-medium">No image available</div>
                                 )}
                             </div>
-                            {p.description && (
-                                <div className="text-sm text-gray-600 italic leading-snug">
-                                    {p.description}
-                                </div>
-                            )}
 
-                            {visibleAttributes.length > 0 && (
-                                <div className="mt-3 pt-3 border-t border-gray-50 flex flex-wrap gap-2 text-xs uppercase font-bold tracking-wider">
-                                    {visibleAttributes.map(([key, value]) => (
-                                        <div
-                                            key={`${p.id}-${key}`}
-                                            className={key === 'jewelry_type'
-                                                ? "bg-[#96D0E6]/20 text-[#214166] px-2.5 py-1.5 rounded-md"
-                                                : "bg-gray-100 text-gray-600 px-2.5 py-1.5 rounded-md"}
-                                        >
-                                            {formatAttributeLabel(key)}: {formatAttributeValue(value)}
+                            <div className="p-3 flex-1">
+                                <h4 className="text-base font-bold text-gray-900 uppercase leading-tight mb-1" title={masterCode}>
+                                    {masterCode}
+                                </h4>
+                                <div className="text-xs text-gray-500 font-semibold uppercase tracking-wider mb-2">
+                                    {totalVariants} variant{totalVariants > 1 ? 's' : ''}
+                                </div>
+                                {rep.description && (
+                                    <div className="text-sm text-gray-600 italic leading-snug mb-3">
+                                        {rep.description}
+                                    </div>
+                                )}
+                                <div className="grid grid-cols-2 gap-2 text-xs">
+                                    <div className="rounded-md bg-gray-50 border border-gray-100 px-2 py-1.5">
+                                        <div className="text-[10px] uppercase font-black text-gray-400">Price Range</div>
+                                        <div className="font-bold text-gray-700">
+                                            {minPrice !== null && maxPrice !== null
+                                                ? (minPrice === maxPrice
+                                                    ? formatPrice({ ...rep, price: minPrice })
+                                                    : `${formatPrice({ ...rep, price: minPrice })} - ${formatPrice({ ...rep, price: maxPrice })}`)
+                                                : "Unavailable"}
                                         </div>
-                                    ))}
+                                    </div>
+                                    <div className="rounded-md bg-gray-50 border border-gray-100 px-2 py-1.5">
+                                        <div className="text-[10px] uppercase font-black text-gray-400">In Stock</div>
+                                        <div className="font-bold text-gray-700">{inStockCount}/{groupItems.length}</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="px-3 pb-3">
+                                <button
+                                    onClick={() => toggleMaster(masterCode)}
+                                    className="w-full text-center py-2 rounded-lg text-sm font-bold border border-gray-200 text-gray-700 hover:bg-gray-50 transition-all active:scale-95"
+                                >
+                                    {expanded ? "Hide variants" : `View variants (${totalVariants})`}
+                                </button>
+                            </div>
+
+                            {expanded && (
+                                <div className="border-t border-gray-100 bg-gray-50/40 px-3 pb-3 pt-2 space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                                            {groupItems.length} loaded / {totalVariants}
+                                        </div>
+                                        <button
+                                            onClick={() => {
+                                                void fetchMasterVariants(masterCode, {
+                                                    page: 1,
+                                                    append: false,
+                                                    inStockOnly: !(feed?.inStockOnly || false),
+                                                });
+                                            }}
+                                            className="text-[11px] font-bold px-2 py-1 rounded-md border border-gray-200 text-gray-700 hover:bg-gray-50"
+                                        >
+                                            {feed?.inStockOnly ? "Show all" : "In-stock only"}
+                                        </button>
+                                    </div>
+                                    {feed?.loading && groupItems.length === 0 && (
+                                        <div className="text-xs text-gray-500">Loading variants...</div>
+                                    )}
+                                    {feed?.error && (
+                                        <div className="text-xs text-red-600 font-semibold">{feed.error}</div>
+                                    )}
+                                    {groupItems.map((variant) => {
+                                        const attrs = getVisibleAttributes(variant.attributes).slice(0, 3);
+                                        return (
+                                            <div key={`variant-${variant.id}`} className="bg-white border border-gray-100 rounded-lg px-2.5 py-2">
+                                                <div className="flex items-start justify-between gap-2">
+                                                    <div>
+                                                        <div className="text-[11px] uppercase text-gray-400 font-black">SKU</div>
+                                                        <div className="text-sm font-bold text-gray-800">{variant.sku}</div>
+                                                    </div>
+                                                    <div className={`text-[11px] font-bold px-2 py-0.5 rounded-md ${isOutOfStock(variant.stock_status) ? 'text-red-700 bg-red-100' : 'text-green-700 bg-green-100'}`}>
+                                                        {stockLabel(variant.stock_status)}
+                                                    </div>
+                                                </div>
+                                                {attrs.length > 0 && (
+                                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                                        {attrs.map(([attrKey, value]) => (
+                                                            <span key={`${variant.id}-${attrKey}`} className="text-[10px] uppercase font-bold tracking-wide bg-gray-100 text-gray-600 px-2 py-1 rounded-md">
+                                                                {formatAttributeLabel(attrKey)}: {formatAttributeValue(value)}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                                <div className="mt-2 flex items-center justify-between gap-2">
+                                                    <div className="text-xs font-black text-gray-800">{formatPrice(variant)}</div>
+                                                    {onQuickReply && (
+                                                        <button
+                                                            onClick={() => onQuickReply(`Show full details for SKU ${variant.sku}.`)}
+                                                            className="text-xs font-bold px-2.5 py-1 rounded-md border border-gray-200 text-gray-700 hover:bg-gray-50"
+                                                        >
+                                                            View details
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                    {canLoadMore && (
+                                        <button
+                                            onClick={() => {
+                                                void fetchMasterVariants(masterCode, {
+                                                    page: (feed?.page || 1) + 1,
+                                                    append: true,
+                                                    inStockOnly: !!feed?.inStockOnly,
+                                                });
+                                            }}
+                                            disabled={!!feed?.loading}
+                                            className="w-full text-center py-2 rounded-lg text-xs font-bold border border-gray-200 text-gray-700 hover:bg-gray-50 transition-all disabled:opacity-50"
+                                        >
+                                            {feed?.loading ? "Loading..." : "Load more variants"}
+                                        </button>
+                                    )}
                                 </div>
                             )}
                         </div>
-
-                        {/* 3. Sub body for Price and Stock number */}
-                        <div className="px-3 py-2 bg-gray-50/50 border-t border-gray-100 flex items-center justify-between">
-                            <div className="flex flex-col">
-                                <span className="text-[10px] uppercase font-bold text-gray-400 leading-none mb-1">Price</span>
-                                <span className="text-base font-black text-gray-900 leading-none">{formatPrice(p)}</span>
-                            </div>
-                            <div className="flex flex-col items-end">
-                                <span className="text-[10px] uppercase font-bold text-gray-400 leading-none mb-1">Stock</span>
-                                <span className={`text-xs font-bold px-2 py-0.5 rounded-lg ${isOutOfStock(p.stock_status) ? 'text-red-700 bg-red-100' : 'text-green-700 bg-green-100'}`}>
-                                    {stockLabel(p.stock_status)}
-                                </span>
-                            </div>
-                        </div>
-
-                        {/* 4. Buttons for View the link */}
-                        {p.product_url && (
-                            <div className="p-2 bg-white">
-                                <a
-                                    href={p.product_url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="block w-full text-center py-2 rounded-lg text-sm font-bold text-white transition-all transform active:scale-95 shadow-sm hover:brightness-110"
-                                    style={{ backgroundColor: primaryColor }}
-                                >
-                                    {viewButtonText || "View Product Details"}
-                                </a>
-                            </div>
-                        )}
-                    </div>
                     );
                 })}
             </div>
@@ -550,6 +781,51 @@ const asRecordArray = (value: unknown): Record<string, unknown>[] => {
     return value.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => item !== null);
 };
 
+const apiVariantToCard = (raw: Record<string, unknown>): ProductCard => {
+    const attrKeys = [
+        'material',
+        'jewelry_type',
+        'color',
+        'gauge',
+        'threading',
+        'length',
+        'size',
+        'cz_color',
+        'opal_color',
+        'outer_diameter',
+        'design',
+        'crystal_color',
+        'pearl_color',
+    ];
+    const attributes: Record<string, unknown> = {};
+    const masterCode = asString(raw.master_code || raw.name || '').trim();
+    if (masterCode) attributes.master_code = masterCode;
+    for (const key of attrKeys) {
+        const value = asString(raw[key] || '').trim();
+        if (!value) continue;
+        attributes[key] = value;
+    }
+
+    const id = asString(raw.id || raw.sku || raw.object_id || '').trim();
+    const sku = asString(raw.sku || raw.object_id || id).trim();
+    const stockStatusRaw = asString(raw.stock_status || '').trim();
+    const inStock = asBoolean(raw.in_stock);
+    return {
+        id: id || sku,
+        object_id: asString(raw.object_id || sku),
+        sku,
+        legacy_sku: [],
+        name: masterCode || sku,
+        description: asString(raw.description || ''),
+        price: asNumber(raw.price, 0),
+        currency: asString(raw.currency, 'USD'),
+        stock_status: stockStatusRaw || (inStock ? 'in_stock' : 'out_of_stock'),
+        image_url: asString(raw.image_url || '') || null,
+        product_url: asString(raw.url || raw.product_url || '') || null,
+        attributes,
+    };
+};
+
 const componentProductToCard = (raw: Record<string, unknown>): ProductCard => {
     const productId = asString(raw.product_id || raw.id || raw.sku || '');
     const sku = asString(raw.sku || raw.object_id || productId || '');
@@ -570,6 +846,18 @@ const componentProductToCard = (raw: Record<string, unknown>): ProductCard => {
         product_url: asString(raw.product_url || '') || null,
         attributes: asRecord(raw.attributes) || {},
     };
+};
+
+const AssistantMarkdown: React.FC<{ text: string; className?: string }> = ({ text, className }) => {
+    const markdown = asString(text).trim();
+    if (!markdown) return null;
+    return (
+        <div
+            className={`${className || ''} break-words [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_code]:rounded [&_code]:bg-black/5 [&_code]:px-1 [&_code]:py-0.5 [&_a]:underline`}
+        >
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
+        </div>
+    );
 };
 
 const ChatComponentsRenderer: React.FC<{
@@ -593,7 +881,6 @@ const ChatComponentsRenderer: React.FC<{
 }) => {
     const components = Array.isArray(message.components) ? message.components : [];
     if (components.length === 0) return null;
-    const hasLegacyCarousel = Boolean(message.productCarousel && message.productCarousel.length > 0);
 
     return (
         <div className="w-full mt-2 space-y-2">
@@ -602,13 +889,8 @@ const ChatComponentsRenderer: React.FC<{
                 const data = asRecord(component.data) || {};
 
                 if (type === 'query_summary') {
-                    const text = asString(data.text).trim();
-                    if (!text || text === message.content.trim()) return null;
-                    return (
-                        <div key={`${type}-${index}`} className="text-[11px] uppercase tracking-wider font-bold text-gray-500 px-1">
-                            {text}
-                        </div>
-                    );
+                    // Keep query_summary in API/meta for diagnostics, but do not render it in chat UI.
+                    return null;
                 }
 
                 if (type === 'result_count') {
@@ -621,7 +903,6 @@ const ChatComponentsRenderer: React.FC<{
                 }
 
                 if (type === 'product_cards') {
-                    if (hasLegacyCarousel) return null;
                     const cards = asRecordArray(data.cards).map(componentProductToCard);
                     if (cards.length === 0) return null;
                     return (
@@ -634,12 +915,12 @@ const ChatComponentsRenderer: React.FC<{
                             materialLabel={materialLabel}
                             jewelryTypeLabel={jewelryTypeLabel}
                             thbToUsdRate={thbToUsdRate}
+                            onQuickReply={onQuickReply}
                         />
                     );
                 }
 
                 if (type === 'product_detail') {
-                    if (hasLegacyCarousel) return null;
                     const product = asRecord(data.product);
                     if (!product) return null;
                     return (
@@ -652,6 +933,7 @@ const ChatComponentsRenderer: React.FC<{
                             materialLabel={materialLabel}
                             jewelryTypeLabel={jewelryTypeLabel}
                             thbToUsdRate={thbToUsdRate}
+                            onQuickReply={onQuickReply}
                         />
                     );
                 }
@@ -694,7 +976,9 @@ const ChatComponentsRenderer: React.FC<{
                     return (
                         <ul key={`${type}-${index}`} className="list-disc pl-5 text-sm text-gray-700 space-y-1">
                             {items.map((item, itemIndex) => (
-                                <li key={`${type}-item-${itemIndex}`}>{item}</li>
+                                <li key={`${type}-item-${itemIndex}`}>
+                                    <span className="whitespace-pre-wrap">{item}</span>
+                                </li>
                             ))}
                         </ul>
                     );
@@ -763,7 +1047,7 @@ const ChatComponentsRenderer: React.FC<{
                     if (!messageText || messageText === message.content.trim()) return null;
                     return (
                         <div key={`${type}-${index}`} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                            {messageText}
+                            <span className="whitespace-pre-wrap">{messageText}</span>
                         </div>
                     );
                 }
@@ -773,33 +1057,39 @@ const ChatComponentsRenderer: React.FC<{
                     if (!answer || answer === message.content.trim()) return null;
                     return (
                         <div key={`${type}-${index}`} className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800">
-                            {answer}
+                            <span className="whitespace-pre-wrap">{answer}</span>
                         </div>
                     );
                 }
 
-                if (type === 'action_result' || type === 'error') {
+                if (type === 'action_result') {
                     const messageText = asString(data.message).trim();
                     if (!messageText || messageText === message.content.trim()) return null;
-                    const isError = type === 'error';
                     return (
                         <div
                             key={`${type}-${index}`}
-                            className={`rounded-xl px-3 py-2 text-sm border ${isError ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}
+                            className="rounded-xl px-3 py-2 text-sm border border-emerald-200 bg-emerald-50 text-emerald-700"
                         >
-                            {messageText}
+                            <span className="whitespace-pre-wrap">{messageText}</span>
+                        </div>
+                    );
+                }
+
+                if (type === 'error') {
+                    const messageText = asString(data.message).trim();
+                    if (!messageText || messageText === message.content.trim()) return null;
+                    return (
+                        <div
+                            key={`${type}-${index}`}
+                            className="rounded-xl px-3 py-2 text-sm border border-red-200 bg-red-50 text-red-700"
+                        >
+                            <AssistantMarkdown text={messageText} className="[&_p]:mb-0" />
                         </div>
                     );
                 }
 
                 return null;
             })}
-
-            {message.meta && (
-                <div className="text-[10px] text-gray-400 px-1">
-                    {asString(message.meta.source).toUpperCase()} · {asNumber(message.meta.latency_ms, 0).toFixed(0)}ms
-                </div>
-            )}
         </div>
     );
 };
@@ -992,7 +1282,12 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                 content: msg.content,
                 productCarousel: Array.isArray(msg.product_data) ? msg.product_data : undefined,
             }));
-            setMessages(hydrated);
+            setMessages((prev) => {
+                if (prev.length > 0) {
+                    return prev;
+                }
+                return hydrated;
+            });
         } catch (error) {
             console.error('Failed to load conversation history:', error);
         }
@@ -1464,7 +1759,11 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                                     }`}
                                                 style={msg.role === 'user' ? { backgroundColor: config.primaryColor } : {}}
                                             >
-                                                <div className="whitespace-pre-wrap">{msg.content}</div>
+                                                {msg.role === 'assistant' ? (
+                                                    <AssistantMarkdown text={msg.content} className="whitespace-pre-wrap" />
+                                                ) : (
+                                                    <div className="whitespace-pre-wrap">{msg.content}</div>
+                                                )}
                                             </div>
                                         </div>
 
@@ -1484,6 +1783,9 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                                     materialLabel={msg.materialLabel}
                                                     jewelryTypeLabel={msg.jewelryTypeLabel}
                                                     thbToUsdRate={config.thbToUsdRate}
+                                                    onQuickReply={(question) => {
+                                                        void sendMessage(question);
+                                                    }}
                                                 />
                                             </div>
                                         )}
@@ -2038,3 +2340,4 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         </div>
     );
 };
+

@@ -69,7 +69,7 @@ async def test_field_resolver_skips_enrichment_when_base_fields_are_sufficient()
 
     canonical, meta = await resolver.resolve(
         product_ids=[product.id],
-        component_types=[ComponentType.PRODUCT_TABLE],
+        component_types=[ComponentType.PRODUCT_CARDS],
         redis_cache=None,
     )
 
@@ -95,7 +95,7 @@ async def test_field_resolver_runs_single_enrichment_query_for_full_specs() -> N
 
     canonical, meta = await resolver.resolve(
         product_ids=[product.id],
-        component_types=[ComponentType.COMPARE],
+        component_types=[ComponentType.PRODUCT_CARDS],
         redis_cache=None,
     )
 

@@ -12,6 +12,14 @@ FIELD_LABELS = {
     "sku": "SKU",
 }
 
+HIGHLIGHT_ATTRIBUTE_ORDER = (
+    "material",
+    "color",
+    "jewelry_type",
+    "gauge",
+    "threading",
+)
+
 
 @dataclass(frozen=True)
 class DetailResponsePayload:
@@ -23,6 +31,110 @@ class DetailResponsePayload:
 
 
 class DetailResponseBuilder:
+    @staticmethod
+    def _normalize_attr_key(value: object) -> str:
+        return str(value or "").strip().lower()
+
+    @staticmethod
+    def _format_highlight_value(value: object) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        lowered = text.lower()
+        if text == lowered and any(ch.isalpha() for ch in text):
+            return " ".join(part.capitalize() if part.isalpha() else part for part in text.split(" "))
+        return text
+
+    @classmethod
+    def _get_attr_value(cls, card: Any, key: str) -> str:
+        attrs = card.attributes or {}
+        wanted = cls._normalize_attr_key(key)
+        for raw_key, raw_value in attrs.items():
+            if cls._normalize_attr_key(raw_key) != wanted:
+                continue
+            text = str(raw_value or "").strip()
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _label_for_key(key: str) -> str:
+        return str(key or "").replace("_", " ").strip().upper()
+
+    @classmethod
+    def _extract_master_code(cls, card: Any) -> str:
+        attrs = card.attributes or {}
+        for raw_key, raw_value in attrs.items():
+            if cls._normalize_attr_key(raw_key) != "master_code":
+                continue
+            value = str(raw_value or "").strip()
+            if value:
+                return value
+        name_value = str(getattr(card, "name", "") or "").strip()
+        if name_value:
+            return name_value
+        return str(getattr(card, "sku", "") or "").strip()
+
+    @classmethod
+    def _group_by_master(cls, display_items: List[Any]) -> List[Dict[str, Any]]:
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for card in display_items:
+            label = cls._extract_master_code(card)
+            key = cls._normalize_attr_key(label) or str(getattr(card, "sku", "") or "").strip().lower()
+            group = grouped.get(key)
+            if group is None:
+                group = {"master_code": label, "items": []}
+                grouped[key] = group
+            group["items"].append(card)
+        return list(grouped.values())
+
+    @classmethod
+    def _build_attribute_focus_summary(
+        cls,
+        *,
+        display_items: List[Any],
+        attribute_filters: Dict[str, str],
+    ) -> List[str]:
+        highlights: List[str] = []
+        seen_labels: set[str] = set()
+
+        def add_highlight(raw_key: str, raw_value: object) -> None:
+            key = cls._normalize_attr_key(raw_key)
+            value = cls._format_highlight_value(raw_value)
+            if not key or not value:
+                return
+            if key in seen_labels:
+                return
+            highlights.append(f"[{cls._label_for_key(key)}] {value}")
+            seen_labels.add(key)
+
+        normalized_filters = {
+            cls._normalize_attr_key(key): str(value or "").strip()
+            for key, value in (attribute_filters or {}).items()
+            if str(value or "").strip()
+        }
+        for key in HIGHLIGHT_ATTRIBUTE_ORDER:
+            if key in normalized_filters:
+                add_highlight(key, normalized_filters[key])
+
+        for key in HIGHLIGHT_ATTRIBUTE_ORDER:
+            if key in seen_labels:
+                continue
+            values: List[str] = []
+            for card in display_items:
+                value = cls._get_attr_value(card, key)
+                if not value:
+                    values = []
+                    break
+                values.append(value)
+            unique = {item.lower(): item for item in values}
+            if len(unique) == 1 and values:
+                add_highlight(key, values[0])
+            if len(highlights) >= 4:
+                break
+
+        return highlights[:4]
+
     @staticmethod
     def _format_stock(value: object) -> str:
         text = str(value or "").strip()
@@ -82,61 +194,6 @@ class DetailResponseBuilder:
             parts.append("Missing: " + ", ".join(labels))
         return f"{index}. " + "; ".join(parts)
 
-    @staticmethod
-    def _append_unique(items: List[str], value: str) -> None:
-        text = str(value or "").strip()
-        if not text:
-            return
-        if text in items:
-            return
-        items.append(text)
-
-    @classmethod
-    def _build_follow_ups(
-        cls,
-        *,
-        display_items: List[Any],
-        requested_fields: List[str],
-        attribute_filters: Dict[str, str],
-        wants_image: bool,
-    ) -> List[str]:
-        follow_ups: List[str] = []
-        requested = {str(field or "").strip().lower() for field in requested_fields}
-        first_sku = str(getattr(display_items[0], "sku", "") or "").strip() if display_items else ""
-        second_sku = str(getattr(display_items[1], "sku", "") or "").strip() if len(display_items) > 1 else ""
-
-        if len(display_items) > 1:
-            if first_sku:
-                cls._append_unique(follow_ups, f"Show full details for SKU {first_sku}.")
-            if first_sku and second_sku:
-                cls._append_unique(follow_ups, f"Compare SKU {first_sku} and SKU {second_sku}.")
-            if "stock" not in requested:
-                cls._append_unique(follow_ups, "Show in-stock items only.")
-            if "price" not in requested:
-                cls._append_unique(follow_ups, "Show prices for these items.")
-            for key, label in (
-                ("material", "material"),
-                ("color", "color"),
-                ("gauge", "gauge"),
-                ("threading", "threading"),
-            ):
-                if key not in attribute_filters:
-                    cls._append_unique(follow_ups, f"Filter these results by {label}.")
-                    break
-        elif first_sku:
-            if "price" not in requested:
-                cls._append_unique(follow_ups, f"Show price for SKU {first_sku}.")
-            if "stock" not in requested:
-                cls._append_unique(follow_ups, f"Show stock for SKU {first_sku}.")
-            if "image" not in requested:
-                cls._append_unique(follow_ups, f"Show image for SKU {first_sku}.")
-            if "attributes" not in requested:
-                cls._append_unique(follow_ups, f"Show specs for SKU {first_sku}.")
-
-        if wants_image and any(not getattr(card, "image_url", None) for card in display_items):
-            cls._append_unique(follow_ups, "Some items have no image. Ask for price/stock instead.")
-        return follow_ups[:5]
-
     @classmethod
     def build_detail_reply(
         cls,
@@ -161,46 +218,86 @@ class DetailResponseBuilder:
                 card_policy_reason="no_matches",
             )
 
-        display_items = matches[: max(1, int(max_matches))]
-        header = (
-            f"I found {len(display_items)} matching product."
-            if len(display_items) == 1
-            else f"I found {len(display_items)} matching products."
-        )
-        lines: List[str] = [header]
-        for idx, card in enumerate(display_items, start=1):
-            missing = missing_fields_by_product.get(str(card.id), [])
-            lines.append(
-                cls._render_product_line(
-                    index=idx,
-                    card=card,
-                    requested_fields=requested_fields,
-                    missing_fields=missing,
-                )
+        image_filtered_matches = [
+            card for card in matches
+            if str(getattr(card, "image_url", "") or "").strip()
+        ]
+        source_items = image_filtered_matches if wants_image and image_filtered_matches else matches
+        display_items = source_items[: max(1, int(max_matches))]
+        master_groups = cls._group_by_master(display_items)
+        variant_count = len(display_items)
+        master_count = len(master_groups)
+        if master_count == 1 and variant_count > 1:
+            master_code = str(master_groups[0]["master_code"] or "").strip()
+            header = f"I found {variant_count} variants for master code {master_code}."
+        elif master_count > 1 and variant_count > 1:
+            header = f"I found {master_count} master styles ({variant_count} variants)."
+        else:
+            header = (
+                "I found 1 matching product."
+                if variant_count == 1
+                else f"I found {variant_count} matching products."
             )
+        requested_set = {str(field or "").strip().lower() for field in requested_fields}
+        attribute_focus_mode = bool(requested_set) and requested_set.issubset({"attributes"})
+
+        lines: List[str] = [header]
+        if attribute_focus_mode:
+            highlights = cls._build_attribute_focus_summary(
+                display_items=display_items,
+                attribute_filters=attribute_filters,
+            )
+            if highlights:
+                lines.append("Key details: " + " | ".join(highlights))
+
+            top_masters = [str(group.get("master_code") or "").strip() for group in master_groups]
+            top_masters = [code for code in top_masters if code]
+            if top_masters:
+                if len(top_masters) == 1:
+                    lines.append(f"Top master code: [MASTER] {top_masters[0]}")
+                else:
+                    lines.append(
+                        "Top master codes: "
+                        + ", ".join([f"[MASTER] {code}" for code in top_masters[:4]])
+                    )
+        else:
+            for idx, card in enumerate(display_items, start=1):
+                missing = missing_fields_by_product.get(str(card.id), [])
+                lines.append(
+                    cls._render_product_line(
+                        index=idx,
+                        card=card,
+                        requested_fields=requested_fields,
+                        missing_fields=missing,
+                    )
+                )
         reply_text = "\n".join(lines)
 
-        if wants_image:
-            show_cards = True
-            reason = "image_requested"
-        elif len(display_items) > 1:
-            show_cards = True
+        show_cards = True
+        if len(display_items) > 1:
             reason = "multiple_matches"
         else:
-            show_cards = False
             reason = "single_match_text_only"
-
-        follow_ups = cls._build_follow_ups(
-            display_items=display_items,
-            requested_fields=requested_fields,
-            attribute_filters=attribute_filters,
-            wants_image=wants_image,
-        )
+        follow_ups: List[str] = []
+        carousel_msg = ""
+        if show_cards:
+            if master_count == 1:
+                master_code = str(master_groups[0]["master_code"] or "").strip()
+                variant_word = "variant" if variant_count == 1 else "variants"
+                carousel_msg = (
+                    f"Master code {master_code} has {variant_count} {variant_word}. "
+                    "Expand to view each SKU detail."
+                )
+            elif master_count > 1:
+                carousel_msg = (
+                    f"Showing {master_count} master styles ({variant_count} variants). "
+                    "Expand a style to view SKU details."
+                )
 
         return DetailResponsePayload(
             reply_text=reply_text,
-            carousel_msg="Matching products are shown below." if show_cards else "",
+            carousel_msg=carousel_msg,
             follow_up_questions=follow_ups,
-            product_carousel=display_items if show_cards else [],
+            product_carousel=display_items,
             card_policy_reason=reason,
         )

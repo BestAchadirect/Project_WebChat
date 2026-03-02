@@ -100,3 +100,12 @@ class ProductListResponse(BaseModel):
     page: int
     pageSize: int
     totalPages: int
+
+
+class MasterCodeVariantListResponse(BaseModel):
+    masterCode: str
+    items: List[Product]
+    totalItems: int
+    page: int
+    pageSize: int
+    totalPages: int

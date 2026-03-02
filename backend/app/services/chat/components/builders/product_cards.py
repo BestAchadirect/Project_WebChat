@@ -13,11 +13,13 @@ class ProductCardsComponent(BaseComponent):
     required_fields: Set[str] = {
         "product_id",
         "title",
+        "description",
         "image_url",
         "price",
         "in_stock",
         "material",
         "gauge",
+        "attributes",
     }
 
     async def build(self, context: ComponentContext) -> ChatComponent:
@@ -28,6 +30,7 @@ class ProductCardsComponent(BaseComponent):
                     "product_id": str(product.product_id),
                     "sku": product.sku,
                     "title": product.title,
+                    "description": product.description,
                     "price": float(product.price),
                     "currency": product.currency,
                     "in_stock": bool(product.in_stock),
@@ -35,8 +38,8 @@ class ProductCardsComponent(BaseComponent):
                     "image_url": product.image_url,
                     "material": product.material,
                     "gauge": product.gauge,
+                    "attributes": dict(product.attributes or {}),
                     "product_url": product.product_url,
                 }
             )
         return ChatComponent(type=self.component_type, data={"cards": cards})
-

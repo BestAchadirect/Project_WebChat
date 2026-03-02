@@ -18,6 +18,7 @@ class CanonicalProduct:
     material: Optional[str]
     gauge: Optional[str]
     image_url: Optional[str]
+    description: Optional[str] = None
     attributes: Dict[str, Any] = field(default_factory=dict)
     product_url: Optional[str] = None
 
@@ -33,6 +34,7 @@ class CanonicalProduct:
             "material": self.material,
             "gauge": self.gauge,
             "image_url": self.image_url,
+            "description": self.description,
             "attributes": dict(self.attributes or {}),
             "product_url": self.product_url,
         }
@@ -50,7 +52,7 @@ class CanonicalProduct:
             material=(str(payload.get("material")) if payload.get("material") is not None else None),
             gauge=(str(payload.get("gauge")) if payload.get("gauge") is not None else None),
             image_url=(str(payload.get("image_url")) if payload.get("image_url") is not None else None),
+            description=(str(payload.get("description")) if payload.get("description") is not None else None),
             attributes=dict(payload.get("attributes") or {}),
             product_url=(str(payload.get("product_url")) if payload.get("product_url") is not None else None),
         )
-

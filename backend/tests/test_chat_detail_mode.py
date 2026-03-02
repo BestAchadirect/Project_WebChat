@@ -23,6 +23,12 @@ class _DummyConversation:
     id = 9
 
 
+@pytest.fixture(autouse=True)
+def _legacy_mode_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "CHAT_COMPONENT_BUCKETS_ENABLED", False)
+    monkeypatch.setattr(settings, "CHAT_COMPONENT_BUCKETS_SHADOW_MODE", False)
+
+
 def _card(
     *,
     sku: str,
@@ -141,7 +147,8 @@ async def test_process_chat_detail_mode_price_stock(monkeypatch: pytest.MonkeyPa
     assert response.intent == "detail_mode"
     assert "Price:" in response.reply_text
     assert "Stock:" in response.reply_text
-    assert response.product_carousel == []
+    assert len(response.product_carousel) == 1
+    assert response.product_carousel[0].sku == "BB-25-BLK"
     assert response.debug.get("detail_mode_enabled") is True
     assert response.debug.get("detail_match_count") == 1
 

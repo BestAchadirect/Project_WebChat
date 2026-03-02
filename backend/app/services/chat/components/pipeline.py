@@ -5,9 +5,12 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.models.chat import Message
+from app.models.product_search_projection import ProductSearchProjection
 from app.schemas.chat import (
     ChatRequest,
     ChatResponse,
@@ -39,6 +42,14 @@ class ComponentPipelineResult:
 
 
 class ComponentPipeline:
+    _SMALLTALK_TERMS = {
+        "hi",
+        "hello",
+        "hey",
+        "good morning",
+        "good afternoon",
+        "good evening",
+    }
     _POLICY_TERMS = {
         "shipping",
         "warranty",
@@ -70,6 +81,18 @@ class ComponentPipeline:
         "stock",
         "price",
     }
+    _ATTRIBUTE_LIST_TERMS = {
+        "material": "material",
+        "materials": "material",
+        "color": "color",
+        "colors": "color",
+        "gauge": "gauge",
+        "gauges": "gauge",
+        "threading": "threading",
+        "threadings": "threading",
+        "type": "jewelry_type",
+        "types": "jewelry_type",
+    }
     _KNOWLEDGE_UNAVAILABLE_MESSAGE = (
         "I can share a brief answer right now, but detailed knowledge search is temporarily unavailable."
     )
@@ -91,6 +114,13 @@ class ComponentPipeline:
     @staticmethod
     def _normalize_text(text: str) -> str:
         return " ".join(str(text or "").strip().lower().split())
+
+    @classmethod
+    def _is_smalltalk(cls, text: str) -> bool:
+        normalized = cls._normalize_text(text)
+        if not normalized:
+            return False
+        return normalized in cls._SMALLTALK_TERMS
 
     @staticmethod
     def _is_probable_sku_token(token: str) -> bool:
@@ -125,9 +155,16 @@ class ComponentPipeline:
         return deduped
 
     @classmethod
-    def _is_knowledge_intent(cls, *, text: str, detail_has_filters: bool, sku_tokens: List[str]) -> bool:
+    def _is_knowledge_intent(
+        cls,
+        *,
+        text: str,
+        detail_has_filters: bool,
+        detail_request: bool,
+        sku_tokens: List[str],
+    ) -> bool:
         normalized = cls._normalize_text(text)
-        if detail_has_filters or sku_tokens:
+        if detail_request or detail_has_filters or sku_tokens:
             return False
         if any(term in normalized for term in cls._POLICY_TERMS):
             return True
@@ -147,19 +184,20 @@ class ComponentPipeline:
 
     @staticmethod
     def _to_product_card(product) -> ProductCard:
+        attrs = dict(product.attributes or {})
         return ProductCard(
             id=product.product_id,
             object_id=product.sku,
             sku=product.sku,
             legacy_sku=[],
             name=product.title,
-            description=None,
+            description=product.description,
             price=float(product.price),
             currency=product.currency,
             stock_status="in_stock" if product.in_stock else "out_of_stock",
             image_url=product.image_url,
             product_url=product.product_url,
-            attributes=dict(product.attributes or {}),
+            attributes=attrs,
         )
 
     @staticmethod
@@ -188,6 +226,132 @@ class ComponentPipeline:
             out[key] = dict(getattr(component, "data", {}) or {})
         return out
 
+    @staticmethod
+    def _display_attribute_value(value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text.islower():
+            return " ".join([part.capitalize() for part in text.split(" ") if part])
+        return text
+
+    @classmethod
+    def _detect_attribute_list_target(cls, text: str) -> str:
+        normalized = cls._normalize_text(text)
+        if not normalized:
+            return ""
+        asks_for_list = bool(
+            re.search(r"\b(what|which|list|show|available|sell|have|offer|carry)\b", normalized)
+            or normalized.endswith("?")
+        )
+        if not asks_for_list:
+            return ""
+        for token, target in cls._ATTRIBUTE_LIST_TERMS.items():
+            if re.search(rf"\b{re.escape(token)}\b", normalized):
+                return target
+        return ""
+
+    async def _load_distinct_attribute_values(
+        self,
+        *,
+        target: str,
+        attribute_filters: Dict[str, str],
+        limit: int = 20,
+    ) -> List[str]:
+        if not hasattr(self.db, "execute"):
+            return []
+        projection_cols = {
+            "material": ProductSearchProjection.material_norm,
+            "color": ProductSearchProjection.color_norm,
+            "gauge": ProductSearchProjection.gauge_norm,
+            "threading": ProductSearchProjection.threading_norm,
+            "jewelry_type": ProductSearchProjection.jewelry_type_norm,
+        }
+        target_col = projection_cols.get(str(target or "").strip().lower())
+        if target_col is None:
+            return []
+
+        stmt = select(target_col).where(
+            ProductSearchProjection.is_active.is_(True),
+            target_col.is_not(None),
+            target_col != "",
+        )
+        for raw_key, raw_value in dict(attribute_filters or {}).items():
+            key = str(raw_key or "").strip().lower()
+            if key == str(target or "").strip().lower():
+                continue
+            value = self._normalize_text(str(raw_value or ""))
+            if not value:
+                continue
+            filter_col = projection_cols.get(key)
+            if filter_col is None:
+                continue
+            stmt = stmt.where(filter_col == value)
+
+        stmt = stmt.group_by(target_col).order_by(target_col.asc()).limit(max(1, int(limit)))
+        try:
+            result = await self.db.execute(stmt)
+        except Exception:
+            return []
+        values: List[str] = []
+        seen: set[str] = set()
+        for raw in list(result.scalars().all() or []):
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            values.append(self._display_attribute_value(text))
+        return values
+
+    async def _load_recent_product_ids_for_image_followup(
+        self,
+        *,
+        conversation_id: int,
+        max_messages: int = 8,
+        max_ids: int = 20,
+    ) -> List[str]:
+        if int(conversation_id or 0) <= 0:
+            return []
+        if not hasattr(self.db, "execute"):
+            return []
+        stmt = (
+            select(Message.product_data)
+            .where(
+                Message.conversation_id == int(conversation_id),
+                Message.role == "assistant",
+            )
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(max(1, int(max_messages)))
+        )
+        try:
+            result = await self.db.execute(stmt)
+        except Exception:
+            return []
+        for raw_payload in list(result.scalars().all() or []):
+            if not isinstance(raw_payload, list) or not raw_payload:
+                continue
+            deduped_ids: List[str] = []
+            seen: set[str] = set()
+            for item in raw_payload:
+                if not isinstance(item, dict):
+                    continue
+                product_id = str(item.get("id") or "").strip()
+                if not product_id:
+                    continue
+                key = product_id.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped_ids.append(product_id)
+                if len(deduped_ids) >= max(1, int(max_ids)):
+                    break
+            if deduped_ids:
+                return deduped_ids
+        return []
+
     @classmethod
     def _derive_legacy(
         cls,
@@ -197,11 +361,20 @@ class ComponentPipeline:
     ) -> Dict[str, Any]:
         mapped = cls._components_to_map(components)
         query_summary = str(mapped.get("query_summary", {}).get("text") or context.query_summary or "").strip()
+        user_text = str(context.user_text or "").strip()
         result_count = int(mapped.get("result_count", {}).get("count") or context.result_count or 0)
-        reply_text = query_summary or "I processed your request."
+        reply_text = "I processed your request."
         carousel_msg = ""
         product_carousel: List[ProductCard] = []
         follow_ups: List[str] = []
+
+        normalized_query_summary = " ".join(query_summary.lower().split())
+        normalized_user_text = " ".join(user_text.lower().split())
+        should_use_summary_prefix = bool(
+            normalized_query_summary
+            and normalized_query_summary != normalized_user_text
+        )
+        summary_prefix = query_summary if should_use_summary_prefix else ""
 
         if "error" in mapped:
             reply_text = str(mapped["error"].get("message") or "I could not process this request.")
@@ -209,36 +382,14 @@ class ComponentPipeline:
             reply_text = str(mapped["clarify"].get("message") or "Please share more details.")
         elif "knowledge_answer" in mapped:
             reply_text = str(mapped["knowledge_answer"].get("answer") or query_summary)
-        elif "product_detail" in mapped and mapped["product_detail"].get("product"):
-            product = dict(mapped["product_detail"]["product"] or {})
-            reply_text = (
-                f"{query_summary}\n"
-                f"SKU: {product.get('sku')} | Price: {product.get('price')} {product.get('currency')} | "
-                f"Stock: {'in stock' if product.get('in_stock') else 'out of stock'}"
-            )
-            product_carousel = [cls._to_product_card(context.canonical_products[0])] if context.canonical_products else []
-            carousel_msg = "Matching product is shown below."
-        elif "compare" in mapped:
-            items = list(mapped["compare"].get("items") or [])
-            reply_text = f"{query_summary} Compared {len(items)} product(s)."
-        elif "product_table" in mapped:
-            reply_text = f"{query_summary} I found {result_count} matching product(s)."
-            product_carousel = [cls._to_product_card(item) for item in context.canonical_products[:10]]
-            carousel_msg = "Matching products are shown below."
-        elif "product_bullets" in mapped:
-            reply_text = f"{query_summary} I found {result_count} matching product(s)."
-            product_carousel = [cls._to_product_card(item) for item in context.canonical_products[:10]]
-            carousel_msg = "Matching products are shown below."
         elif "product_cards" in mapped:
-            reply_text = f"{query_summary} I found {result_count} matching product(s)."
+            reply_text = (f"{summary_prefix} " if summary_prefix else "") + f"I found {result_count} matching product(s)."
             product_carousel = [cls._to_product_card(item) for item in context.canonical_products[:10]]
             carousel_msg = "Matching products are shown below."
 
         recommendation_items = list(mapped.get("recommendations", {}).get("items") or [])
         if recommendation_items:
             follow_ups.append("Show recommendations")
-        if "compare" in mapped:
-            follow_ups.append("Compare with another SKU")
 
         return {
             "reply_text": reply_text,
@@ -270,12 +421,18 @@ class ComponentPipeline:
                 "role": "system",
                 "content": (
                     "Answer strictly from provided context. "
-                    "Do not invent products, SKUs, or policies not in context."
+                    "Do not invent products, SKUs, or policies not in context. "
+                    "Return JSON with a single key `reply`."
                 ),
             },
             {
                 "role": "user",
-                "content": f"Locale: {locale}\nQuestion: {question}\nContext:\n{snippets}",
+                "content": (
+                    f"Locale: {locale}\n"
+                    f"Question: {question}\n"
+                    f"Context:\n{snippets}\n\n"
+                    "Respond in JSON."
+                ),
             },
         ]
         data = await llm_service.generate_chat_json(
@@ -304,13 +461,19 @@ class ComponentPipeline:
         sku_tokens = self._extract_sku_tokens(text)
         unique_sku_tokens = [token for token in dict.fromkeys([str(item).strip() for item in sku_tokens]) if token]
         compare_requested = self._is_compare_requested(text)
+        smalltalk_intent = self._is_smalltalk(text)
         knowledge_intent = self._is_knowledge_intent(
             text=text,
             detail_has_filters=bool(detail.attribute_filters),
+            detail_request=bool(detail.is_detail_request),
             sku_tokens=sku_tokens,
         )
-        intent = "knowledge_query" if knowledge_intent else ("search_specific" if sku_tokens else "browse_products")
-        source = ComponentSource.KNOWLEDGE if knowledge_intent else ComponentSource.SQL
+        if smalltalk_intent:
+            intent = "smalltalk"
+            source = ComponentSource.TOOL
+        else:
+            intent = "knowledge_query" if knowledge_intent else ("search_specific" if sku_tokens else "browse_products")
+            source = ComponentSource.KNOWLEDGE if knowledge_intent else ComponentSource.SQL
         ambiguity_reason = None
 
         llm_calls = 0
@@ -327,6 +490,10 @@ class ComponentPipeline:
             "component_pipeline_enabled": True,
             "component_intent": intent,
             "path_kind": "component_pipeline",
+            "image_only_filter_applied": False,
+            "image_only_result_count": 0,
+            "image_followup_context_used": False,
+            "image_followup_context_count": 0,
         }
 
         intent_started = time.perf_counter()
@@ -341,128 +508,197 @@ class ComponentPipeline:
         result_count = 0
         product_ids: List[Any] = []
         retrieval_source = source
+        handled_attribute_list = False
+        attribute_list_target = ""
 
-        if compare_requested and len(unique_sku_tokens) < 2:
-            ambiguity_reason = "compare_requires_two_skus"
-
-        if not knowledge_intent and not ambiguity_reason:
-            read_mode = "projection" if bool(getattr(settings, "CHAT_PROJECTION_READ_ENABLED", False)) else "eav"
-            query_cache_key = stable_cache_key(
-                f"{getattr(settings, 'CHAT_REDIS_KEY_PREFIX', 'chat:components')}:query_ids",
-                {
-                    "q": normalized_text,
-                    "locale": locale.lower(),
-                    "sku": unique_sku_tokens[0].lower() if unique_sku_tokens else "",
-                    "sku_list": [item.lower() for item in unique_sku_tokens[:5]],
-                    "compare": bool(compare_requested),
-                    "filters": detail.attribute_filters,
-                    "catalog_version": str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
-                    "read_mode": read_mode,
-                },
+        if smalltalk_intent:
+            selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
+            knowledge_answer = (
+                "Hi! Tell me what product you are looking for, for example type, material, gauge, or SKU."
             )
-            cached_ids_payload = await self._redis_cache.get_json(query_cache_key)
-            if isinstance(cached_ids_payload, dict) and isinstance(cached_ids_payload.get("product_ids"), list):
-                product_ids = list(cached_ids_payload.get("product_ids") or [])
-                cached_source = str(cached_ids_payload.get("source") or "sql")
-                retrieval_source = ComponentSource(cached_source) if cached_source in {e.value for e in ComponentSource} else ComponentSource.SQL
-                result_count = int(cached_ids_payload.get("result_count") or 0)
-                debug_meta["query_id_cache_hit"] = True
-                if compare_requested and len(unique_sku_tokens) >= 2 and not product_ids:
-                    ambiguity_reason = "compare_missing_sku"
+            retrieval_source = ComponentSource.TOOL
+        elif compare_requested:
+            ambiguity_reason = "compare_not_supported"
+        # Generic image follow-up can reuse latest conversation product context.
+        if (
+            not smalltalk_intent
+            and not ambiguity_reason
+            and bool(detail.wants_image)
+            and not unique_sku_tokens
+            and not bool(detail.attribute_filters)
+        ):
+            context_started = time.perf_counter()
+            product_ids = await self._load_recent_product_ids_for_image_followup(
+                conversation_id=conversation_id,
+                max_messages=8,
+                max_ids=20,
+            )
+            spans["db_product_lookup_ms"] += (time.perf_counter() - context_started) * 1000.0
+            if product_ids:
+                result_count = len(product_ids)
+                retrieval_source = ComponentSource.SQL
+                debug_meta["image_followup_context_used"] = True
+                debug_meta["image_followup_context_count"] = int(result_count)
             else:
+                ambiguity_reason = "image_request_missing_context"
+
+        if not smalltalk_intent and not knowledge_intent and not ambiguity_reason:
+            attribute_list_target = self._detect_attribute_list_target(text)
+            if (
+                attribute_list_target
+                and not unique_sku_tokens
+                and not bool(detail.wants_image)
+            ):
+                values = await self._load_distinct_attribute_values(
+                    target=attribute_list_target,
+                    attribute_filters=detail.attribute_filters,
+                    limit=20,
+                )
+                debug_meta["attribute_list_target"] = attribute_list_target
+                debug_meta["attribute_list_values_count"] = int(len(values))
+                if values:
+                    handled_attribute_list = True
+                    result_count = len(values)
+                    retrieval_source = ComponentSource.SQL
+                    label_map = {
+                        "material": "materials",
+                        "color": "colors",
+                        "gauge": "gauges",
+                        "threading": "threading options",
+                        "jewelry_type": "jewelry types",
+                    }
+                    label = label_map.get(attribute_list_target, f"{attribute_list_target} options")
+                    preview = ", ".join([str(item) for item in values[:12]])
+                    knowledge_answer = f"We currently sell these {label}: {preview}."
+                    selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
+                    debug_meta["attribute_list_values"] = values
+                else:
+                    ambiguity_reason = "attribute_list_no_results"
+
+        if not smalltalk_intent and not knowledge_intent and not ambiguity_reason and not handled_attribute_list:
+            if product_ids:
                 debug_meta["query_id_cache_hit"] = False
-                if compare_requested and len(unique_sku_tokens) >= 2:
-                    debug_meta["compare_mode"] = "sku_first"
-                    compare_started = time.perf_counter()
-                    compare_ids: List[Any] = []
-                    missing_skus: List[str] = []
-                    projection_hits: List[bool] = []
-                    for sku_token in unique_sku_tokens[:5]:
-                        compare_result, compare_meta = await self._catalog_search.structured_search(
-                            sku_token=sku_token,
-                            attribute_filters={},
-                            limit=1,
+                debug_meta["structured_read_mode"] = "history"
+                debug_meta["projection_hit"] = False
+            else:
+                read_mode = "projection" if bool(getattr(settings, "CHAT_PROJECTION_READ_ENABLED", False)) else "eav"
+                query_cache_key = stable_cache_key(
+                    f"{getattr(settings, 'CHAT_REDIS_KEY_PREFIX', 'chat:components')}:query_ids",
+                    {
+                        "q": normalized_text,
+                        "locale": locale.lower(),
+                        "sku": unique_sku_tokens[0].lower() if unique_sku_tokens else "",
+                        "sku_list": [item.lower() for item in unique_sku_tokens[:5]],
+                        "compare": bool(compare_requested),
+                        "filters": detail.attribute_filters,
+                        "catalog_version": str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
+                        "read_mode": read_mode,
+                    },
+                )
+                cached_ids_payload = await self._redis_cache.get_json(query_cache_key)
+                if isinstance(cached_ids_payload, dict) and isinstance(cached_ids_payload.get("product_ids"), list):
+                    product_ids = list(cached_ids_payload.get("product_ids") or [])
+                    cached_source = str(cached_ids_payload.get("source") or "sql")
+                    retrieval_source = ComponentSource(cached_source) if cached_source in {e.value for e in ComponentSource} else ComponentSource.SQL
+                    result_count = int(cached_ids_payload.get("result_count") or 0)
+                    debug_meta["query_id_cache_hit"] = True
+                    if compare_requested and len(unique_sku_tokens) >= 2 and not product_ids:
+                        ambiguity_reason = "compare_missing_sku"
+                        debug_meta["compare_missing_skus"] = unique_sku_tokens[:5]
+                else:
+                    debug_meta["query_id_cache_hit"] = False
+                    if compare_requested and len(unique_sku_tokens) >= 2:
+                        debug_meta["compare_mode"] = "sku_first"
+                        compare_started = time.perf_counter()
+                        compare_ids: List[Any] = []
+                        missing_skus: List[str] = []
+                        projection_hits: List[bool] = []
+                        for sku_token in unique_sku_tokens[:5]:
+                            compare_result, compare_meta = await self._catalog_search.structured_search(
+                                sku_token=sku_token,
+                                attribute_filters={},
+                                limit=1,
+                                candidate_cap=int(getattr(settings, "CHAT_STRUCTURED_CANDIDATE_CAP", 300)),
+                                catalog_version=str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
+                                return_ids_only=True,
+                            )
+                            projection_hits.append(bool(compare_meta.get("projection_hit", False)))
+                            if "structured_read_mode" not in debug_meta:
+                                debug_meta["structured_read_mode"] = compare_meta.get("structured_read_mode")
+                            ids = list(compare_result.product_ids or [])
+                            if ids:
+                                compare_ids.append(ids[0])
+                            else:
+                                missing_skus.append(sku_token)
+                        spans["db_product_lookup_ms"] += (time.perf_counter() - compare_started) * 1000.0
+                        debug_meta["projection_hit"] = bool(any(projection_hits))
+                        if missing_skus:
+                            ambiguity_reason = "compare_missing_sku"
+                            debug_meta["compare_missing_skus"] = missing_skus
+                            product_ids = []
+                        else:
+                            product_ids = compare_ids
+                        retrieval_source = ComponentSource.SQL
+                        result_count = len(product_ids)
+                    else:
+                        structured_started = time.perf_counter()
+                        structured_result, structured_meta = await self._catalog_search.structured_search(
+                            sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
+                            attribute_filters=detail.attribute_filters,
+                            limit=20,
                             candidate_cap=int(getattr(settings, "CHAT_STRUCTURED_CANDIDATE_CAP", 300)),
                             catalog_version=str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
                             return_ids_only=True,
                         )
-                        projection_hits.append(bool(compare_meta.get("projection_hit", False)))
-                        if "structured_read_mode" not in debug_meta:
-                            debug_meta["structured_read_mode"] = compare_meta.get("structured_read_mode")
-                        ids = list(compare_result.product_ids or [])
-                        if ids:
-                            compare_ids.append(ids[0])
-                        else:
-                            missing_skus.append(sku_token)
-                    spans["db_product_lookup_ms"] += (time.perf_counter() - compare_started) * 1000.0
-                    debug_meta["projection_hit"] = bool(any(projection_hits))
-                    if missing_skus:
-                        ambiguity_reason = "compare_missing_sku"
-                        debug_meta["compare_missing_skus"] = missing_skus
-                        product_ids = []
-                    else:
-                        product_ids = compare_ids
-                    retrieval_source = ComponentSource.SQL
-                    result_count = len(product_ids)
-                else:
-                    structured_started = time.perf_counter()
-                    structured_result, structured_meta = await self._catalog_search.structured_search(
-                        sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
-                        attribute_filters=detail.attribute_filters,
-                        limit=20,
-                        candidate_cap=int(getattr(settings, "CHAT_STRUCTURED_CANDIDATE_CAP", 300)),
-                        catalog_version=str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
-                        return_ids_only=True,
+                        spans["db_product_lookup_ms"] += (time.perf_counter() - structured_started) * 1000.0
+                        product_ids = list(structured_result.product_ids or [])
+                        retrieval_source = ComponentSource.SQL if product_ids else ComponentSource.VECTOR
+                        debug_meta["structured_read_mode"] = structured_meta.get("structured_read_mode")
+                        debug_meta["projection_hit"] = structured_meta.get("projection_hit")
+
+                        if product_ids:
+                            result_count = await self._catalog_search.structured_count(
+                                sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
+                                attribute_filters=detail.attribute_filters,
+                            )
+                        elif (
+                            int(getattr(settings, "CHAT_HARD_MAX_EMBEDDINGS_PER_REQUEST", 1)) > 0
+                            and not unique_sku_tokens
+                        ):
+                            try:
+                                embed_started = time.perf_counter()
+                                embedding = await llm_service.generate_embedding(text)
+                                spans["vector_search_ms"] += (time.perf_counter() - embed_started) * 1000.0
+                                embedding_calls += 1
+                                external_call_counts["embedding_query"] = (
+                                    int(external_call_counts.get("embedding_query", 0)) + 1
+                                )
+                                vector_started = time.perf_counter()
+                                vector_result = await self._catalog_search.smart_search(
+                                    query_embedding=embedding,
+                                    candidates=sku_tokens or [text],
+                                    limit=20,
+                                )
+                                spans["vector_search_ms"] += (time.perf_counter() - vector_started) * 1000.0
+                                product_ids = list(vector_result.product_ids or [str(card.id) for card in vector_result.cards])
+                                result_count = len(product_ids)
+                                retrieval_source = ComponentSource.VECTOR if product_ids else ComponentSource.SQL
+                            except Exception as exc:
+                                debug_meta["component_vector_fallback_error"] = str(exc)
+                                debug_meta["component_vector_fallback_skipped"] = True
+                                product_ids = []
+                                result_count = 0
+                                retrieval_source = ComponentSource.SQL
+
+                    await self._redis_cache.set_json(
+                        query_cache_key,
+                        {
+                            "product_ids": [str(item) for item in product_ids],
+                            "source": retrieval_source.value,
+                            "result_count": result_count,
+                        },
+                        ttl_seconds=300,
                     )
-                    spans["db_product_lookup_ms"] += (time.perf_counter() - structured_started) * 1000.0
-                    product_ids = list(structured_result.product_ids or [])
-                    retrieval_source = ComponentSource.SQL if product_ids else ComponentSource.VECTOR
-                    debug_meta["structured_read_mode"] = structured_meta.get("structured_read_mode")
-                    debug_meta["projection_hit"] = structured_meta.get("projection_hit")
-
-                    if product_ids:
-                        result_count = await self._catalog_search.structured_count(
-                            sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
-                            attribute_filters=detail.attribute_filters,
-                        )
-                    elif (
-                        int(getattr(settings, "CHAT_HARD_MAX_EMBEDDINGS_PER_REQUEST", 1)) > 0
-                        and not unique_sku_tokens
-                    ):
-                        try:
-                            embed_started = time.perf_counter()
-                            embedding = await llm_service.generate_embedding(text)
-                            spans["vector_search_ms"] += (time.perf_counter() - embed_started) * 1000.0
-                            embedding_calls += 1
-                            external_call_counts["embedding_query"] = (
-                                int(external_call_counts.get("embedding_query", 0)) + 1
-                            )
-                            vector_started = time.perf_counter()
-                            vector_result = await self._catalog_search.smart_search(
-                                query_embedding=embedding,
-                                candidates=sku_tokens or [text],
-                                limit=20,
-                            )
-                            spans["vector_search_ms"] += (time.perf_counter() - vector_started) * 1000.0
-                            product_ids = list(vector_result.product_ids or [str(card.id) for card in vector_result.cards])
-                            result_count = len(product_ids)
-                            retrieval_source = ComponentSource.VECTOR if product_ids else ComponentSource.SQL
-                        except Exception as exc:
-                            debug_meta["component_vector_fallback_error"] = str(exc)
-                            debug_meta["component_vector_fallback_skipped"] = True
-                            product_ids = []
-                            result_count = 0
-                            retrieval_source = ComponentSource.SQL
-
-                await self._redis_cache.set_json(
-                    query_cache_key,
-                    {
-                        "product_ids": [str(item) for item in product_ids],
-                        "source": retrieval_source.value,
-                        "result_count": result_count,
-                    },
-                    ttl_seconds=300,
-                )
 
             selected_components = OutputPlanner.plan(
                 user_text=text,
@@ -486,6 +722,20 @@ class ComponentPipeline:
             debug_meta.update(resolver_meta)
             result_count = max(result_count, len(canonical_products))
 
+            if detail.wants_image:
+                debug_meta["image_only_filter_applied"] = True
+                canonical_products = [
+                    item
+                    for item in canonical_products
+                    if str(getattr(item, "image_url", "") or "").strip()
+                ]
+                result_count = len(canonical_products)
+                debug_meta["image_only_result_count"] = int(result_count)
+                if result_count <= 0:
+                    ambiguity_reason = "image_only_no_results"
+                    selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                    recommendations = []
+
             if ComponentType.RECOMMENDATIONS in selected_components:
                 reco_key = stable_cache_key(
                     f"{getattr(settings, 'CHAT_REDIS_KEY_PREFIX', 'chat:components')}:recommendations",
@@ -504,7 +754,7 @@ class ComponentPipeline:
                         ttl_seconds=300,
                     )
                     debug_meta["recommendation_cache_hit"] = False
-        elif not knowledge_intent:
+        elif not smalltalk_intent and not knowledge_intent and not handled_attribute_list:
             selected_components = OutputPlanner.plan(
                 user_text=text,
                 intent=intent,
@@ -514,7 +764,7 @@ class ComponentPipeline:
                 is_ambiguous=True,
                 ambiguity_reason=ambiguity_reason,
             )
-        else:
+        elif not smalltalk_intent and knowledge_intent:
             selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
             knowledge_error_message = ""
             if int(getattr(settings, "CHAT_HARD_MAX_EMBEDDINGS_PER_REQUEST", 1)) > 0:

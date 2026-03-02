@@ -11,7 +11,7 @@ def test_planner_compare_rule() -> None:
         is_detail_mode=False,
         is_ambiguous=False,
     )
-    assert planned == [ComponentType.QUERY_SUMMARY, ComponentType.COMPARE, ComponentType.RESULT_COUNT]
+    assert planned == [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
 
 
 def test_planner_table_rule() -> None:
@@ -23,8 +23,7 @@ def test_planner_table_rule() -> None:
         is_detail_mode=False,
         is_ambiguous=False,
     )
-    assert ComponentType.PRODUCT_TABLE in planned
-    assert ComponentType.RESULT_COUNT in planned
+    assert planned == [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
 
 
 def test_planner_clarify_when_ambiguous() -> None:
@@ -48,7 +47,7 @@ def test_planner_how_many_includes_count() -> None:
         is_detail_mode=False,
         is_ambiguous=False,
     )
-    assert ComponentType.RESULT_COUNT in planned
+    assert planned == [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
 
 
 def test_planner_single_exact_sku_prefers_detail() -> None:
@@ -60,7 +59,7 @@ def test_planner_single_exact_sku_prefers_detail() -> None:
         is_detail_mode=False,
         is_ambiguous=False,
     )
-    assert planned == [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_DETAIL]
+    assert planned == [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
 
 
 def test_planner_knowledge_path() -> None:

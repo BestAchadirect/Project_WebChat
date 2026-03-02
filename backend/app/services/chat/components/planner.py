@@ -35,13 +35,8 @@ class OutputPlanner:
             return [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
 
         if "compare" in text:
-            if sku_count < 2:
-                return [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
-            return [ComponentType.QUERY_SUMMARY, ComponentType.COMPARE, ComponentType.RESULT_COUNT]
+            return [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
 
-        wants_table = any(token in text for token in (" table", "grid", "spreadsheet", "show table")) or text.startswith("table")
-        wants_bullets = any(token in text for token in ("bullet", "list briefly", "short list"))
-        wants_count = any(token in text for token in ("how many", "count", "number of"))
         wants_reco = any(token in text for token in ("suggest", "recommend", "minimal"))
 
         components: List[ComponentType] = [ComponentType.QUERY_SUMMARY]
@@ -49,18 +44,7 @@ class OutputPlanner:
         product_intent = intent_norm.startswith("product") or intent_norm in {"browse_products", "search_specific"}
         if product_count <= 0 and product_intent:
             return [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
-
-        if is_detail_mode or (sku_count == 1 and product_count == 1):
-            components.append(ComponentType.PRODUCT_DETAIL)
-        elif wants_table:
-            components.extend([ComponentType.RESULT_COUNT, ComponentType.PRODUCT_TABLE])
-        elif wants_bullets:
-            components.extend([ComponentType.RESULT_COUNT, ComponentType.PRODUCT_BULLETS])
-        else:
-            components.extend([ComponentType.RESULT_COUNT, ComponentType.PRODUCT_CARDS])
-
-        if wants_count and ComponentType.RESULT_COUNT not in components:
-            components.append(ComponentType.RESULT_COUNT)
+        components.append(ComponentType.PRODUCT_CARDS)
 
         if wants_reco:
             components.append(ComponentType.RECOMMENDATIONS)

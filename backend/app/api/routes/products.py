@@ -12,7 +12,13 @@ from app.models.product import Product, ProductEmbedding, StockStatus
 from app.models.product_group import ProductGroup
 from app.models.product_change import ProductChange
 from app.models.product_attribute import ProductAttributeValue
-from app.schemas.product import Product as ProductSchema, ProductUpdate, ProductListResponse, ProductBulkUpdateRequest
+from app.schemas.product import (
+    Product as ProductSchema,
+    ProductUpdate,
+    ProductListResponse,
+    ProductBulkUpdateRequest,
+    MasterCodeVariantListResponse,
+)
 from app.services.catalog.attributes_service import eav_service
 from app.services.catalog.projection_service import product_projection_sync_service
 from app.services.imports.service import data_import_service
@@ -671,6 +677,103 @@ async def list_product_filters(
             filters_payload[field] = inferred_rows
 
     return {"total": total, "filters": filters_payload}
+
+
+@router.get("/master/{master_code}/variants", response_model=MasterCodeVariantListResponse)
+async def list_master_code_variants(
+    master_code: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, alias="pageSize", ge=1, le=200),
+    search: Optional[str] = None,
+    in_stock: Optional[bool] = Query(None, alias="in_stock"),
+    material: Optional[List[str]] = Query(None),
+    color: Optional[List[str]] = Query(None),
+    gauge: Optional[List[str]] = Query(None),
+    threading: Optional[List[str]] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    clean_master_code = str(master_code or "").strip()
+    if not clean_master_code:
+        raise HTTPException(status_code=400, detail="master_code cannot be empty")
+
+    query = (
+        select(Product)
+        .where(Product.master_code == clean_master_code)
+        .where(Product.is_active.is_(True))
+        .order_by(desc(Product.created_at), desc(Product.id))
+    )
+    count_query = (
+        select(func.count())
+        .select_from(Product)
+        .where(Product.master_code == clean_master_code)
+        .where(Product.is_active.is_(True))
+    )
+
+    if search:
+        search_like = f"%{str(search).strip()}%"
+        search_condition = or_(
+            Product.sku.ilike(search_like),
+            Product.object_id.ilike(search_like),
+            Product.master_code.ilike(search_like),
+        )
+        query = query.where(search_condition)
+        count_query = count_query.where(search_condition)
+
+    if in_stock is not None:
+        stock_target = StockStatus.in_stock if bool(in_stock) else StockStatus.out_of_stock
+        query = query.where(Product.stock_status == stock_target)
+        count_query = count_query.where(Product.stock_status == stock_target)
+
+    attr_filters = _collect_attr_filters(
+        material=material,
+        color=color,
+        gauge=gauge,
+        threading=threading,
+    )
+    dual_source_filters: Dict[str, List[str]] = {}
+    material_values = attr_filters.pop("material", [])
+    if material_values:
+        dual_source_filters["material"] = material_values
+
+    if dual_source_filters:
+        definitions = await eav_service.get_definitions_by_name(db, list(dual_source_filters.keys()))
+        for field, values in dual_source_filters.items():
+            normalized_values = _normalize_casefold_values(values)
+            definition = definitions.get(field) if definitions else None
+            query, count_query = _apply_dual_source_attr_filter(
+                query,
+                count_query,
+                field=field,
+                raw_values=values,
+                normalized_values=normalized_values,
+                attribute_id=(definition.id if definition else None),
+            )
+
+    if attr_filters:
+        query, count_query = await _apply_attribute_filters(db, query, count_query, attr_filters)
+
+    total = int((await db.execute(count_query)).scalar() or 0)
+    safe_page, total_pages, offset = normalize_pagination(
+        total_items=total,
+        page=page,
+        page_size=page_size,
+    )
+
+    query = query.offset(offset).limit(page_size)
+    result = await db.execute(query)
+    products = list(result.scalars().all())
+    attr_map = await eav_service.get_product_attributes(db, [p.id for p in products])
+    items = [_build_product_schema(product, attr_map.get(product.id, {})) for product in products]
+
+    return MasterCodeVariantListResponse(
+        masterCode=clean_master_code,
+        items=items,
+        totalItems=total,
+        page=safe_page,
+        pageSize=page_size,
+        totalPages=total_pages,
+    )
+
 
 @router.put("/{product_id}", response_model=ProductSchema)
 async def update_product(

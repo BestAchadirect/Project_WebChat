@@ -14,6 +14,7 @@ class ProductDetailComponent(BaseComponent):
         "product_id",
         "sku",
         "title",
+        "description",
         "price",
         "in_stock",
         "material",
@@ -33,6 +34,7 @@ class ProductDetailComponent(BaseComponent):
                     "product_id": str(product.product_id),
                     "sku": product.sku,
                     "title": product.title,
+                    "description": product.description,
                     "price": float(product.price),
                     "currency": product.currency,
                     "in_stock": bool(product.in_stock),
@@ -45,4 +47,3 @@ class ProductDetailComponent(BaseComponent):
                 }
             },
         )
-

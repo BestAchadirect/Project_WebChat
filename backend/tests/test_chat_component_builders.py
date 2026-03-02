@@ -6,18 +6,12 @@ from uuid import uuid4
 import pytest
 
 from app.schemas.chat import KnowledgeSource
-from app.services.chat.components.builders.action_result import ActionResultComponent
 from app.services.chat.components.builders.clarify import ClarifyComponent
-from app.services.chat.components.builders.compare import CompareComponent
 from app.services.chat.components.builders.error import ErrorComponent
 from app.services.chat.components.builders.knowledge_answer import KnowledgeAnswerComponent
-from app.services.chat.components.builders.product_bullets import ProductBulletsComponent
 from app.services.chat.components.builders.product_cards import ProductCardsComponent
-from app.services.chat.components.builders.product_detail import ProductDetailComponent
-from app.services.chat.components.builders.product_table import ProductTableComponent
 from app.services.chat.components.builders.query_summary import QuerySummaryComponent
 from app.services.chat.components.builders.recommendations import RecommendationsComponent
-from app.services.chat.components.builders.result_count import ResultCountComponent
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.types import ComponentSource, ComponentType
@@ -87,16 +81,10 @@ def _sample_context() -> ComponentContext:
     "builder_cls, expected_type, expected_key",
     [
         (QuerySummaryComponent, ComponentType.QUERY_SUMMARY, "text"),
-        (ResultCountComponent, ComponentType.RESULT_COUNT, "count"),
         (ProductCardsComponent, ComponentType.PRODUCT_CARDS, "cards"),
-        (ProductTableComponent, ComponentType.PRODUCT_TABLE, "rows"),
-        (ProductBulletsComponent, ComponentType.PRODUCT_BULLETS, "items"),
-        (ProductDetailComponent, ComponentType.PRODUCT_DETAIL, "product"),
-        (CompareComponent, ComponentType.COMPARE, "items"),
         (RecommendationsComponent, ComponentType.RECOMMENDATIONS, "items"),
         (ClarifyComponent, ComponentType.CLARIFY, "message"),
         (KnowledgeAnswerComponent, ComponentType.KNOWLEDGE_ANSWER, "answer"),
-        (ActionResultComponent, ComponentType.ACTION_RESULT, "status"),
         (ErrorComponent, ComponentType.ERROR, "message"),
     ],
 )
