@@ -348,6 +348,19 @@ const ProductCarousel: React.FC<{
     onQuickReply?: (text: string) => void;
 }> = ({ items, primaryColor, displayCurrency, viewButtonText, materialLabel, jewelryTypeLabel, thbToUsdRate, onQuickReply }) => {
     if (!items || items.length === 0) return null;
+
+    const toBaseImageUrl = (value?: string | null): string => {
+        const raw = (typeof value === 'string' ? value : '').trim();
+        if (!raw) return '';
+        return raw.replace('/wholesale1_t/', '/wholesale1_b/');
+    };
+
+    const toThumbnailImageUrl = (value?: string | null): string => {
+        const raw = (typeof value === 'string' ? value : '').trim();
+        if (!raw) return '';
+        return raw.replace('/wholesale1_b/', '/wholesale1_t/');
+    };
+
     const [expandedMasters, setExpandedMasters] = useState<Record<string, boolean>>({});
     type VariantFeedState = {
         items: ProductCard[];
@@ -591,6 +604,8 @@ const ProductCarousel: React.FC<{
                     const canLoadMore = currentPage > 0 && currentPage < totalPages;
 
                     const rep = groupItems.find((item) => !!item.image_url) || groupItems[0];
+                    const repBaseImageUrl = toBaseImageUrl(rep.image_url);
+                    const repThumbnailImageUrl = toThumbnailImageUrl(repBaseImageUrl || rep.image_url);
                     const prices = groupItems
                         .map((item) => Number(item.price))
                         .filter((value) => Number.isFinite(value));
@@ -605,15 +620,15 @@ const ProductCarousel: React.FC<{
                             className="min-w-[300px] max-w-[300px] bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md transition-shadow flex flex-col"
                         >
                             <div className="h-[160px] bg-gray-50 flex items-center justify-center overflow-hidden border-b border-gray-50">
-                                {rep.image_url ? (
+                                {repThumbnailImageUrl ? (
                                     <a
-                                        href={rep.image_url.replace('/wholesale1_t/', '/wholesale1_b/')}
+                                        href={repBaseImageUrl || repThumbnailImageUrl}
                                         target="_blank"
                                         rel="noreferrer"
                                         className="w-full h-full flex items-center justify-center cursor-zoom-in"
                                         title="Click to view full image"
                                     >
-                                        <img src={rep.image_url} alt={masterCode} className="h-full w-full object-contain transition-transform hover:scale-105" />
+                                        <img src={repThumbnailImageUrl} alt={masterCode} className="h-full w-full object-contain transition-transform hover:scale-105" />
                                     </a>
                                 ) : (
                                     <div className="text-sm text-gray-400 font-medium">No image available</div>

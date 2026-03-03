@@ -6,7 +6,7 @@ database_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncp
 
 engine = create_async_engine(
     database_url,
-    echo=True,
+    echo=bool(getattr(settings, "DB_SQL_ECHO", False)),
     future=True,
     pool_pre_ping=True,
     connect_args={

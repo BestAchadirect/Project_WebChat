@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     DATABASE_URL: str
+    DB_SQL_ECHO: bool = False
     
     # Security
     JWT_SECRET: str = Field(validation_alias=AliasChoices("JWT_SECRET", "SECRET_KEY"))
@@ -124,6 +125,17 @@ class Settings(BaseSettings):
     CHAT_REDIS_CACHE_ENABLED: bool = False
     CHAT_REDIS_URL: str = ""
     CHAT_REDIS_KEY_PREFIX: str = "chat:components"
+
+    # Klevu product sync
+    KLEVU_API_ENDPOINT: str = "https://eucs30v2.ksearchnet.com/cs/v2/search"
+    KLEVU_JS_API_KEY: str = ""
+    KLEVU_SYNC_PAGE_SIZE_MAX: int = 100
+    KLEVU_SYNC_REQUESTS_PER_MINUTE: int = 180
+    KLEVU_SYNC_MAX_RETRIES: int = 5
+    KLEVU_SYNC_BACKOFF_BASE_SECONDS: float = 0.5
+    KLEVU_SYNC_PAYLOAD_MAX_BYTES: int = 2 * 1024 * 1024
+    KLEVU_SYNC_TIMEOUT_SECONDS: float = 30.0
+    KLEVU_SYNC_BULK_EAV_ENABLED: bool = True
 
     # Logging
     LOG_DIR: str = "logs"

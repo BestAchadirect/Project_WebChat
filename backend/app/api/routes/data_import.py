@@ -5,6 +5,7 @@ from uuid import UUID
 
 from app.dependencies import get_db
 from app.services.imports.service import data_import_service
+from app.services.imports.klevu_sync_service import klevu_product_sync_service
 from app.schemas import (
     KnowledgeUploadListResponse,
     KnowledgeImportResponse,
@@ -54,6 +55,88 @@ async def import_products(
         uploaded_by=uploaded_by,
     )
     return result
+
+@router.post("/products/klevu/sync")
+async def sync_products_from_klevu(
+    max_pages: int = Query(10, ge=1, le=500),
+    page_size: int = Query(100, alias="pageSize", ge=1, le=100),
+    requests_per_minute: int = Query(180, alias="rpm", ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Pull latest products from Klevu (updatedAt desc) and upsert into local products.
+    """
+    return await klevu_product_sync_service.sync_recent_products(
+        db,
+        max_pages=max_pages,
+        page_size=page_size,
+        requests_per_minute=requests_per_minute,
+    )
+
+
+@router.post("/products/klevu/full-sync/start")
+async def start_full_sync_from_klevu(
+    page_size: int = Query(100, alias="pageSize", ge=1, le=100),
+    max_pages: int | None = Query(None, alias="maxPages", ge=1),
+    requests_per_minute: int = Query(180, alias="rpm", ge=1, le=200),
+    stop_after_pages: int | None = Query(None, alias="stopAfterPages", ge=1),
+    resume_run_id: UUID | None = Query(None, alias="resumeRunId"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Start (or resume) a resumable Klevu full sync run in background.
+    """
+    if resume_run_id is not None:
+        return await klevu_product_sync_service.resume_full_sync(
+            db,
+            run_id=resume_run_id,
+            max_pages=max_pages,
+            requests_per_minute=requests_per_minute,
+            stop_after_pages=stop_after_pages,
+        )
+    return await klevu_product_sync_service.start_full_sync(
+        db,
+        page_size=page_size,
+        max_pages=max_pages,
+        requests_per_minute=requests_per_minute,
+        stop_after_pages=stop_after_pages,
+    )
+
+
+@router.get("/products/klevu/full-sync/runs")
+async def list_klevu_full_sync_runs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, alias="pageSize", ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    return await klevu_product_sync_service.list_full_sync_runs(
+        db,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/products/klevu/full-sync/{run_id}")
+async def get_klevu_full_sync_run(
+    run_id: UUID,
+    include_failures: bool = Query(False, alias="includeFailures"),
+    failure_limit: int = Query(50, alias="failureLimit", ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    return await klevu_product_sync_service.get_full_sync_run(
+        db,
+        run_id=run_id,
+        include_failures=include_failures,
+        failure_limit=failure_limit,
+    )
+
+
+@router.post("/products/klevu/full-sync/{run_id}/cancel")
+async def cancel_klevu_full_sync_run(
+    run_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    return await klevu_product_sync_service.request_full_sync_cancel(db, run_id=run_id)
 
 @router.get("/products/uploads", response_model=ProductUploadListResponse)
 async def list_product_uploads(

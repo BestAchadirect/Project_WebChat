@@ -17,3 +17,4 @@ from .chat_setting import ChatSetting
 from .banner import Banner
 from .ticket import Ticket
 from .product_search_projection import ProductSearchProjection
+from .klevu_sync import KlevuSyncRun, KlevuSyncRunStatus, KlevuSyncFailure
