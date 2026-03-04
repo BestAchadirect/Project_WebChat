@@ -26,6 +26,7 @@ from app.models.product_group import ProductGroup
 from app.models.product_search_projection import ProductSearchProjection
 from app.services.catalog.attributes_service import eav_service
 from app.services.catalog.attribute_sync_service import ATTRIBUTE_FIELDS, product_attribute_sync_service
+from app.services.catalog.category_taxonomy_service import category_taxonomy_service
 from app.services.catalog.projection_service import product_projection_sync_service
 from app.services.imports.products.parser import parse_bool, parse_int, parse_stock_status
 from app.utils.pagination import normalize_pagination
@@ -95,6 +96,28 @@ class KlevuProductSyncService:
     @staticmethod
     def _now_utc() -> datetime:
         return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _resolved_rpm(requests_per_minute: int | None) -> int:
+        return int(requests_per_minute or getattr(settings, "KLEVU_SYNC_REQUESTS_PER_MINUTE", 180))
+
+    def _build_run_config_snapshot(
+        self,
+        *,
+        page_size: int,
+        max_pages: int | None,
+        requests_per_minute: int | None,
+        stop_after_pages: int | None,
+    ) -> Dict[str, Any]:
+        return {
+            "page_size": int(page_size),
+            "max_pages": None if max_pages is None else int(max_pages),
+            "requests_per_minute": self._resolved_rpm(requests_per_minute),
+            "stop_after_pages": None if stop_after_pages is None else int(stop_after_pages),
+            "payload_max_bytes": int(getattr(settings, "KLEVU_SYNC_PAYLOAD_MAX_BYTES", 2 * 1024 * 1024)),
+            "disable_grouping": bool(getattr(settings, "KLEVU_SYNC_DISABLE_GROUPING", True)),
+            "bulk_eav_enabled": bool(getattr(settings, "KLEVU_SYNC_BULK_EAV_ENABLED", True)),
+        }
 
     @staticmethod
     def _clean_text(value: Any) -> str:
@@ -213,21 +236,11 @@ class KlevuProductSyncService:
 
     @staticmethod
     def _normalize_klevu_category(value: Any) -> Optional[str]:
-        raw = KlevuProductSyncService._clean_text(value)
-        if not raw:
-            return None
-        seen: set[str] = set()
-        tokens: List[str] = []
-        for part in raw.split(";;"):
-            token = KlevuProductSyncService._clean_text(part)
-            if not token:
-                continue
-            lowered = token.lower()
-            if lowered == "klevu_product" or "@ku@" in lowered or lowered in seen:
-                continue
-            seen.add(lowered)
-            tokens.append(token)
-        return ";;".join(tokens) if tokens else None
+        return category_taxonomy_service.normalize_category_string(value)
+
+    @staticmethod
+    def _normalize_category_value(value: Any) -> Optional[str]:
+        return category_taxonomy_service.normalize_category_string(value)
 
     @staticmethod
     def _extract_attributes(record: Mapping[str, Any]) -> Dict[str, Any]:
@@ -264,7 +277,10 @@ class KlevuProductSyncService:
             value = record.get(source_key)
             if value is None:
                 continue
-            text = KlevuProductSyncService._clean_text(value)
+            if target_key == "category":
+                text = KlevuProductSyncService._normalize_category_value(value) or ""
+            else:
+                text = KlevuProductSyncService._clean_text(value)
             if text:
                 attrs[target_key] = text
         if "category" not in attrs:
@@ -304,19 +320,22 @@ class KlevuProductSyncService:
         return deduped
 
     def _build_payload(self, *, api_key: str, limit: int, offset: int) -> Dict[str, Any]:
+        search_settings: Dict[str, Any] = {
+            "query": {"term": "*"},
+            "typeOfRecords": ["KLEVU_PRODUCT"],
+            "sortOrder": "updatedAt:desc",
+            "limit": int(limit),
+            "offset": int(offset),
+        }
+        if bool(getattr(settings, "KLEVU_SYNC_DISABLE_GROUPING", True)):
+            search_settings["searchPrefs"] = ["disableGrouping"]
         return {
             "context": {"apiKeys": [api_key]},
             "recordQueries": [
                 {
                     "id": "klevu_products_sync",
                     "typeOfRequest": "SEARCH",
-                    "settings": {
-                        "query": {"term": "*"},
-                        "typeOfRecords": ["KLEVU_PRODUCT"],
-                        "sortOrder": "updatedAt:desc",
-                        "limit": int(limit),
-                        "offset": int(offset),
-                    },
+                    "settings": search_settings,
                 }
             ],
         }
@@ -421,7 +440,8 @@ class KlevuProductSyncService:
             record.get("productName"),
             canonical_sku,
         )
-        description = self._first_non_empty(record.get("description"), record.get("shortDescription"))
+        # Klevu source of truth for product description.
+        description = self._clean_text(record.get("shortDesc"))
         master_code = self._derive_master_code(
             record=record,
             parent_sku=parent_sku,
@@ -775,6 +795,7 @@ class KlevuProductSyncService:
         stats: KlevuSyncStats,
         lookup_context: Optional[PageLookupContext] = None,
         pending_eav_rows: Optional[List[tuple[UUID, str, Any]]] = None,
+        category_cache: Optional[Dict[str, int]] = None,
     ) -> tuple[str, UUID]:
         if lookup_context is not None:
             resolution = self._resolve_existing_product_from_lookup(
@@ -865,6 +886,14 @@ class KlevuProductSyncService:
                 attribute_updates=payload.get("attributes") or {},
                 drop_empty=False,
             )
+        await category_taxonomy_service.sync_product_categories(
+            db,
+            product_id=product.id,
+            raw_category=(product.attributes or {}).get("category"),
+            source="klevu",
+            category_cache=category_cache,
+            clear_when_empty=True,
+        )
         search_payload = self._build_search_payload(product=product, payload=payload)
         product.search_text = search_payload["search_text"]
         product.search_hash = search_payload["search_hash"]
@@ -926,6 +955,7 @@ class KlevuProductSyncService:
     ) -> List[UUID]:
         touched_product_ids: List[UUID] = []
         pending_eav_rows: List[tuple[UUID, str, Any]] = []
+        category_cache: Dict[str, int] = {}
         bulk_eav_enabled = bool(getattr(settings, "KLEVU_SYNC_BULK_EAV_ENABLED", True))
         payload_rows: List[tuple[Mapping[str, Any], Dict[str, Any]]] = []
         for record in records:
@@ -958,6 +988,7 @@ class KlevuProductSyncService:
                         stats=stats,
                         lookup_context=lookup_context,
                         pending_eav_rows=pending_eav_rows,
+                        category_cache=category_cache,
                     )
                 touched_product_ids.append(product_id)
                 if action == "created":
@@ -1197,8 +1228,14 @@ class KlevuProductSyncService:
         run.updated_at = self._now_utc()
         await db.commit()
 
-        rpm = int(requests_per_minute or getattr(settings, "KLEVU_SYNC_REQUESTS_PER_MINUTE", 180))
+        rpm = self._resolved_rpm(requests_per_minute)
         run_max_pages = max_pages if max_pages is not None else run.max_pages
+        run.config_snapshot = self._build_run_config_snapshot(
+            page_size=run.page_size,
+            max_pages=run_max_pages,
+            requests_per_minute=rpm,
+            stop_after_pages=stop_after_pages,
+        )
         try:
             result = await self._sync_loop(
                 db,
@@ -1254,7 +1291,7 @@ class KlevuProductSyncService:
         page_size: int = 100,
         requests_per_minute: int | None = None,
     ) -> Dict[str, Any]:
-        rpm = int(requests_per_minute or getattr(settings, "KLEVU_SYNC_REQUESTS_PER_MINUTE", 180))
+        rpm = self._resolved_rpm(requests_per_minute)
         result = await self._sync_loop(
             db,
             page_size=page_size,
@@ -1292,11 +1329,12 @@ class KlevuProductSyncService:
             max_pages=max_pages,
             current_offset=0,
             last_success_offset=0,
-            config_snapshot={
-                "requests_per_minute": int(requests_per_minute or getattr(settings, "KLEVU_SYNC_REQUESTS_PER_MINUTE", 180)),
-                "stop_after_pages": stop_after_pages,
-                "payload_max_bytes": int(getattr(settings, "KLEVU_SYNC_PAYLOAD_MAX_BYTES", 2 * 1024 * 1024)),
-            },
+            config_snapshot=self._build_run_config_snapshot(
+                page_size=effective_page_size,
+                max_pages=max_pages,
+                requests_per_minute=requests_per_minute,
+                stop_after_pages=stop_after_pages,
+            ),
             cancel_requested=False,
         )
         db.add(run)
@@ -1336,6 +1374,12 @@ class KlevuProductSyncService:
         run.completed_at = None
         if max_pages is not None:
             run.max_pages = max_pages
+        run.config_snapshot = self._build_run_config_snapshot(
+            page_size=run.page_size,
+            max_pages=run.max_pages,
+            requests_per_minute=requests_per_minute,
+            stop_after_pages=stop_after_pages,
+        )
         run.updated_at = self._now_utc()
         await db.commit()
         await db.refresh(run)
@@ -1375,6 +1419,12 @@ class KlevuProductSyncService:
             run.updated_at = self._now_utc()
             if max_pages is not None:
                 run.max_pages = max_pages
+            run.config_snapshot = self._build_run_config_snapshot(
+                page_size=run.page_size,
+                max_pages=run.max_pages,
+                requests_per_minute=requests_per_minute,
+                stop_after_pages=stop_after_pages,
+            )
             await db.commit()
             await db.refresh(run)
             return await self._execute_full_sync_run(
@@ -1395,10 +1445,12 @@ class KlevuProductSyncService:
             current_offset=0,
             last_success_offset=0,
             cancel_requested=False,
-            config_snapshot={
-                "requests_per_minute": int(requests_per_minute or getattr(settings, "KLEVU_SYNC_REQUESTS_PER_MINUTE", 180)),
-                "stop_after_pages": stop_after_pages,
-            },
+            config_snapshot=self._build_run_config_snapshot(
+                page_size=effective_page_size,
+                max_pages=max_pages,
+                requests_per_minute=requests_per_minute,
+                stop_after_pages=stop_after_pages,
+            ),
         )
         db.add(run)
         await db.commit()

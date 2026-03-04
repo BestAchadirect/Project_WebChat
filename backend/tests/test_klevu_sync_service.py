@@ -13,6 +13,7 @@ def test_build_payload_matches_required_klevu_shape() -> None:
     assert query["typeOfRequest"] == "SEARCH"
     assert query["settings"]["query"]["term"] == "*"
     assert query["settings"]["typeOfRecords"] == ["KLEVU_PRODUCT"]
+    assert query["settings"]["searchPrefs"] == ["disableGrouping"]
     assert query["settings"]["sortOrder"] == "updatedAt:desc"
     assert query["settings"]["limit"] == 100
     assert query["settings"]["offset"] == 200
@@ -68,6 +69,7 @@ def test_record_mapping_normalizes_compound_sku_and_attributes() -> None:
         {
             "sku": "SEND;;;;SEND-D62P64",
             "name": "High polish endless nose ring",
+            "shortDesc": "Short description from Klevu.",
             "price": "0.55",
             "inStock": "yes",
             "material": "316l",
@@ -78,6 +80,7 @@ def test_record_mapping_normalizes_compound_sku_and_attributes() -> None:
     assert payload["raw_sku"] == "SEND;;;;SEND-D62P64"
     assert payload["sku"] == "SEND-D62P64"
     assert payload["master_code"] == "SEND"
+    assert payload["description"] == "Short description from Klevu."
     assert payload["price"] == 0.55
     assert payload["stock_status"] == "in_stock"
     assert payload["attributes"]["material"] == "Steel"
@@ -135,3 +138,94 @@ def test_simple_sku_000000_kept_in_sku_field() -> None:
     assert payload["sku"] == "DIND19-000000"
     # Master code is derived from the simple-product suffix when explicit master code is absent.
     assert payload["master_code"] == "DIND19"
+
+
+def test_record_mapping_uses_shortdesc_only_for_description() -> None:
+    service = KlevuProductSyncService()
+    payload = service._record_to_payload(
+        {
+            "sku": "DESC;;;;DESC-01",
+            "description": "Legacy description should not be used",
+            "shortDescription": "Legacy shortDescription should not be used",
+            "shortDesc": "Canonical shortDesc value",
+            "inStock": "yes",
+        }
+    )
+    assert payload is not None
+    assert payload["description"] == "Canonical shortDesc value"
+
+
+def test_record_mapping_without_shortdesc_keeps_description_none() -> None:
+    service = KlevuProductSyncService()
+    payload = service._record_to_payload(
+        {
+            "sku": "DESC2;;;;DESC2-01",
+            "description": "Should be ignored when shortDesc is absent",
+            "shortDescription": "Should be ignored when shortDesc is absent",
+            "inStock": "yes",
+        }
+    )
+    assert payload is not None
+    assert payload["description"] is None
+
+
+def test_category_normalization_uses_category_field_and_canonical_tokens() -> None:
+    service = KlevuProductSyncService()
+    payload = service._record_to_payload(
+        {
+            "sku": "CAT;;;;CAT-01",
+            "shortDesc": "Category normalization check",
+            "category": "Silicon;;Ear Piercing others;;silicon;;Others",
+            "inStock": "yes",
+        }
+    )
+    assert payload is not None
+    assert payload["attributes"]["category"] == "Silicone;;Ear Piercing Others;;Others"
+
+
+def test_klevu_category_normalization_splits_single_semicolon_segments() -> None:
+    service = KlevuProductSyncService()
+    normalized = service._normalize_klevu_category(
+        "KLEVU_PRODUCT;;Belly Piercing;;Surgical Steel;Belly Banana;Loose;;@ku@kuCategory@ku@"
+    )
+    assert normalized == "Belly Piercing;;Surgical Steel;;Belly Banana;;Loose"
+
+
+def test_run_config_snapshot_is_standardized() -> None:
+    service = KlevuProductSyncService()
+    snapshot = service._build_run_config_snapshot(
+        page_size=100,
+        max_pages=None,
+        requests_per_minute=None,
+        stop_after_pages=None,
+    )
+
+    assert set(snapshot.keys()) == {
+        "page_size",
+        "max_pages",
+        "requests_per_minute",
+        "stop_after_pages",
+        "payload_max_bytes",
+        "disable_grouping",
+        "bulk_eav_enabled",
+    }
+    assert snapshot["page_size"] == 100
+    assert snapshot["max_pages"] is None
+    assert snapshot["stop_after_pages"] is None
+    assert isinstance(snapshot["requests_per_minute"], int)
+    assert isinstance(snapshot["payload_max_bytes"], int)
+
+
+def test_run_config_snapshot_applies_runtime_overrides() -> None:
+    service = KlevuProductSyncService()
+    snapshot = service._build_run_config_snapshot(
+        page_size=50,
+        max_pages=900,
+        requests_per_minute=150,
+        stop_after_pages=20,
+    )
+
+    assert snapshot["page_size"] == 50
+    assert snapshot["max_pages"] == 900
+    assert snapshot["requests_per_minute"] == 150
+    assert snapshot["stop_after_pages"] == 20

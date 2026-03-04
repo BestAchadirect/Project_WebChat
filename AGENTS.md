@@ -18,8 +18,8 @@ Do not move or rename directories unless explicitly requested.
 
 ## Root Files Policy
 - Keep root-only control files at repo root: `.env`, `.env.example`, `README.md`, `AGENTS.md`, `dev.ps1`.
-- Keep current root tooling in place: `package.json`, `tsconfig*.json`, `tailwind.config.js`, `postcss.config.js`.
-- Do not relocate root tooling unless the repo is intentionally migrated to an explicit workspace model.
+- Keep Node.js manifests and frontend build tooling in `frontend-admin/`: `package.json`, `package-lock.json`, `postcss.config.js`, `tailwind.config.js`, `tsconfig*.json`, and Vite config files.
+- Do not add duplicate Node/tooling manifests at repo root unless an explicit workspace migration is approved.
 
 ## Placement Rules
 - Backend HTTP routes: `backend/app/api/routes/`.
@@ -58,9 +58,12 @@ Do not move or rename directories unless explicitly requested.
 - `backend/.tmp_pyc/`
 - `backend/pytest-cache-files-*/`
 - `backend/uploads/`
+- `backend/backups/`
 - `backend/logs/`
 - `frontend-admin/node_modules/`
 - `frontend-admin/dist/`
+- `frontend-admin/.vite/`
+- `frontend-admin/.eslintcache`
 
 ## Structural Change Protocol
 - If a structure change is proposed, include rationale, risk, and migration impact.
@@ -76,4 +79,4 @@ Do not move or rename directories unless explicitly requested.
 
 ## Ownership
 - Owner: Project maintainers.
-- Last reviewed: 2026-02-23.
+- Last reviewed: 2026-03-04.

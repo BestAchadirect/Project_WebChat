@@ -12,6 +12,7 @@ from app.models.product import Product, ProductEmbedding, StockStatus
 from app.models.product_group import ProductGroup
 from app.models.product_change import ProductChange
 from app.models.product_attribute import ProductAttributeValue
+from app.models.category import Category, ProductCategory
 from app.schemas.product import (
     Product as ProductSchema,
     ProductUpdate,
@@ -23,6 +24,7 @@ from app.services.catalog.attributes_service import eav_service
 from app.services.catalog.projection_service import product_projection_sync_service
 from app.services.imports.service import data_import_service
 from app.services.catalog.attribute_sync_service import product_attribute_sync_service
+from app.services.catalog.category_taxonomy_service import category_taxonomy_service
 from app.utils.pagination import normalize_pagination
 
 router = APIRouter()
@@ -219,6 +221,140 @@ def _apply_dual_source_attr_filter(
     query = query.where(condition)
     count_query = count_query.where(condition)
     return query, count_query
+
+
+def _prepare_category_filter_groups(values: List[str]) -> tuple[List[str], List[List[str]]]:
+    singles: List[str] = []
+    groups: List[List[str]] = []
+    for value in values:
+        tokens = category_taxonomy_service.normalize_category_tokens(value)
+        if not tokens:
+            continue
+        if len(tokens) == 1:
+            singles.append(tokens[0])
+        else:
+            groups.append(tokens)
+
+    deduped_singles: List[str] = []
+    seen_single: set[str] = set()
+    for token in singles:
+        key = token.lower()
+        if key in seen_single:
+            continue
+        seen_single.add(key)
+        deduped_singles.append(token)
+
+    deduped_groups: List[List[str]] = []
+    seen_group: set[str] = set()
+    for group in groups:
+        key = "||".join(sorted({token.lower() for token in group}))
+        if not key or key in seen_group:
+            continue
+        seen_group.add(key)
+        deduped_groups.append(group)
+    return deduped_singles, deduped_groups
+
+
+def _category_single_condition(tokens: List[str]):
+    lowered_labels = [token.lower() for token in tokens if token.strip()]
+    lowered_slugs = [category_taxonomy_service.slugify(token).lower() for token in tokens if token.strip()]
+    if not lowered_labels and not lowered_slugs:
+        return false()
+    lookup_condition = false()
+    if lowered_labels:
+        lookup_condition = or_(lookup_condition, func.lower(Category.label).in_(lowered_labels))
+    if lowered_slugs:
+        lookup_condition = or_(lookup_condition, func.lower(Category.slug).in_(lowered_slugs))
+    subq = (
+        select(ProductCategory.product_id)
+        .join(Category, ProductCategory.category_id == Category.id)
+        .where(lookup_condition)
+    ).subquery()
+    return Product.id.in_(select(subq.c.product_id))
+
+
+def _category_group_condition(tokens: List[str]):
+    lowered_labels = sorted({token.lower() for token in tokens if token.strip()})
+    lowered_slugs = sorted({category_taxonomy_service.slugify(token).lower() for token in tokens if token.strip()})
+    expected = len(lowered_labels)
+    if expected == 0:
+        return false()
+    lookup_condition = false()
+    if lowered_labels:
+        lookup_condition = or_(lookup_condition, func.lower(Category.label).in_(lowered_labels))
+    if lowered_slugs:
+        lookup_condition = or_(lookup_condition, func.lower(Category.slug).in_(lowered_slugs))
+    subq = (
+        select(ProductCategory.product_id)
+        .join(Category, ProductCategory.category_id == Category.id)
+        .where(lookup_condition)
+        .group_by(ProductCategory.product_id)
+        .having(func.count(func.distinct(ProductCategory.category_id)) >= expected)
+    ).subquery()
+    return Product.id.in_(select(subq.c.product_id))
+
+
+def _apply_category_filter(query, count_query, raw_values: List[str]):
+    singles, groups = _prepare_category_filter_groups(raw_values)
+    if not singles and not groups:
+        return query, count_query
+
+    conditions = []
+    if singles:
+        conditions.append(_category_single_condition(singles))
+    for group in groups:
+        conditions.append(_category_group_condition(group))
+
+    if not conditions:
+        return query, count_query
+    condition = and_(*conditions)
+    query = query.where(condition)
+    count_query = count_query.where(condition)
+    return query, count_query
+
+
+async def _build_category_facets(db: AsyncSession, base_subq) -> List[Dict[str, Any]]:
+    stmt = (
+        select(
+            Category.label.label("value"),
+            func.count(func.distinct(ProductCategory.product_id)).label("count"),
+        )
+        .join(ProductCategory, ProductCategory.category_id == Category.id)
+        .join(base_subq, ProductCategory.product_id == base_subq.c.id)
+        .group_by(Category.id, Category.label)
+        .order_by(func.count(func.distinct(ProductCategory.product_id)).desc(), Category.label.asc())
+    )
+    rows = (await db.execute(stmt)).all()
+    if rows:
+        return [
+            {"value": row.value, "count": int(row.count)}
+            for row in rows
+            if row.value is not None and str(row.value).strip()
+        ]
+
+    # Legacy fallback for environments that have not run category backfill yet.
+    definition = (await eav_service.get_definitions_by_name(db, ["category"])).get("category")
+    if not definition:
+        return []
+    legacy_stmt = (
+        select(
+            ProductAttributeValue.value,
+            func.count(func.distinct(ProductAttributeValue.product_id)).label("count"),
+        )
+        .join(base_subq, ProductAttributeValue.product_id == base_subq.c.id)
+        .where(ProductAttributeValue.attribute_id == definition.id)
+        .group_by(ProductAttributeValue.value)
+    )
+    legacy_rows = (await db.execute(legacy_stmt)).all()
+    counts: Dict[str, int] = {}
+    for value, count in legacy_rows:
+        tokens = category_taxonomy_service.normalize_category_tokens(value)
+        for token in tokens:
+            counts[token] = counts.get(token, 0) + int(count)
+    return [
+        {"value": token, "count": token_count}
+        for token, token_count in sorted(counts.items(), key=lambda item: (-item[1], item[0].lower()))
+    ]
 
 
 def _apply_base_filters(
@@ -459,6 +595,8 @@ async def list_products(
         quantity_in_bulk=quantity_in_bulk,
         category=category,
     )
+    category_filters = attr_filters.pop("category", [])
+    category_filters = attr_filters.pop("category", [])
 
     dual_source_fields = ("material", "jewelry_type")
     dual_source_filters: Dict[str, List[str]] = {}
@@ -483,6 +621,8 @@ async def list_products(
 
     if attr_filters:
         query, count_query = await _apply_attribute_filters(db, query, count_query, attr_filters)
+    if category_filters:
+        query, count_query = _apply_category_filter(query, count_query, category_filters)
     
     # Execute count
     count_result = await db.execute(count_query)
@@ -605,6 +745,8 @@ async def list_product_filters(
 
     if attr_filters:
         base_query, _ = await _apply_attribute_filters(db, base_query, base_query, attr_filters)
+    if category_filters:
+        base_query, _ = _apply_category_filter(base_query, base_query, category_filters)
 
     base_subq = base_query.subquery()
     total_result = await db.execute(select(func.count()).select_from(base_subq))
@@ -612,7 +754,8 @@ async def list_product_filters(
 
     filters_payload: Dict[str, List[Dict[str, Any]]] = {name: [] for name in FILTER_FACETS}
 
-    definitions = await eav_service.get_definitions_by_name(db, FILTER_FACETS)
+    eav_facets = [name for name in FILTER_FACETS if name != "category"]
+    definitions = await eav_service.get_definitions_by_name(db, eav_facets)
     attr_id_to_name = {definition.id: name for name, definition in (definitions or {}).items()}
     if attr_id_to_name:
         stmt = (
@@ -675,6 +818,8 @@ async def list_product_filters(
         if inferred_rows:
             inferred_rows.sort(key=lambda item: int(item.get("count", 0)), reverse=True)
             filters_payload[field] = inferred_rows
+
+    filters_payload["category"] = await _build_category_facets(db, base_subq)
 
     return {"total": total, "filters": filters_payload}
 

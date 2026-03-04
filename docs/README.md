@@ -7,6 +7,7 @@ This folder contains architecture notes and operational runbooks.
 - Task system: `architecture/task-system.md`
 - Services redesign: `architecture/services-redesign.md`
 - Frontend pagination controls: `pagination-controls.md`
+- Database table catalog: `database-tables.md`
 
 ## Runbooks
 - Database troubleshooting: `runbooks/database-troubleshooting.md`

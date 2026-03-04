@@ -136,6 +136,7 @@ class Settings(BaseSettings):
     KLEVU_SYNC_PAYLOAD_MAX_BYTES: int = 2 * 1024 * 1024
     KLEVU_SYNC_TIMEOUT_SECONDS: float = 30.0
     KLEVU_SYNC_BULK_EAV_ENABLED: bool = True
+    KLEVU_SYNC_DISABLE_GROUPING: bool = True
 
     # Logging
     LOG_DIR: str = "logs"

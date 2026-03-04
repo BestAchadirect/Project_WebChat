@@ -32,6 +32,7 @@ from app.services.ai.llm_service import llm_service
 from app.services.tasks.service import task_service
 from app.services.catalog.attributes_service import eav_service
 from app.services.catalog.attribute_sync_service import product_attribute_sync_service
+from app.services.catalog.category_taxonomy_service import category_taxonomy_service
 from app.services.catalog.projection_service import product_projection_sync_service
 from app.services.imports.knowledge.chunking import chunk_text
 from app.services.imports.knowledge.embeddings import hash_text
@@ -246,6 +247,8 @@ class DataImportService:
         group_cache: Dict[str, UUID] = {}
         pending_eav_rows: List[Tuple[UUID, str, Any]] = []
         pending_new_eav: List[Tuple[Product, Dict[str, Any]]] = []
+        pending_category_updates: List[Tuple[UUID, Any]] = []
+        pending_new_category_updates: List[Tuple[Product, Any]] = []
         pending_projection_products: List[Product] = []
 
         try:
@@ -428,6 +431,7 @@ class DataImportService:
                         if effective_attributes:
                             for key, value in effective_attributes.items():
                                 pending_eav_rows.append((existing_product.id, key, value))
+                        pending_category_updates.append((existing_product.id, (effective_attributes or {}).get("category")))
 
                         if changed_fields:
                             db.add(
@@ -471,6 +475,7 @@ class DataImportService:
                         db.add(new_product)
                         if attributes:
                             pending_new_eav.append((new_product, attributes))
+                        pending_new_category_updates.append((new_product, (attributes or {}).get("category")))
                         pending_projection_products.append(new_product)
                         stats["created"] += 1
                 except Exception as row_error:
@@ -482,6 +487,9 @@ class DataImportService:
                 for product, attrs in pending_new_eav:
                     for key, value in attrs.items():
                         pending_eav_rows.append((product.id, key, value))
+            if pending_new_category_updates:
+                for product, raw_category in pending_new_category_updates:
+                    pending_category_updates.append((product.id, raw_category))
 
             if pending_eav_rows:
                 metrics = await eav_service.bulk_upsert_product_attribute_rows(
@@ -502,6 +510,18 @@ class DataImportService:
                     products=pending_projection_products,
                 )
                 logger.info("Projection import sync rows=%s", projection_synced)
+
+            if pending_category_updates:
+                category_cache: Dict[str, int] = {}
+                for product_id, raw_category in pending_category_updates:
+                    await category_taxonomy_service.sync_product_categories(
+                        db,
+                        product_id=product_id,
+                        raw_category=raw_category,
+                        source="csv_import",
+                        category_cache=category_cache,
+                        clear_when_empty=False,
+                    )
 
             await db.commit()
 

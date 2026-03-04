@@ -43,7 +43,7 @@ Project_WebChat/
   shared/                 # Shared types and utilities
   docs/                   # Architecture notes and guides
   infra/                  # Infrastructure and deployment
-  tests/                  # End-to-end and integration tests
+  tests/                  # Reserved for cross-service/e2e tests
 ```
 
 Useful docs:
@@ -132,6 +132,7 @@ The only active product tuning knob is `PRODUCT_DISTANCE_THRESHOLD` (controls ho
 
 ## Tests
 Unit/service tests live in `backend/tests/` (see `backend/pyproject.toml` pytest config).
+Legacy ad-hoc verification scripts that used to live in root `tests/` were removed during cleanup.
 
 ```bash
 cd backend
@@ -142,6 +143,7 @@ pytest -q
 ```bash
 cd backend
 python scripts/check_legacy_imports.py
+python scripts/check_repo_hygiene.py
 ruff check app/services
 pytest tests -q
 ```

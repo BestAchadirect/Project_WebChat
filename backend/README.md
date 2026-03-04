@@ -84,12 +84,14 @@ app/
 ```
 
 ## Testing
-API must be running for the test runners in `backend/scripts/`.
+Automated backend tests live in `backend/tests/` and do not require the API server to be running.
+Scripts in `backend/scripts/` are manual verification/maintenance tools.
 
 ## Quality checks
 ```bash
 cd backend
 python scripts/check_legacy_imports.py
+python scripts/check_repo_hygiene.py
 ruff check app/services
 pytest tests -q
 ```
