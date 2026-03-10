@@ -83,6 +83,15 @@ class ProductDetailResolver:
             actual_gauge = DetailQueryParser.normalize_gauge_token(str(attrs.get("gauge") or ""))
             return bool(actual_gauge) and actual_gauge == expected_gauge
 
+        if key in {"length", "size", "outer_diameter", "height", "pincher_size"}:
+            expected_size = DetailQueryParser.normalize_measurement_token(expected_norm)
+            actual_size = DetailQueryParser.normalize_measurement_token(str(attrs.get(key) or ""))
+            return bool(actual_size) and actual_size == expected_size
+
+        if key in {"ring_size", "size_in_pack", "quantity_in_bulk", "rack"}:
+            actual = cls._normalize(attrs.get(key) or "")
+            return bool(actual) and actual == expected_norm
+
         if key == "jewelry_type":
             actual = cls._normalize(attrs.get("jewelry_type") or attrs.get("type") or "")
             return bool(actual) and expected_norm in actual

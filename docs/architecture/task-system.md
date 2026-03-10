@@ -1,17 +1,19 @@
-# Task System (Backend)
-
-This document describes the background task model and current API behavior.
+# Task System
 
 ## Purpose
+Document how long-running backend operations are tracked and exposed through the current task model and APIs.
 
-Track long-running backend operations (for example imports or embedding generation) with status, progress, and metadata.
+## Context
+Task records are used by import and maintenance workflows to persist execution state, progress, and error details.
 
-## Data Model
+## Content
+
+### Data Model
 
 Source: `backend/app/models/task.py`
 
-- `TaskStatus`: `pending`, `running`, `completed`, `failed`, `cancelled`
-- `TaskType`: `document_processing`, `data_import`, `embedding_generation`, `product_update`
+- Status enum: `pending`, `running`, `completed`, `failed`, `cancelled`.
+- Type enum: `document_processing`, `data_import`, `embedding_generation`, `product_update`.
 - Core fields:
   - `id` (UUID)
   - `task_type`
@@ -20,37 +22,37 @@ Source: `backend/app/models/task.py`
   - `created_at`, `started_at`, `completed_at`
   - `error_message`
   - `progress` (0-100)
-  - `task_metadata` (JSON string)
+  - `task_metadata` (JSON serialized string)
 
-## API Endpoints
+### API Endpoints
 
 Source: `backend/app/api/routes/tasks.py`
 
 - `GET /api/v1/tasks/`
-  - Current behavior: returns an empty list placeholder.
-  - Note: pagination/listing logic is not implemented yet.
+  - Currently returns an empty list placeholder.
+  - `skip` and `limit` parameters exist, but listing logic is not implemented.
 - `GET /api/v1/tasks/{task_id}`
-  - Returns task detail by ID.
-  - Returns `404` if not found.
+  - Returns task details by ID.
+  - Returns `404` when no task exists for the ID.
 
-## Service Usage Pattern
+### Service Behavior
 
-Source: `backend/app/services/task_service.py`
+Source: `backend/app/services/tasks/service.py`
 
-Typical flow:
-1. Create task.
-2. Mark task as running.
-3. Execute background work.
-4. Update progress and final status.
+- `create_task`: creates a task row and initializes metadata.
+- `update_task_status`: updates lifecycle fields and optional progress/error.
+- `run_task_background`: wraps execution in FastAPI `BackgroundTasks`.
+- `run_task_immediate`: creates and executes a task inline with status transitions.
 
-## Current Limitations
+### Known Gaps
 
-- No list endpoint persistence output yet (`GET /api/v1/tasks/` placeholder).
-- No cancellation API.
-- No prioritization/dependencies.
+- No implemented list/query endpoint for persisted tasks.
+- No task cancellation API exposed by route/service contract.
+- No documented retention job for old completed/failed task rows.
 
-## Next Steps (Suggested)
+## Related Files
 
-1. Implement `GET /api/v1/tasks/` with pagination and filters.
-2. Add cancellation support for eligible tasks.
-3. Add retention/cleanup policy for old completed tasks.
+- `backend/app/models/task.py`
+- `backend/app/api/routes/tasks.py`
+- `backend/app/services/tasks/service.py`
+- `docs/database-tables.md`

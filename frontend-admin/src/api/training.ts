@@ -34,6 +34,7 @@ export interface TokenUsageSummary {
 
 export interface Product {
     id: string;
+    klevu_id?: string;
     object_id?: string;
     sku: string;
     legacy_sku: string[];
@@ -256,6 +257,7 @@ export const productsApi = {
         size_in_pack?: string | string[];
         quantity_in_bulk?: string | string[];
         category?: string | string[];
+        category_mode?: 'any' | 'all';
         master_code?: string;
         min_price?: number;
         max_price?: number;
@@ -305,6 +307,7 @@ export const productsApi = {
         size_in_pack?: string | string[];
         quantity_in_bulk?: string | string[];
         category?: string | string[];
+        category_mode?: 'any' | 'all';
         master_code?: string;
         min_price?: number;
         max_price?: number;

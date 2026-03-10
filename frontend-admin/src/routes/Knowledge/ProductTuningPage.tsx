@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { productsApi, Product, ProductFilterValue } from '../../api/training';
 import { PaginationControls } from '../../components/common/PaginationControls';
@@ -52,18 +52,20 @@ export const ProductTuningPage: React.FC = () => {
     ];
 
     const standardColumns = [
-        { key: 'image', label: 'Image', width: 'w-20' },
-        { key: 'master_code', label: 'Master Code', width: 'w-40' },
-        { key: 'description', label: 'Description', width: 'flex-1' },
-        { key: 'sku', label: 'SKU', width: 'w-32' },
+        { key: 'image', label: 'Image', width: 'w-16' },
+        { key: 'sku', label: 'SKU', width: 'w-[18%]' },
+        { key: 'description', label: 'Description', width: 'w-[44%]' },
         { key: 'price', label: 'Price', width: 'w-24' },
-        { key: 'status', label: 'Status', width: 'w-20' },
+        { key: 'status', label: 'Status', width: 'w-16' },
+        { key: 'master_code', label: 'Master Code', width: 'w-[10%]' },
+        { key: 'klevu_id', label: 'Klevu ID', width: 'w-[10%]' },
+        { key: 'object_id', label: 'Object ID', width: 'w-[10%]' },
     ];
 
     const attributeColumns = technicalFields.map(field => ({
         key: field.key as string,
         label: field.label,
-        width: 'w-32',
+        width: 'w-[10%]',
         isAttribute: true
     }));
 
@@ -72,7 +74,9 @@ export const ProductTuningPage: React.FC = () => {
     const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>(() => {
         const initial: Record<string, boolean> = {
             image: true,
-            master_code: true,
+            master_code: false,
+            klevu_id: false,
+            object_id: false,
             description: true,
             sku: true,
             price: true,
@@ -84,14 +88,17 @@ export const ProductTuningPage: React.FC = () => {
         });
         return initial;
     });
+    const [autoVisibleColumns, setAutoVisibleColumns] = useState<Record<string, boolean>>({});
 
     // Filters
     const [filterVisibility, setFilterVisibility] = useState<'all' | 'visible' | 'hidden'>('all');
     const [filterFeatured, setFilterFeatured] = useState<'all' | 'featured' | 'normal'>('all');
+    const [categoryMode, setCategoryMode] = useState<'any' | 'all'>('any');
 
     // Dynamic Filters
     const [activeFilters, setActiveFilters] = useState<Record<string, string[]>>({});
     const [pendingFilters, setPendingFilters] = useState<Record<string, string[]>>({});
+    const [showFilterDrawer, setShowFilterDrawer] = useState(false);
 
     // UI State for Filters
 
@@ -106,7 +113,7 @@ export const ProductTuningPage: React.FC = () => {
         setCurrentPage(firstPage);
         void loadProducts(firstPage, pageSize);
         loadFacets();
-    }, [filterVisibility, filterFeatured, activeFilters]);
+    }, [filterVisibility, filterFeatured, categoryMode, activeFilters]);
 
     useEffect(() => {
         setPendingFilters(activeFilters);
@@ -124,6 +131,38 @@ export const ProductTuningPage: React.FC = () => {
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, [showSelectActionMenu]);
 
+    useEffect(() => {
+        if (!showFilterDrawer) return;
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setShowFilterDrawer(false);
+            }
+        };
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [showFilterDrawer]);
+
+    useEffect(() => {
+        if (!showFilterDrawer) return;
+
+        const body = document.body;
+        const docEl = document.documentElement;
+        const previousOverflow = body.style.overflow;
+        const previousPaddingRight = body.style.paddingRight;
+        const scrollbarWidth = window.innerWidth - docEl.clientWidth;
+        const computedPaddingRight = Number.parseFloat(window.getComputedStyle(body).paddingRight || '0') || 0;
+
+        body.style.overflow = 'hidden';
+        if (scrollbarWidth > 0) {
+            body.style.paddingRight = `${computedPaddingRight + scrollbarWidth}px`;
+        }
+
+        return () => {
+            body.style.overflow = previousOverflow;
+            body.style.paddingRight = previousPaddingRight;
+        };
+    }, [showFilterDrawer]);
+
     const loadProducts = async (targetPage: number, targetPageSize: number = pageSize) => {
         const requestSeq = ++productLoadSeqRef.current;
         try {
@@ -136,6 +175,7 @@ export const ProductTuningPage: React.FC = () => {
             if (filterVisibility === 'hidden') params.visibility = false;
             if (filterFeatured === 'featured') params.is_featured = true;
             if (filterFeatured === 'normal') params.is_featured = false;
+            params.category_mode = categoryMode;
 
             // Add dynamic filters to params
             Object.entries(activeFilters).forEach(([key, values]) => {
@@ -187,6 +227,7 @@ export const ProductTuningPage: React.FC = () => {
             if (filterVisibility === 'hidden') params.visibility = false;
             if (filterFeatured === 'featured') params.is_featured = true;
             if (filterFeatured === 'normal') params.is_featured = false;
+            params.category_mode = categoryMode;
 
             // Add dynamic filters to params
             Object.entries(activeFilters).forEach(([key, values]) => {
@@ -393,8 +434,10 @@ export const ProductTuningPage: React.FC = () => {
     const resetFilters = () => {
         setFilterVisibility('all');
         setFilterFeatured('all');
+        setCategoryMode('any');
         setActiveFilters({});
         setPendingFilters({});
+        setShowFilterDrawer(false);
         setMinPrice('');
         setMaxPrice('');
         setSearchQuery('');
@@ -423,10 +466,173 @@ export const ProductTuningPage: React.FC = () => {
         return Array.from(map.entries()).map(([value, count]) => ({ value, count }));
     };
 
-    const prioritizedFilterKeys = ['material', 'jewelry_type'];
+    const withFilterValues = (source: Record<string, string[]>, key: string, values: string[]) => {
+        const next = { ...source };
+        const cleanValues = (values || []).filter((value) => String(value).trim() !== '');
+        if (cleanValues.length === 0) {
+            delete next[key];
+            return next;
+        }
+        next[key] = cleanValues;
+        return next;
+    };
+
+    const attributeKeySet = new Set(technicalFields.map((field) => field.key as string));
+    const categoryColumnRules: Array<{ matchers: RegExp[]; columns: string[] }> = [
+        {
+            matchers: [/\bring\b/i, /\bhoop\b/i, /\bcircular\b/i],
+            columns: ['ring_size', 'outer_diameter', 'gauge', 'threading', 'material', 'color'],
+        },
+        {
+            matchers: [/\bbarbell\b/i, /\bhorseshoe\b/i],
+            columns: ['length', 'gauge', 'threading', 'material', 'color'],
+        },
+        {
+            matchers: [/\blabret\b/i, /\bstud\b/i],
+            columns: ['length', 'gauge', 'threading', 'material', 'color'],
+        },
+        {
+            matchers: [/\btunnel\b/i, /\bplug\b/i],
+            columns: ['size', 'material', 'color'],
+        },
+        {
+            matchers: [/\bpincher\b/i],
+            columns: ['pincher_size', 'gauge', 'material', 'color'],
+        },
+    ];
+
+    const inferColumnsFromCategoryLikeValues = (values: string[]) => {
+        const inferred = new Set<string>();
+        (values || []).forEach((rawValue) => {
+            const value = String(rawValue || '').trim();
+            if (!value) return;
+            categoryColumnRules.forEach((rule) => {
+                if (rule.matchers.some((matcher) => matcher.test(value))) {
+                    rule.columns.forEach((column) => inferred.add(column));
+                }
+            });
+        });
+        return Array.from(inferred);
+    };
+
+    useEffect(() => {
+        const inferred = new Set<string>();
+        Object.entries(activeFilters).forEach(([key, values]) => {
+            if ((values || []).length === 0) return;
+            if (attributeKeySet.has(key)) {
+                inferred.add(key);
+            }
+        });
+
+        const taxonomyValues = [
+            ...(activeFilters.category || []),
+            ...(activeFilters.jewelry_type || []),
+        ];
+        inferColumnsFromCategoryLikeValues(taxonomyValues).forEach((column) => inferred.add(column));
+
+        const next: Record<string, boolean> = {};
+        inferred.forEach((key) => {
+            if (attributeKeySet.has(key)) {
+                next[key] = true;
+            }
+        });
+        setAutoVisibleColumns(next);
+    }, [activeFilters]);
+
+    const effectiveVisibleColumns = useMemo(() => {
+        const merged = { ...visibleColumns };
+        Object.entries(autoVisibleColumns).forEach(([key, enabled]) => {
+            if (enabled) {
+                merged[key] = true;
+            }
+        });
+        return merged;
+    }, [visibleColumns, autoVisibleColumns]);
+
+    const formatFilterLabel = (key: string) => {
+        if (key === 'category') return 'Category';
+        if (key === 'jewelry_type') return 'Subcategory';
+        return key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    };
+
+    const hasRenderableFilter = (key: string) => {
+        const pendingValues = pendingFilters[key] || activeFilters[key] || [];
+        const options = mergeFacetOptions(facetData[key], pendingValues);
+        return options.length > 0 || pendingValues.length > 0;
+    };
+
+    const prioritizedFilterKeys = ['category', 'jewelry_type', 'material', 'color'];
     const orderedFilterKeys = Array.from(
         new Set([...prioritizedFilterKeys, ...Object.keys(facetData).sort()])
     );
+    const quickBaseKeys = ['category', 'jewelry_type', 'material'];
+    const quickFilterKeys = Array.from(new Set(quickBaseKeys))
+        .filter((key) => orderedFilterKeys.includes(key))
+        .filter((key) => hasRenderableFilter(key));
+    const advancedFilterKeys = orderedFilterKeys
+        .filter((key) => !quickFilterKeys.includes(key))
+        .filter((key) => hasRenderableFilter(key));
+    const advancedActiveFilterCount = advancedFilterKeys.filter((key) => (activeFilters[key] || []).length > 0).length;
+    const activeFilterValueCount = useMemo(
+        () => Object.values(activeFilters).reduce((sum, values) => sum + (values?.length || 0), 0),
+        [activeFilters]
+    );
+    const totalFilterBadgeCount = activeFilterValueCount + (minPrice ? 1 : 0) + (maxPrice ? 1 : 0);
+
+    const advancedFilterGroupConfig: Array<{ title: string; keys: string[] }> = [
+        {
+            title: 'Taxonomy',
+            keys: ['category', 'jewelry_type'],
+        },
+        {
+            title: 'Material & Build',
+            keys: ['material', 'threading', 'design'],
+        },
+        {
+            title: 'Size & Dimensions',
+            keys: ['gauge', 'length', 'size', 'outer_diameter', 'pincher_size', 'ring_size', 'height'],
+        },
+        {
+            title: 'Color & Finish',
+            keys: ['color', 'cz_color', 'opal_color', 'crystal_color', 'pearl_color'],
+        },
+        {
+            title: 'Packaging & Ops',
+            keys: ['packing_option', 'size_in_pack', 'quantity_in_bulk', 'rack'],
+        },
+    ];
+    const advancedKeySet = new Set(advancedFilterKeys);
+    const groupedAdvancedFilters: Array<{ title: string; keys: string[] }> = [];
+    const assignedAdvancedKeys = new Set<string>();
+    advancedFilterGroupConfig.forEach((group) => {
+        const keys = group.keys.filter((key) => advancedKeySet.has(key));
+        if (keys.length > 0) {
+            keys.forEach((key) => assignedAdvancedKeys.add(key));
+            groupedAdvancedFilters.push({ title: group.title, keys });
+        }
+    });
+    const uncategorizedAdvancedKeys = advancedFilterKeys.filter((key) => !assignedAdvancedKeys.has(key));
+    if (uncategorizedAdvancedKeys.length > 0) {
+        groupedAdvancedFilters.push({ title: 'Additional Attributes', keys: uncategorizedAdvancedKeys });
+    }
+
+    const renderFilterDropdown = (key: string) => {
+        const pendingValues = pendingFilters[key] || activeFilters[key] || [];
+        const options = mergeFacetOptions(facetData[key], pendingValues);
+        if (options.length === 0 && !pendingValues.length) return null;
+        return (
+            <FilterDropdown
+                key={key}
+                label={formatFilterLabel(key)}
+                options={options}
+                selected={pendingValues}
+                onChange={(newValues) => {
+                    setPendingFilters(prev => withFilterValues(prev, key, newValues));
+                    setActiveFilters(prev => withFilterValues(prev, key, newValues));
+                }}
+            />
+        );
+    };
 
     const applyProductUpdate = async (productId: string, updates: Partial<Product>) => {
         try {
@@ -554,15 +760,50 @@ export const ProductTuningPage: React.FC = () => {
     }, [currentPage, pageSize]);
 
     return (
-        <div className="flex flex-col h-[calc(100vh-100px)] overflow-hidden bg-white">
+        <div className="flex flex-col min-h-[calc(100vh-100px)] bg-white overflow-x-hidden">
             {/* Top Filter Bar */}
-            <div className="relative z-[80] flex-shrink-0 border-b border-gray-200 bg-white">
-                <div className="px-6 py-4 space-y-4">
+            <div className="border-b border-gray-200 bg-white">
+                <div className="px-4 py-4 sm:px-6 space-y-4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="min-w-0">
+                            <h1 className="text-xl font-bold text-gray-900 tracking-tight">Product Tuning</h1>
+                            <p className="text-sm text-gray-500">Tune product visibility, attributes, and merchandising quality.</p>
+                        </div>
+                        {selectedIds.size > 0 && (
+                            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-indigo-100 bg-indigo-50/70 px-3 py-2">
+                                <span className="text-xs font-semibold text-indigo-700">{selectedIds.size} selected</span>
+                                <button
+                                    onClick={openBulkEdit}
+                                    className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-semibold rounded-lg hover:bg-indigo-700 transition-colors"
+                                >
+                                    Edit
+                                </button>
+                                <button
+                                    onClick={handleBulkShow}
+                                    className="px-3 py-1.5 bg-white border border-gray-200 text-gray-700 text-xs font-semibold rounded-lg hover:bg-gray-50 transition-colors"
+                                >
+                                    Show
+                                </button>
+                                <button
+                                    onClick={handleBulkHide}
+                                    className="px-3 py-1.5 bg-white border border-gray-200 text-red-600 text-xs font-semibold rounded-lg hover:bg-red-50 transition-colors"
+                                >
+                                    Hide
+                                </button>
+                                <button
+                                    onClick={handleBulkDeleteSkus}
+                                    className="px-3 py-1.5 bg-red-600 text-white text-xs font-semibold rounded-lg hover:bg-red-700 transition-colors"
+                                >
+                                    Delete
+                                </button>
+                            </div>
+                        )}
+                    </div>
                     {/* Primary Controls: Search + Global Filters */}
-                    <div className="flex flex-wrap items-center justify-between gap-4">
-                        <div className="flex items-center gap-3 flex-1 min-w-[300px]">
+                    <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center flex-1 min-w-0">
                             {/* Search */}
-                            <div className="relative flex-1 max-w-md">
+                            <div className="relative flex-1 min-w-0">
                                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                                     <svg className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -570,15 +811,20 @@ export const ProductTuningPage: React.FC = () => {
                                 </div>
                                 <input
                                     type="text"
-                                    placeholder="Search by SKU, Name or Master Code..."
+                                    placeholder="Search by SKU, Name, Master Code, or Klevu ID..."
                                     value={searchQuery}
                                     onChange={(e) => setSearchQuery(e.target.value)}
                                     onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                                    className="w-full pl-10 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 transition-all shadow-sm"
+                                    className="w-full pl-10 pr-20 py-2.5 text-sm border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 transition-all"
                                 />
+                                <button
+                                    type="button"
+                                    onClick={handleSearch}
+                                    className="absolute right-1.5 top-1.5 px-3 py-1.5 text-xs font-semibold bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                                >
+                                    Search
+                                </button>
                             </div>
-
-                            <div className="h-8 w-px bg-gray-200 mx-2"></div>
 
                             {/* Visibility Toggle */}
                             <div className="flex bg-gray-100 p-1 rounded-lg">
@@ -595,80 +841,39 @@ export const ProductTuningPage: React.FC = () => {
                                     </button>
                                 ))}
                             </div>
-
-                            {/* Price Range */}
-                            <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg p-1">
-                                <span className="text-xs font-semibold text-gray-500 pl-2">Price:</span>
-                                <input
-                                    type="number"
-                                    placeholder="Min"
-                                    value={minPrice}
-                                    onChange={(e) => setMinPrice(e.target.value)}
-                                    className="w-16 px-1.5 py-1 text-xs border-0 bg-transparent focus:ring-0 text-gray-900 placeholder:text-gray-400 text-center"
-                                />
-                                <span className="text-gray-300">-</span>
-                                <input
-                                    type="number"
-                                    placeholder="Max"
-                                    value={maxPrice}
-                                    onChange={(e) => setMaxPrice(e.target.value)}
-                                    className="w-16 px-1.5 py-1 text-xs border-0 bg-transparent focus:ring-0 text-gray-900 placeholder:text-gray-400 text-center"
-                                />
-                                <button
-                                    onClick={handleSearch}
-                                    className="p-1 hover:bg-white rounded-md transition-colors text-primary-600"
-                                    title="Apply Price Filter"
-                                >
-                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                    </svg>
-                                </button>
-                            </div>
                         </div>
 
                         {/* Right Actions */}
-                        <div className="flex items-center gap-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setShowFilterDrawer(true)}
+                                className="inline-flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
+                            >
+                                <svg className="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h18M6 12h12M10 20h4" />
+                                </svg>
+                                Filters
+                                {totalFilterBadgeCount > 0 && (
+                                    <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-primary-100 text-primary-700 text-[10px] font-bold">
+                                        {totalFilterBadgeCount}
+                                    </span>
+                                )}
+                            </button>
                             <button
                                 onClick={resetFilters}
-                                className="px-3 py-2 text-sm text-gray-500 hover:text-gray-900 font-medium transition-colors"
+                                className="px-3 py-2 text-sm font-semibold rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition-colors"
                             >
-                                Reset All
+                                Reset
                             </button>
-                            {selectedIds.size > 0 && (
-                                <div className="flex items-center gap-2 animate-in fade-in slide-in-from-right-4">
-                                    <button
-                                        onClick={openBulkEdit}
-                                        className="px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all"
-                                    >
-                                        Edit ({selectedIds.size})
-                                    </button>
-                                    <button
-                                        onClick={handleBulkShow}
-                                        className="px-4 py-2 bg-white border border-gray-200 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-50 shadow-sm transition-all"
-                                    >
-                                        Show
-                                    </button>
-                                    <button
-                                        onClick={handleBulkHide}
-                                        className="px-4 py-2 bg-white border border-gray-200 text-red-600 text-sm font-semibold rounded-lg hover:bg-red-50 shadow-sm transition-all"
-                                    >
-                                        Hide
-                                    </button>
-                                    <button
-                                        onClick={handleBulkDeleteSkus}
-                                        className="px-4 py-2 bg-red-600 text-white text-sm font-semibold rounded-lg hover:bg-red-700 shadow-sm transition-all"
-                                    >
-                                        Delete
-                                    </button>
-                                </div>
-                            )}
-                            <div className="relative z-[120]">
+                            <div className="relative">
                                 <button
                                     onClick={() => setShowColumnMenu((prev) => !prev)}
-                                    className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg transition-colors"
+                                    className="inline-flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
                                     title="Customize Columns"
                                 >
-                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
+                                    <svg className="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
+                                    Columns
                                 </button>
                                 {showColumnMenu && (
                                     <div className="absolute right-0 mt-2 w-64 bg-white border border-gray-200 rounded-lg shadow-xl p-3 z-[130] animate-in fade-in zoom-in-95 origin-top-right max-h-[400px] overflow-y-auto custom-scrollbar">
@@ -678,7 +883,7 @@ export const ProductTuningPage: React.FC = () => {
                                                 <label key={col.key} className="flex items-center gap-2 text-sm text-gray-700 hover:text-gray-900 cursor-pointer">
                                                     <input
                                                         type="checkbox"
-                                                        checked={visibleColumns[col.key]}
+                                                        checked={effectiveVisibleColumns[col.key]}
                                                         onChange={() => toggleColumn(col.key)}
                                                         className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                                                     />
@@ -690,11 +895,17 @@ export const ProductTuningPage: React.FC = () => {
                                         <div className="space-y-2">
                                             {attributeColumns.map((col) => (
                                                 <label key={col.key} className="flex items-center gap-2 text-sm text-gray-700 hover:text-gray-900 cursor-pointer">
+                                                    {autoVisibleColumns[col.key] && (
+                                                        <span className="px-1.5 py-0.5 rounded bg-primary-100 text-primary-700 text-[9px] font-bold uppercase tracking-wider">
+                                                            Auto
+                                                        </span>
+                                                    )}
                                                     <input
                                                         type="checkbox"
-                                                        checked={visibleColumns[col.key]}
+                                                        checked={effectiveVisibleColumns[col.key]}
                                                         onChange={() => toggleColumn(col.key)}
-                                                        className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                                        disabled={Boolean(autoVisibleColumns[col.key])}
+                                                        className="rounded border-gray-300 text-primary-600 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                                                     />
                                                     {col.label}
                                                 </label>
@@ -706,41 +917,12 @@ export const ProductTuningPage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* Secondary Row: Attribute Filters */}
-                    <div className="flex items-center gap-2 overflow-x-auto pb-2 custom-scrollbar">
-                        <div className="text-xs font-bold text-gray-400 uppercase tracking-wider mr-2 flex-shrink-0">Filters:</div>
-                        {facetLoading && <div className="text-xs text-gray-400 italic animate-pulse">Loading...</div>}
-
-                        {orderedFilterKeys.map((key) => {
-                            const options = mergeFacetOptions(
-                                facetData[key],
-                                pendingFilters[key] || []
-                            );
-                            if (options.length === 0 && !pendingFilters[key]?.length) return null;
-
-                            const label = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-
-                            return (
-                                <FilterDropdown
-                                    key={key}
-                                    label={label}
-                                    options={options}
-                                    selected={activeFilters[key] || []}
-                                    onChange={(newValues) => {
-                                        setActiveFilters(prev => ({ ...prev, [key]: newValues }));
-                                    }}
-                                    onApply={(values) => {
-                                        setActiveFilters(prev => ({ ...prev, [key]: values }));
-                                    }}
-                                />
-                            );
-                        })}
-                    </div>
+                    {facetLoading && <div className="text-xs text-gray-400 italic">Refreshing filter counts...</div>}
                 </div>
 
                 {/* Active Filter Chips */}
-                {Object.keys(activeFilters).some(k => activeFilters[k]?.length > 0) && (
-                    <div className="px-6 pb-4 flex flex-wrap gap-2 items-center border-t border-gray-50 pt-3">
+                {(activeFilterValueCount > 0 || minPrice || maxPrice) && (
+                    <div className="px-4 sm:px-6 pb-4 flex flex-wrap gap-2 items-center border-t border-gray-100 pt-3">
                         <span className="text-xs text-gray-400">Active:</span>
                         {Object.entries(activeFilters).map(([key, values]) => (
                             values.map(val => (
@@ -748,20 +930,39 @@ export const ProductTuningPage: React.FC = () => {
                                     key={`${key}-${val}`}
                                     onClick={() => {
                                         const newVals = values.filter(v => v !== val);
-                                        setActiveFilters(prev => ({ ...prev, [key]: newVals }));
+                                        setPendingFilters(prev => withFilterValues(prev, key, newVals));
+                                        setActiveFilters(prev => withFilterValues(prev, key, newVals));
                                     }}
-                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary-50 text-primary-700 text-xs font-medium border border-primary-100 hover:bg-primary-100 hover:border-primary-200 transition-colors group"
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary-50 text-primary-700 text-xs font-medium border border-primary-100 hover:bg-primary-100 transition-colors"
                                 >
-                                    <span className="opacity-50 uppercase tracking-tighter text-[9px]">{key.replace('_', ' ')}:</span>
-                                    <span>{val}</span>
-                                    <svg className="w-3 h-3 opacity-50 group-hover:opacity-100" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <span className="opacity-60 uppercase tracking-tighter text-[9px]">{formatFilterLabel(key)}:</span>
+                                    <span className="max-w-[180px] truncate">{val}</span>
+                                    <svg className="w-3 h-3 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                                     </svg>
                                 </button>
                             ))
                         ))}
+                        {minPrice && (
+                            <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-gray-100 text-gray-700 text-xs font-medium border border-gray-200">
+                                Min ${minPrice}
+                            </span>
+                        )}
+                        {maxPrice && (
+                            <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-gray-100 text-gray-700 text-xs font-medium border border-gray-200">
+                                Max ${maxPrice}
+                            </span>
+                        )}
                         <button
-                            onClick={() => setActiveFilters({})}
+                            onClick={() => {
+                                setPendingFilters({});
+                                setActiveFilters({});
+                                setMinPrice('');
+                                setMaxPrice('');
+                                setCurrentPage(1);
+                                void loadProducts(1, pageSize);
+                                loadFacets();
+                            }}
                             className="text-xs text-red-500 hover:text-red-700 underline decoration-red-200 underline-offset-2 ml-2"
                         >
                             Clear all
@@ -771,11 +972,11 @@ export const ProductTuningPage: React.FC = () => {
             </div>
 
             {/* Main Content: Product List */}
-            <div className={`flex-1 overflow-hidden relative flex flex-col ${selectedProduct ? 'mr-[450px] transition-all duration-300' : ''}`}>
-                <div className="flex-1 overflow-hidden bg-gray-50/50 p-6">
+            <div className={`relative flex flex-col min-w-0 transition-all duration-300 ${selectedProduct ? 'pr-[450px]' : 'pr-0'}`}>
+                <div className="bg-gray-50/70 p-4 sm:p-6">
 
-                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden h-full flex flex-col">
-                        <div className="flex-shrink-0 border-b border-gray-200 bg-white/95 backdrop-blur z-40">
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                        <div className="flex-shrink-0 border-b border-gray-200 bg-white">
                             <PaginationControls
                                 currentPage={currentPage}
                                 pageSize={pageSize}
@@ -787,11 +988,11 @@ export const ProductTuningPage: React.FC = () => {
                             />
                         </div>
 
-                        <div className="flex-1 overflow-auto">
-                            <table className="min-w-full divide-y divide-gray-200 table-fixed">
+                        <div className="hidden md:block overflow-x-hidden">
+                            <table className="w-full divide-y divide-gray-200 table-fixed">
                             <thead className="bg-gray-100">
                                 <tr>
-                                    <th className="w-12 px-4 py-3 text-left sticky top-0 z-50 bg-gray-100">
+                                    <th className="w-12 px-4 py-3 text-left bg-gray-100">
                                         <div className="relative flex items-center gap-1">
                                             <input
                                                 type="checkbox"
@@ -857,8 +1058,8 @@ export const ProductTuningPage: React.FC = () => {
                                             )}
                                         </div>
                                     </th>
-                                    {allColumns.map(col => visibleColumns[col.key] && (
-                                        <th key={col.key} className={`${col.width} px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider sticky top-0 z-50 bg-gray-100`}>
+                                    {allColumns.map(col => effectiveVisibleColumns[col.key] && (
+                                        <th key={col.key} className={`${col.width} px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider whitespace-normal break-words leading-tight bg-gray-100`}>
                                             {col.label}
                                         </th>
                                     ))}
@@ -881,7 +1082,7 @@ export const ProductTuningPage: React.FC = () => {
                                         </td>
 
                                         {allColumns.map(col => {
-                                            if (!visibleColumns[col.key]) return null;
+                                            if (!effectiveVisibleColumns[col.key]) return null;
 
                                             // Special Rendering for Standard Columns
                                             if (col.key === 'image') {
@@ -901,7 +1102,7 @@ export const ProductTuningPage: React.FC = () => {
                                             }
                                             if (col.key === 'master_code') {
                                                 return (
-                                                    <td key={col.key} className="px-4 py-3 text-sm font-mono text-gray-500 uppercase">
+                                                    <td key={col.key} className="px-4 py-3 text-sm font-mono text-gray-500 uppercase whitespace-normal break-all">
                                                         {product.master_code ? product.master_code : <span className="text-gray-300">—</span>}
                                                         {product.is_featured && (
                                                             <div className="mt-1">
@@ -917,15 +1118,46 @@ export const ProductTuningPage: React.FC = () => {
                                             if (col.key === 'description') {
                                                 return (
                                                     <td key={col.key} className="Description px-4 py-3">
-                                                        <div className="text-xs text-gray-500 line-clamp-2" title={product.description || ''}>
+                                                        <div className="text-xs text-gray-600 line-clamp-2 break-words leading-snug" title={product.description || ''}>
                                                             {product.description || <span className="text-gray-300 italic">No description</span>}
                                                         </div>
                                                     </td>
                                                 );
                                             }
+                                            if (col.key === 'klevu_id') {
+                                                return (
+                                                    <td key={col.key} className="px-4 py-3 text-xs font-mono text-gray-600 whitespace-normal break-all">
+                                                        {product.klevu_id ? product.klevu_id : <span className="text-gray-300">N/A</span>}
+                                                    </td>
+                                                );
+                                            }
+                                            if (col.key === 'object_id') {
+                                                return (
+                                                    <td key={col.key} className="px-4 py-3 text-xs font-mono text-gray-600 whitespace-normal break-all">
+                                                        {product.object_id ? product.object_id : <span className="text-gray-300">N/A</span>}
+                                                    </td>
+                                                );
+                                            }
                                             if (col.key === 'sku') {
                                                 return (
-                                                    <td key={col.key} className="px-4 py-3 text-sm font-mono text-gray-500 uppercase font-bold">{product.sku}</td>
+                                                    <td key={col.key} className="px-4 py-3">
+                                                        <div className="min-w-0 space-y-1">
+                                                            <div className="text-sm font-mono text-gray-700 uppercase font-bold truncate" title={product.sku}>
+                                                                {product.sku}
+                                                            </div>
+                                                            <div className="text-[10px] text-gray-400 leading-tight space-y-0.5">
+                                                                {product.master_code && (
+                                                                    <div className="truncate" title={product.master_code}>MC: {product.master_code}</div>
+                                                                )}
+                                                                {product.klevu_id && (
+                                                                    <div className="truncate" title={product.klevu_id}>Klevu: {product.klevu_id}</div>
+                                                                )}
+                                                                {product.object_id && (
+                                                                    <div className="truncate" title={product.object_id}>Object: {product.object_id}</div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </td>
                                                 );
                                             }
                                             if (col.key === 'price') {
@@ -944,7 +1176,7 @@ export const ProductTuningPage: React.FC = () => {
                                             // Default Attribute Rendering
                                             const val = product[col.key as keyof Product];
                                             return (
-                                                <td key={col.key} className="px-4 py-3 text-sm text-gray-600">
+                                                <td key={col.key} className="px-4 py-3 text-sm text-gray-600 whitespace-normal break-words leading-snug">
                                                     {val ? String(val) : <span className="text-gray-300">—</span>}
                                                 </td>
                                             );
@@ -953,13 +1185,65 @@ export const ProductTuningPage: React.FC = () => {
                                 ))}
                             </tbody>
                             </table>
+                        </div>
 
-                            {loading && products.length === 0 && (
-                                <div className="flex flex-col items-center justify-center py-24 gap-4 animate-in fade-in zoom-in">
-                                    <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary-200 border-t-primary-600"></div>
-                                    <p className="text-gray-500 font-medium tracking-tight">Syncing with Magento...</p>
-                                </div>
-                            )}
+                        <div className="md:hidden divide-y divide-gray-100">
+                            {products.map((product) => (
+                                <article
+                                    key={product.id}
+                                    onClick={() => setSelectedProduct(product)}
+                                    className={`p-4 cursor-pointer transition-colors ${selectedProduct?.id === product.id ? 'bg-primary-50' : 'bg-white'} ${!product.visibility ? 'opacity-70' : ''}`}
+                                >
+                                    <div className="flex items-start gap-3 min-w-0">
+                                        <div className="pt-1" onClick={(e) => e.stopPropagation()}>
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedIds.has(product.id)}
+                                                onChange={(e) => toggleSelect(product.id, e as any)}
+                                                className="rounded border-gray-300 text-primary-600"
+                                            />
+                                        </div>
+                                        <div className="w-12 h-12 bg-gray-100 rounded-lg overflow-hidden border border-gray-100 flex-shrink-0">
+                                            {product.image_url ? (
+                                                <img src={product.image_url} alt="" className="w-full h-full object-cover" />
+                                            ) : (
+                                                <div className="w-full h-full flex items-center justify-center text-gray-300">
+                                                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                                    </svg>
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="min-w-0">
+                                                    <div className="text-sm font-mono font-bold text-gray-800 uppercase truncate">{product.sku}</div>
+                                                    <div className="text-[10px] text-gray-400 truncate">{product.master_code || 'No master code'}</div>
+                                                </div>
+                                                <div className="text-sm font-bold text-gray-900">${(product.price || 0).toFixed(2)}</div>
+                                            </div>
+                                            <p className="mt-1 text-xs text-gray-600 line-clamp-2 break-words" title={product.description || ''}>
+                                                {product.description || 'No description'}
+                                            </p>
+                                            <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500">
+                                                <span className="truncate max-w-[60%]">{product.klevu_id || product.object_id || 'No external ID'}</span>
+                                                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full font-semibold ${product.visibility ? (product.in_stock ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700') : 'bg-gray-100 text-gray-600'}`}>
+                                                    <span className={`w-1.5 h-1.5 rounded-full ${product.visibility ? (product.in_stock ? 'bg-green-500' : 'bg-yellow-500') : 'bg-gray-400'}`}></span>
+                                                    {product.visibility ? (product.in_stock ? 'Visible' : 'Low stock') : 'Hidden'}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </article>
+                            ))}
+                        </div>
+
+                        {loading && products.length === 0 && (
+                            <div className="flex flex-col items-center justify-center py-24 gap-4 animate-in fade-in zoom-in">
+                                <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary-200 border-t-primary-600"></div>
+                                <p className="text-gray-500 font-medium tracking-tight">Syncing with Magento...</p>
+                            </div>
+                        )}
                         </div>
                     </div>
                 </div>
@@ -1093,7 +1377,148 @@ export const ProductTuningPage: React.FC = () => {
                         </div>
                     </div>
                 )}
-            </div>
+            {showFilterDrawer && (
+                <>
+                    <button
+                        type="button"
+                        onClick={() => setShowFilterDrawer(false)}
+                        className="fixed inset-0 bg-gray-900/30 z-[140]"
+                        aria-label="Close filters"
+                    />
+                    <aside className="fixed inset-y-0 left-0 w-full max-w-[380px] bg-white border-r border-gray-200 shadow-2xl z-[150] flex flex-col">
+                        <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+                            <div>
+                                <h2 className="text-base font-semibold text-gray-900">Filters</h2>
+                                <p className="text-xs text-gray-500">Live filtering with stable option counts.</p>
+                            </div>
+                            <button
+                                onClick={() => setShowFilterDrawer(false)}
+                                className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                                aria-label="Close filters panel"
+                            >
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto overscroll-contain touch-pan-y p-4 space-y-4">
+                            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                                <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Category Match</div>
+                                <div className="inline-flex bg-white p-1 rounded-lg border border-gray-200">
+                                    {[
+                                        { key: 'any', label: 'Any' },
+                                        { key: 'all', label: 'All' },
+                                    ].map((mode) => (
+                                        <button
+                                            key={mode.key}
+                                            onClick={() => setCategoryMode(mode.key as 'any' | 'all')}
+                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${categoryMode === mode.key
+                                                ? 'bg-gray-900 text-white'
+                                                : 'text-gray-600 hover:text-gray-800'
+                                                }`}
+                                        >
+                                            {mode.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="rounded-xl border border-gray-200 bg-white p-3">
+                                <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Key Filters</div>
+                                <div className="flex flex-wrap gap-2">
+                                    {quickFilterKeys.map((key) => renderFilterDropdown(key))}
+                                </div>
+                            </div>
+
+                            <div className="rounded-xl border border-gray-200 bg-white p-3 space-y-2">
+                                <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Price Range</div>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <input
+                                        type="number"
+                                        placeholder="Min"
+                                        value={minPrice}
+                                        onChange={(e) => setMinPrice(e.target.value)}
+                                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500"
+                                    />
+                                    <input
+                                        type="number"
+                                        placeholder="Max"
+                                        value={maxPrice}
+                                        onChange={(e) => setMaxPrice(e.target.value)}
+                                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500"
+                                    />
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={handleSearch}
+                                        className="px-3 py-1.5 text-xs font-semibold bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                                    >
+                                        Apply Price
+                                    </button>
+                                    {(minPrice || maxPrice) && (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setMinPrice('');
+                                                setMaxPrice('');
+                                                setCurrentPage(1);
+                                                void loadProducts(1, pageSize);
+                                                loadFacets();
+                                            }}
+                                            className="px-3 py-1.5 text-xs font-semibold text-gray-600 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
+                                        >
+                                            Clear Price
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {groupedAdvancedFilters.length > 0 && (
+                                <div className="rounded-xl border border-gray-200 bg-white p-3">
+                                    <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">
+                                        Advanced Filters {advancedActiveFilterCount > 0 ? `(${advancedActiveFilterCount} active)` : ''}
+                                    </div>
+                                    <div className="space-y-3">
+                                        {groupedAdvancedFilters.map((group) => (
+                                            <div key={group.title} className="rounded-lg border border-gray-100 bg-gray-50 p-2.5">
+                                                <div className="text-[10px] font-bold text-gray-500 uppercase tracking-[0.12em] mb-2">{group.title}</div>
+                                                <div className="flex flex-wrap gap-2">
+                                                    {group.keys.map((key) => renderFilterDropdown(key))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        <div className="px-4 py-3 border-t border-gray-200 bg-gray-50 flex items-center justify-between">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setPendingFilters({});
+                                    setActiveFilters({});
+                                    setMinPrice('');
+                                    setMaxPrice('');
+                                    setCurrentPage(1);
+                                    void loadProducts(1, pageSize);
+                                    loadFacets();
+                                }}
+                                className="text-xs font-semibold text-red-600 hover:text-red-700"
+                            >
+                                Clear all filters
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setShowFilterDrawer(false)}
+                                className="px-3 py-1.5 text-xs font-semibold bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
+                            >
+                                Done
+                            </button>
+                        </div>
+                    </aside>
+                </>
+            )}
             {/* Bulk Edit Modal */}
             {bulkEditOpen && (
                 <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4">
@@ -1197,9 +1622,8 @@ const FilterDropdown: React.FC<{
     label: string,
     options: { value: string; count: number }[],
     selected: string[],
-    onChange: (values: string[]) => void,
-    onApply: (values: string[]) => void
-}> = ({ label, options, selected, onChange, onApply }) => {
+    onChange: (values: string[]) => void
+}> = ({ label, options, selected, onChange }) => {
     const [isOpen, setIsOpen] = useState(false);
     const buttonRef = useRef<HTMLButtonElement>(null);
     const dropdownRef = useRef<HTMLDivElement>(null);
@@ -1291,7 +1715,7 @@ const FilterDropdown: React.FC<{
             {isOpen && createPortal(
                 <div
                     ref={dropdownRef}
-                    className="fixed w-64 bg-white border border-gray-200 rounded-xl shadow-xl z-[9999] animate-in fade-in zoom-in-95 origin-top-left flex flex-col max-h-[400px]"
+                    className="fixed w-80 max-w-[calc(100vw-2rem)] bg-white border border-gray-200 rounded-xl shadow-xl z-[9999] animate-in fade-in zoom-in-95 origin-top-left flex flex-col max-h-[400px]"
                     style={{ top: coords.top, left: coords.left }}
                 >
                     <div className="p-3 border-b border-gray-50 bg-gray-50/50 rounded-t-xl flex justify-between items-center">
@@ -1308,8 +1732,15 @@ const FilterDropdown: React.FC<{
                     <div className="p-2 overflow-y-auto custom-scrollbar flex-1">
                         {options.map((opt) => {
                             const isSelected = selected.includes(opt.value);
+                            const isDisabled = opt.count === 0 && !isSelected;
                             return (
-                                <label key={opt.value} className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded-lg cursor-pointer transition-colors">
+                                <label
+                                    key={opt.value}
+                                    className={`flex items-start gap-2 p-2 rounded-lg transition-colors ${isDisabled
+                                        ? 'cursor-not-allowed opacity-45 bg-gray-50'
+                                        : 'cursor-pointer hover:bg-gray-50'
+                                        }`}
+                                >
                                     <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${isSelected ? 'bg-primary-600 border-primary-600' : 'border-gray-300 bg-white'}`}>
                                         {isSelected && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
                                     </div>
@@ -1317,28 +1748,32 @@ const FilterDropdown: React.FC<{
                                         type="checkbox"
                                         className="hidden"
                                         checked={isSelected}
+                                        disabled={isDisabled}
                                         onChange={() => {
+                                            if (isDisabled) return;
                                             const newSet = new Set(selected);
                                             if (newSet.has(opt.value)) newSet.delete(opt.value);
                                             else newSet.add(opt.value);
                                             onChange(Array.from(newSet));
                                         }}
                                     />
-                                    <span className={`text-xs flex-1 truncate ${isSelected ? 'font-medium text-gray-900' : 'text-gray-600'}`}>{opt.value}</span>
-                                    <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">{opt.count}</span>
+                                    <span
+                                        title={opt.value}
+                                        className={`text-xs flex-1 min-w-0 whitespace-normal break-words leading-snug ${isSelected ? 'font-medium text-gray-900' : 'text-gray-600'}`}
+                                    >
+                                        {opt.value}
+                                    </span>
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full shrink-0 mt-0.5 ${isDisabled ? 'text-gray-500 bg-gray-200' : 'text-gray-400 bg-gray-100'}`}>{opt.count}</span>
                                 </label>
                             );
                         })}
                     </div>
                     <div className="p-2 border-t border-gray-100 bg-gray-50 rounded-b-xl">
                         <button
-                            onClick={() => {
-                                onApply(selected);
-                                setIsOpen(false);
-                            }}
+                            onClick={() => setIsOpen(false)}
                             className="w-full py-2 bg-primary-600 text-white text-xs font-semibold rounded-lg hover:bg-primary-700 transition-colors shadow-sm"
                         >
-                            Apply
+                            Done
                         </button>
                     </div>
                 </div>,

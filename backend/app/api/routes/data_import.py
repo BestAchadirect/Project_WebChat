@@ -5,7 +5,7 @@ from uuid import UUID
 
 from app.dependencies import get_db
 from app.services.imports.service import data_import_service
-from app.services.imports.klevu_sync_service import klevu_product_sync_service
+from app.services.imports.klevu.service import klevu_product_sync_service
 from app.schemas import (
     KnowledgeUploadListResponse,
     KnowledgeImportResponse,

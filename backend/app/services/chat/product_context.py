@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List, Tuple
 
 from app.schemas.chat import KnowledgeSource, ProductCard
+from app.services.chat import product_presentation
 
 
 class ProductContextAssembler:
@@ -28,7 +29,7 @@ class ProductContextAssembler:
                 product_threshold = 0.65
 
         if product_cards and best_distance is not None and best_distance < product_threshold:
-            top_products = product_cards[:10]
+            top_products, _ = product_presentation.dedupe_products_by_master_code(product_cards)
             product_text = "\n".join(
                 [
                     (
@@ -47,7 +48,7 @@ class ProductContextAssembler:
                 )
             )
         elif show_products_flag and product_cards and allow_fallback_products:
-            top_products = product_cards[:10]
+            top_products, _ = product_presentation.dedupe_products_by_master_code(product_cards)
             product_text = "\n".join(
                 [
                     f"- {p.attributes.get('jewelry_type', 'Jewelry')} {p.name} ({p.sku}): {p.price} {p.currency}"

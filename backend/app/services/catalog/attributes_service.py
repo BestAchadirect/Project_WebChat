@@ -2,11 +2,14 @@ import json
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import sqlalchemy as sa
-from sqlalchemy import delete, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.product_attribute import AttributeDefinition, ProductAttributeValue
+from app.models.product_attribute import (
+    AttributeDefinition,
+    FacetValueAlias,
+    ProductAttributeValue,
+)
 
 
 class EAVService:
@@ -27,6 +30,41 @@ class EAVService:
         if isinstance(value, (dict, list)):
             return json.dumps(value, ensure_ascii=True)
         return str(value)
+
+    @staticmethod
+    def _normalize_value_norm(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        norm = str(value).strip().lower()
+        return norm or None
+
+    @classmethod
+    def _split_multivalue(cls, value: Any) -> List[Any]:
+        items: List[Any] = []
+
+        def _collect(raw: Any) -> None:
+            if raw is None:
+                return
+            if isinstance(raw, (list, tuple, set)):
+                for nested in raw:
+                    _collect(nested)
+                return
+            if isinstance(raw, str):
+                text = raw.strip()
+                if not text:
+                    return
+                if ";;" in text:
+                    for token in text.split(";;"):
+                        _collect(token)
+                    return
+                if ";" in text:
+                    for token in text.split(";"):
+                        _collect(token)
+                    return
+            items.append(raw)
+
+        _collect(value)
+        return items
 
     async def get_definitions_by_name(
         self,
@@ -67,6 +105,60 @@ class EAVService:
             existing = await self.get_definitions_by_name(db, normalized)
         return existing
 
+    async def _load_alias_lookup(
+        self,
+        db: AsyncSession,
+        *,
+        pairs: Sequence[Tuple[int, str]],
+    ) -> Dict[Tuple[int, str], Tuple[str, str]]:
+        normalized_pairs = [(int(attr_id), str(norm)) for attr_id, norm in pairs if norm]
+        if not normalized_pairs:
+            return {}
+        attribute_ids = sorted({attr_id for attr_id, _ in normalized_pairs})
+        norms = sorted({norm for _, norm in normalized_pairs})
+        if not attribute_ids or not norms:
+            return {}
+        stmt = (
+            select(
+                FacetValueAlias.attribute_id,
+                FacetValueAlias.raw_value_norm,
+                FacetValueAlias.canonical_value,
+                FacetValueAlias.canonical_value_norm,
+            )
+            .where(FacetValueAlias.is_active.is_(True))
+            .where(FacetValueAlias.attribute_id.in_(attribute_ids))
+            .where(FacetValueAlias.raw_value_norm.in_(norms))
+        )
+        rows = (await db.execute(stmt)).all()
+        return {
+            (int(row.attribute_id), str(row.raw_value_norm)): (
+                str(row.canonical_value),
+                str(row.canonical_value_norm),
+            )
+            for row in rows
+            if row.raw_value_norm
+        }
+
+    def _canonicalize_value(
+        self,
+        *,
+        attribute_id: int,
+        value: str,
+        value_norm: Optional[str],
+        alias_lookup: Mapping[Tuple[int, str], Tuple[str, str]],
+    ) -> Tuple[str, Optional[str]]:
+        if not value_norm:
+            return value, None
+        alias = alias_lookup.get((attribute_id, value_norm))
+        if not alias:
+            return value, value_norm
+        canonical_value, canonical_norm = alias
+        cleaned_value = str(canonical_value).strip()
+        cleaned_norm = self._normalize_value_norm(canonical_norm)
+        if not cleaned_value:
+            cleaned_value = value
+        return cleaned_value, cleaned_norm or self._normalize_value_norm(cleaned_value)
+
     async def upsert_product_attributes(
         self,
         db: AsyncSession,
@@ -79,50 +171,18 @@ class EAVService:
     ) -> None:
         if not attributes:
             return
-        names = [self._normalize_name(n) for n in attributes.keys()]
-        definitions = await self.ensure_definitions(
+        rows: List[Tuple[Any, str, Any]] = [
+            (product_id, str(name), value)
+            for name, value in attributes.items()
+            if self._normalize_name(str(name))
+        ]
+        await self.bulk_upsert_product_attribute_rows(
             db,
-            names,
+            rows=rows,
             display_names=display_names,
             data_types=data_types,
+            drop_empty=drop_empty,
         )
-        attr_ids = {name: definitions[name].id for name in names if name in definitions}
-
-        to_delete: List[int] = []
-        to_insert: List[Dict[str, Any]] = []
-
-        for name, raw_value in attributes.items():
-            norm_name = self._normalize_name(name)
-            if norm_name not in attr_ids:
-                continue
-            serialized = self._serialize_value(raw_value)
-            is_empty = serialized is None or (drop_empty and serialized.strip() == "")
-            if is_empty:
-                to_delete.append(attr_ids[norm_name])
-                continue
-            to_insert.append(
-                {
-                    "product_id": product_id,
-                    "attribute_id": attr_ids[norm_name],
-                    "value": serialized,
-                }
-            )
-
-        if to_delete:
-            await db.execute(
-                delete(ProductAttributeValue).where(
-                    ProductAttributeValue.product_id == product_id,
-                    ProductAttributeValue.attribute_id.in_(to_delete),
-                )
-            )
-
-        if to_insert:
-            stmt = pg_insert(ProductAttributeValue).values(to_insert)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["product_id", "attribute_id"],
-                set_={"value": stmt.excluded.value},
-            )
-            await db.execute(stmt)
 
     async def bulk_upsert_product_attributes(
         self,
@@ -136,58 +196,17 @@ class EAVService:
     ) -> None:
         if not product_ids or not attributes:
             return
-        names = [self._normalize_name(n) for n in attributes.keys()]
-        definitions = await self.ensure_definitions(
+        rows: List[Tuple[Any, str, Any]] = []
+        for product_id in product_ids:
+            for name, value in attributes.items():
+                rows.append((product_id, str(name), value))
+        await self.bulk_upsert_product_attribute_rows(
             db,
-            names,
+            rows=rows,
             display_names=display_names,
             data_types=data_types,
+            drop_empty=drop_empty,
         )
-
-        attr_ids_delete: List[int] = []
-        value_rows: List[Tuple[int, str]] = []
-
-        for name, raw_value in attributes.items():
-            norm_name = self._normalize_name(name)
-            definition = definitions.get(norm_name)
-            if not definition:
-                continue
-            attr_id = definition.id
-            serialized = self._serialize_value(raw_value)
-            is_empty = serialized is None or (drop_empty and serialized.strip() == "")
-            if is_empty:
-                attr_ids_delete.append(attr_id)
-                continue
-            value_rows.append((attr_id, serialized))
-
-        if attr_ids_delete:
-            await db.execute(
-                delete(ProductAttributeValue).where(
-                    ProductAttributeValue.product_id.in_(product_ids),
-                    ProductAttributeValue.attribute_id.in_(attr_ids_delete),
-                )
-            )
-
-        if value_rows:
-            params: Dict[str, Any] = {
-                "product_ids": list(product_ids),
-            }
-            values_sql_parts: List[str] = []
-            for idx, (attr_id, value) in enumerate(value_rows):
-                params[f"attr_id_{idx}"] = attr_id
-                params[f"val_{idx}"] = value
-                values_sql_parts.append(f"(:attr_id_{idx}, :val_{idx})")
-
-            values_sql = ", ".join(values_sql_parts)
-            sql = f"""
-            INSERT INTO product_attribute_values (product_id, attribute_id, value)
-            SELECT pid, attrs.attribute_id, attrs.value
-            FROM unnest(:product_ids::uuid[]) AS pid
-            CROSS JOIN (VALUES {values_sql}) AS attrs(attribute_id, value)
-            ON CONFLICT (product_id, attribute_id) DO UPDATE
-            SET value = EXCLUDED.value
-            """
-            await db.execute(sa.text(sql), params)
 
     async def bulk_upsert_product_attribute_rows(
         self,
@@ -202,41 +221,95 @@ class EAVService:
         if not rows:
             return {"rows_total": 0, "unique_pairs": 0, "insert_rows": 0, "drop_empty": 0}
 
-        deduped: Dict[Tuple[Any, str], Any] = {}
-        for product_id, name, value in rows:
-            norm_name = self._normalize_name(name)
-            if not norm_name or product_id is None:
-                continue
-            deduped[(product_id, norm_name)] = value
-
-        if not deduped:
+        names = [self._normalize_name(str(name)) for (_product_id, name, _value) in rows]
+        clean_names = [name for name in names if name]
+        if not clean_names:
             return {"rows_total": len(rows), "unique_pairs": 0, "insert_rows": 0, "drop_empty": 0}
 
-        names = {name for (_pid, name) in deduped.keys()}
         definitions = await self.ensure_definitions(
             db,
-            names,
+            clean_names,
             display_names=display_names,
             data_types=data_types,
         )
 
-        delete_pairs: List[Tuple[Any, int]] = []
-        insert_rows: List[Tuple[Any, int, str]] = []
+        replace_pairs: set[Tuple[Any, int]] = set()
+        single_values: Dict[Tuple[Any, int], Tuple[str, Optional[str]]] = {}
+        multi_values: Dict[Tuple[Any, int], Dict[str, Tuple[str, Optional[str]]]] = {}
         empty_pairs = 0
 
-        for (product_id, name), raw_value in deduped.items():
+        for product_id, raw_name, raw_value in rows:
+            name = self._normalize_name(str(raw_name))
+            if product_id is None or not name:
+                continue
             definition = definitions.get(name)
             if not definition:
                 continue
-            attr_id = definition.id
-            serialized = self._serialize_value(raw_value)
-            is_empty = serialized is None or (drop_empty and serialized.strip() == "")
-            if is_empty:
-                empty_pairs += 1
-                if drop_empty:
-                    delete_pairs.append((product_id, attr_id))
-                continue
-            insert_rows.append((product_id, attr_id, serialized))
+            attr_id = int(definition.id)
+            key = (product_id, attr_id)
+            replace_pairs.add(key)
+
+            is_multivalue = bool(getattr(definition, "is_multivalue", False)) or name == "category"
+            if is_multivalue:
+                exploded = self._split_multivalue(raw_value)
+                candidates = exploded if exploded else [raw_value]
+                bucket = multi_values.setdefault(key, {})
+                for item in candidates:
+                    serialized = self._serialize_value(item)
+                    if serialized is None:
+                        empty_pairs += 1
+                        continue
+                    is_blank = not str(serialized).strip()
+                    if is_blank and drop_empty:
+                        empty_pairs += 1
+                        continue
+                    value_norm = self._normalize_value_norm(serialized)
+                    dedupe_key = value_norm or f"__raw__:{serialized}"
+                    bucket[dedupe_key] = (serialized, value_norm)
+            else:
+                serialized = self._serialize_value(raw_value)
+                if serialized is None:
+                    empty_pairs += 1
+                    continue
+                is_blank = not str(serialized).strip()
+                if is_blank and drop_empty:
+                    empty_pairs += 1
+                    continue
+                single_values[key] = (serialized, self._normalize_value_norm(serialized))
+
+        alias_candidates: List[Tuple[int, str]] = []
+        for (_product_id, attr_id), (_value, value_norm) in single_values.items():
+            if value_norm:
+                alias_candidates.append((attr_id, value_norm))
+        for (_product_id, attr_id), bucket in multi_values.items():
+            for _dedupe_key, (_value, value_norm) in bucket.items():
+                if value_norm:
+                    alias_candidates.append((attr_id, value_norm))
+        alias_lookup = await self._load_alias_lookup(db, pairs=alias_candidates)
+
+        insert_rows: List[Tuple[Any, int, str, Optional[str]]] = []
+        for (product_id, attr_id), (value, value_norm) in single_values.items():
+            canonical_value, canonical_norm = self._canonicalize_value(
+                attribute_id=attr_id,
+                value=value,
+                value_norm=value_norm,
+                alias_lookup=alias_lookup,
+            )
+            insert_rows.append((product_id, attr_id, canonical_value, canonical_norm))
+
+        for (product_id, attr_id), bucket in multi_values.items():
+            deduped_bucket: Dict[str, Tuple[str, Optional[str]]] = {}
+            for dedupe_key, (value, value_norm) in bucket.items():
+                canonical_value, canonical_norm = self._canonicalize_value(
+                    attribute_id=attr_id,
+                    value=value,
+                    value_norm=value_norm,
+                    alias_lookup=alias_lookup,
+                )
+                canonical_key = canonical_norm or dedupe_key
+                deduped_bucket[canonical_key] = (canonical_value, canonical_norm)
+            for _key, (canonical_value, canonical_norm) in deduped_bucket.items():
+                insert_rows.append((product_id, attr_id, canonical_value, canonical_norm))
 
         def _resolve_chunk_size(total: int, params_per_row: int) -> int:
             if chunk_size and chunk_size > 0:
@@ -252,54 +325,63 @@ class EAVService:
             return min(base, safe)
 
         def _chunks(items: List[Any], size: int) -> Iterable[List[Any]]:
-            for i in range(0, len(items), size):
-                yield items[i : i + size]
+            for index in range(0, len(items), size):
+                yield items[index : index + size]
 
-        delete_chunk_size = _resolve_chunk_size(len(delete_pairs), params_per_row=2)
-        for chunk in _chunks(delete_pairs, delete_chunk_size):
-            params: Dict[str, Any] = {}
-            values_sql_parts: List[str] = []
-            for idx, (product_id, attr_id) in enumerate(chunk):
-                params[f"pid_{idx}"] = product_id
-                params[f"attr_{idx}"] = attr_id
-                values_sql_parts.append(f"(:pid_{idx}, :attr_{idx})")
-            values_sql = ", ".join(values_sql_parts)
-            sql = f"""
-            WITH pairs(product_id, attribute_id) AS (
-                VALUES {values_sql}
-            )
-            DELETE FROM product_attribute_values pav
-            USING pairs
-            WHERE pav.product_id = pairs.product_id
-              AND pav.attribute_id = pairs.attribute_id
-            """
-            await db.execute(sa.text(sql), params)
-
-        if insert_rows:
-            insert_chunk_size = _resolve_chunk_size(len(insert_rows), params_per_row=3)
-            for chunk in _chunks(insert_rows, insert_chunk_size):
-                params = {}
-                values_sql_parts = []
-                for idx, (product_id, attr_id, value) in enumerate(chunk):
+        replace_pairs_list = list(replace_pairs)
+        if replace_pairs_list:
+            delete_chunk_size = _resolve_chunk_size(len(replace_pairs_list), params_per_row=2)
+            for chunk in _chunks(replace_pairs_list, delete_chunk_size):
+                params: Dict[str, Any] = {}
+                values_sql_parts: List[str] = []
+                for idx, (product_id, attr_id) in enumerate(chunk):
                     params[f"pid_{idx}"] = product_id
                     params[f"attr_{idx}"] = attr_id
-                    params[f"val_{idx}"] = value
-                    values_sql_parts.append(f"(:pid_{idx}, :attr_{idx}, :val_{idx})")
+                    values_sql_parts.append(
+                        f"(CAST(:pid_{idx} AS uuid), CAST(:attr_{idx} AS bigint))"
+                    )
                 values_sql = ", ".join(values_sql_parts)
                 sql = f"""
-                INSERT INTO product_attribute_values (product_id, attribute_id, value)
-                VALUES {values_sql}
-                ON CONFLICT (product_id, attribute_id) DO UPDATE
-                SET value = EXCLUDED.value
+                WITH pairs(product_id, attribute_id) AS (
+                    VALUES {values_sql}
+                )
+                DELETE FROM product_attribute_values pav
+                USING pairs
+                WHERE pav.product_id = pairs.product_id
+                  AND pav.attribute_id = pairs.attribute_id
                 """
                 await db.execute(sa.text(sql), params)
 
-        unique_pairs = len(deduped)
-        insert_count = len(insert_rows)
+        if insert_rows:
+            insert_chunk_size = _resolve_chunk_size(len(insert_rows), params_per_row=4)
+            for chunk in _chunks(insert_rows, insert_chunk_size):
+                params: Dict[str, Any] = {}
+                values_sql_parts: List[str] = []
+                for idx, (product_id, attr_id, value, value_norm) in enumerate(chunk):
+                    params[f"pid_{idx}"] = product_id
+                    params[f"attr_{idx}"] = attr_id
+                    params[f"val_{idx}"] = value
+                    params[f"norm_{idx}"] = value_norm
+                    values_sql_parts.append(
+                        "(CAST(:pid_{idx} AS uuid), CAST(:attr_{idx} AS bigint), "
+                        "CAST(:val_{idx} AS text), CAST(:norm_{idx} AS text))".format(idx=idx)
+                    )
+                values_sql = ", ".join(values_sql_parts)
+                sql = f"""
+                INSERT INTO product_attribute_values (product_id, attribute_id, value, value_norm)
+                VALUES {values_sql}
+                ON CONFLICT (product_id, attribute_id, value_norm)
+                WHERE value_norm IS NOT NULL AND value_norm <> ''
+                DO UPDATE SET
+                    value = EXCLUDED.value,
+                    value_norm = EXCLUDED.value_norm
+                """
+                await db.execute(sa.text(sql), params)
+
         return {
             "rows_total": len(rows),
-            "unique_pairs": unique_pairs,
-            "insert_rows": insert_count,
+            "unique_pairs": len(replace_pairs),
+            "insert_rows": len(insert_rows),
             "drop_empty": empty_pairs,
         }
 
@@ -314,17 +396,44 @@ class EAVService:
             select(
                 ProductAttributeValue.product_id,
                 AttributeDefinition.name,
+                AttributeDefinition.is_multivalue,
                 ProductAttributeValue.value,
+                ProductAttributeValue.value_norm,
+                ProductAttributeValue.id,
             )
             .join(AttributeDefinition, ProductAttributeValue.attribute_id == AttributeDefinition.id)
             .where(ProductAttributeValue.product_id.in_(product_ids))
+            .order_by(
+                ProductAttributeValue.product_id.asc(),
+                AttributeDefinition.name.asc(),
+                ProductAttributeValue.value_norm.asc().nulls_last(),
+                ProductAttributeValue.id.asc(),
+            )
         )
-        result = await db.execute(stmt)
-        rows = result.all()
+        rows = (await db.execute(stmt)).all()
         payload: Dict[Any, Dict[str, Optional[str]]] = {}
-        for product_id, name, value in rows:
+        multi_values: Dict[Tuple[Any, str], List[str]] = {}
+        multi_seen: Dict[Tuple[Any, str], set[str]] = {}
+        for product_id, name, is_multivalue, value, value_norm, _row_id in rows:
             item = payload.setdefault(product_id, {})
-            item[str(name)] = value
+            key_name = str(name)
+            if bool(is_multivalue):
+                if value is None or not str(value).strip():
+                    continue
+                bucket_key = (product_id, key_name)
+                seen = multi_seen.setdefault(bucket_key, set())
+                dedupe_key = str(value_norm or self._normalize_value_norm(str(value)) or f"raw:{value}")
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                multi_values.setdefault(bucket_key, []).append(str(value))
+                continue
+            if key_name not in item:
+                item[key_name] = value
+        for (product_id, key_name), values in multi_values.items():
+            if not values:
+                continue
+            payload.setdefault(product_id, {})[key_name] = ";;".join(values)
         return payload
 
 

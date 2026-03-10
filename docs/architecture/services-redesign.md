@@ -1,18 +1,31 @@
-# Services Redesign (Backend)
+# Services Redesign
 
-## Goal
-Redesign `backend/app/services` into domain packages while preserving external API behavior and standardizing on canonical service import paths.
+## Purpose
+Track the ongoing refactor of `backend/app/services` into stable domain packages and document migration guardrails.
 
-## Status
-- Phase 0 baseline docs: in progress
-- Phase 1 quality tooling: in progress
-- Phase 2 package structure and adapters: completed
-- Phase 3 chat decomposition: partially completed
-- Phase 4 import decomposition: partially completed
-- Phase 5 agentic/retrieval consolidation: partially completed
-- Phase 6 removals: completed early in development (February 23, 2026)
+## Context
+The codebase moved from flat service modules to domain-based packages while preserving API route behavior and enforcing canonical import paths.
 
-## New Domain Layout
+## Content
+
+### Objective
+
+- Use domain packages as the only supported import surface.
+- Keep route contracts stable while internal service composition evolves.
+- Prevent regressions by blocking legacy import paths in CI.
+
+### Status Snapshot (March 6, 2026)
+
+- Phase 0 baseline docs: in progress.
+- Phase 1 quality tooling: in progress.
+- Phase 2 package structure and adapters: completed.
+- Phase 3 chat decomposition: partially completed.
+- Phase 4 import decomposition: partially completed.
+- Phase 5 agentic/retrieval consolidation: partially completed.
+- Phase 6 legacy wrapper removals: completed on February 23, 2026.
+
+### Canonical Domain Layout
+
 ```text
 backend/app/services/
   ai/
@@ -28,8 +41,9 @@ backend/app/services/
   legacy/
 ```
 
-## Old -> New Module Map
-| Legacy module | New module |
+### Legacy to Canonical Module Map
+
+| Legacy module | Canonical module |
 |---|---|
 | `app.services.chat_service` | `app.services.chat.service` |
 | `app.services.agent_tools` | `app.services.chat.agentic.tool_registry` |
@@ -46,35 +60,21 @@ backend/app/services/
 | `app.services.rag_service` | `app.services.legacy.rag_service_deprecated` |
 | `app.services.magento_service` | `app.services.legacy.magento_service_deprecated` |
 
-## Compatibility Policy
-- Legacy wrapper modules were removed.
-- Canonical module paths are now required.
-- CI guard blocks any new legacy-path imports (`backend/scripts/check_legacy_imports.py`).
+### Current Guardrails
 
-## Implemented Decomposition Highlights
-- Added shared catalog search service:
-  - `app.services.catalog.product_search.CatalogProductSearchService`
-  - Reused by chat and agentic tools to remove duplicated vector search logic.
-- Added knowledge retrieval facade:
-  - `app.services.knowledge.retrieval.KnowledgeRetrievalService`
-  - Used by chat and agentic tool registry.
-- Added chat collaborators:
-  - `chat/intent_router.py`
-  - `chat/retrieval_gate.py`
-  - `chat/product_context.py`
-  - `chat/knowledge_context.py`
-  - `chat/response_consistency.py`
-- Added import utility modules:
-  - Product parser/search text/embedding/upload helpers
-  - Knowledge parser/chunking/hash/upload helpers
-  - Existing `DataImportService` private helper surfaces remain available as pass-through methods for script compatibility.
+- Legacy wrapper files were removed; canonical imports are required.
+- CI guard script blocks reintroduction of removed module paths.
+- API route contracts under `backend/app/api/routes` remain the compatibility boundary.
 
-## Behavior Guardrails
-- No HTTP route contract changes in `backend/app/api/routes/*`.
-- Legacy import paths are intentionally blocked.
-- Response consistency policy now centralizes the "product cards shown + not-found text" correction.
+### Remaining Work
 
-## Next Steps
-1. Continue splitting `chat/service.py` and `imports/service.py` to smaller orchestrator-only facades.
-2. Add characterization and adapter test coverage for canonical paths only.
-3. Remove empty legacy directories in a separate cleanup pass when no longer needed.
+1. Continue decomposing `chat/service.py` and `imports/service.py` into orchestrator-first modules.
+2. Add adapter and behavior characterization tests for canonical imports.
+3. Complete cleanup of residual legacy scaffolding after final call-site verification.
+
+## Related Files
+
+- `backend/scripts/check_legacy_imports.py`
+- `backend/app/services/chat/service.py`
+- `backend/app/services/imports/service.py`
+- `docs/runbooks/services-deprecation.md`

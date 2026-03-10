@@ -3,6 +3,7 @@ import { trainingApi, QALog } from '../../api/training';
 import apiClient from '../../api/client';
 import { PaginationControls } from '../../components/common/PaginationControls';
 import { defaultPageSize } from '../../constants/pagination';
+import { getAssistantMessageText, normalizeChatComponents } from '../../utils/chatComponentContract';
 
 export const QAMonitoringPage: React.FC = () => {
     const [logs, setLogs] = useState<QALog[]>([]);
@@ -73,8 +74,9 @@ export const QAMonitoringPage: React.FC = () => {
                 message: testQuestion,
                 conversation_id: null,
             });
+            const components = normalizeChatComponents(response.data.components);
             setTestResult({
-                answer: response.data.reply_text || response.data.reply || response.data.message || 'No response',
+                answer: getAssistantMessageText(components) || response.data.reply || response.data.message || 'No response',
                 sources: response.data.sources || [],
             });
             // Refresh logs to show the new test in the table

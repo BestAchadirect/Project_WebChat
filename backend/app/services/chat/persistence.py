@@ -9,7 +9,8 @@ from sqlalchemy import func, select, update
 from app.core.logging import get_logger
 from app.models.chat import Conversation, Message, MessageRole
 from app.models.qa_log import QALog, QAStatus
-from app.schemas.chat import ChatResponse, ProductCard
+from app.schemas.chat import ChatComponent, ChatResponse, ProductCard
+from app.services.chat import qa_metrics
 
 logger = get_logger(__name__)
 
@@ -21,6 +22,7 @@ async def save_message(
     role: str,
     content: str,
     product_data: List[ProductCard] | None = None,
+    components: List[ChatComponent] | List[Dict[str, Any]] | None = None,
     token_usage: Dict[str, Any] | None = None,
     commit: bool = True,
     touch_conversation: bool = True,
@@ -35,11 +37,21 @@ async def save_message(
     else:
         data_json = None
 
+    components_json: List[Dict[str, Any]] | None = None
+    if components:
+        components_json = []
+        for component in components:
+            if isinstance(component, ChatComponent):
+                components_json.append(component.model_dump(mode="json"))
+            elif isinstance(component, dict):
+                components_json.append(dict(component))
+
     msg = Message(
         conversation_id=conversation_id,
         role=role,
         content=content,
         product_data=data_json,
+        components=components_json,
         token_usage=token_usage,
     )
     db.add(msg)
@@ -62,10 +74,25 @@ async def finalize_response(
     response: ChatResponse,
     token_usage: Optional[Dict[str, Any]] = None,
     channel: Optional[str] = None,
+    conversation_state: Optional[Dict[str, Any]] = None,
 ) -> ChatResponse:
+    chat_metrics = qa_metrics.build_chat_qa_metrics(
+        user_text=user_text,
+        response=response,
+        channel=channel,
+    )
     qa_status = QAStatus.SUCCESS
-    if response.intent == "fallback_general" or "don't have enough information" in response.reply_text.lower():
+    if chat_metrics.get("status") == "fallback":
         qa_status = QAStatus.FALLBACK
+    elif chat_metrics.get("status") == "no_answer":
+        qa_status = QAStatus.NO_ANSWER
+    elif chat_metrics.get("status") == "failed":
+        qa_status = QAStatus.FAILED
+
+    token_usage_payload = qa_metrics.merge_token_usage_with_metrics(
+        token_usage=token_usage,
+        chat_metrics=chat_metrics,
+    )
 
     qa_log = QALog(
         question=user_text,
@@ -80,7 +107,7 @@ async def finalize_response(
             for s in response.sources
         ],
         status=qa_status,
-        token_usage=token_usage,
+        token_usage=token_usage_payload,
         channel=channel,
     )
     qa_log_id: Optional[str] = None
@@ -100,14 +127,18 @@ async def finalize_response(
             role=MessageRole.ASSISTANT,
             content=response.reply_text,
             product_data=response.product_carousel,
-            token_usage=token_usage,
+            components=response.components,
+            token_usage=token_usage_payload,
             commit=False,
             touch_conversation=False,
         )
+        conversation_update = {"last_message_at": func.now()}
+        if conversation_state is not None:
+            conversation_update["state"] = dict(conversation_state)
         await db.execute(
             update(Conversation)
             .where(Conversation.id == conversation_id)
-            .values(last_message_at=func.now())
+            .values(**conversation_update)
         )
         await db.flush()
 
@@ -161,6 +192,7 @@ async def get_history(*, db, conversation_id: int, limit: int = 5) -> List[Dict[
             "role": m.role,
             "content": m.content,
             "product_data": m.product_data,
+            "components": m.components,
             "created_at": m.created_at,
         } for m in reversed(msgs)
     ]

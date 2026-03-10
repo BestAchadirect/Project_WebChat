@@ -40,6 +40,9 @@ def feature_flags_snapshot() -> Dict[str, Any]:
         "chat_component_buckets_enabled_channels": str(
             getattr(settings, "CHAT_COMPONENT_BUCKETS_ENABLED_CHANNELS", "widget")
         ),
+        "chat_conversation_state_enabled": bool(
+            getattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", False)
+        ),
         "chat_redis_cache_enabled": bool(getattr(settings, "CHAT_REDIS_CACHE_ENABLED", False)),
         "chat_catalog_version": str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
         "chat_prompt_version": str(getattr(settings, "CHAT_PROMPT_VERSION", "v1")),
@@ -138,4 +141,3 @@ def build_latency_payload(
         else:
             rounded[key] = value
     return rounded
-

@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Optional
 from openai import AsyncOpenAI
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.prompts.system_prompts import ui_localization_prompt, unified_nlu_prompt
+from app.prompts.localization import ui_localization_prompt
+from app.prompts.nlu import unified_nlu_prompt
 
 logger = get_logger(__name__)
 
@@ -221,6 +222,75 @@ class LLMService:
         if tracker is None:
             return
         tracker.add_usage(kind=kind, model=model, usage=usage, cached=cached)
+
+    @staticmethod
+    def _should_retry_with_max_completion_tokens(exc: Exception) -> bool:
+        message = str(exc or "").lower()
+        return (
+            "unsupported parameter" in message
+            and "max_tokens" in message
+            and "max_completion_tokens" in message
+        )
+
+    @staticmethod
+    def _should_retry_without_temperature(exc: Exception) -> bool:
+        message = str(exc or "").lower()
+        return (
+            "temperature" in message
+            and ("unsupported value" in message or "does not support" in message)
+            and "default" in message
+        )
+
+    async def _create_chat_completion(
+        self,
+        *,
+        model: str,
+        messages: List[dict],
+        temperature: float,
+        max_tokens: Optional[int] = None,
+        **extra: Any,
+    ) -> Any:
+        request: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            **extra,
+        }
+        if max_tokens is not None:
+            request["max_tokens"] = int(max_tokens)
+        temperature_adjusted = False
+        token_adjusted = False
+
+        while True:
+            try:
+                return await self.client.chat.completions.create(**request)
+            except Exception as exc:
+                if (
+                    not token_adjusted
+                    and max_tokens is not None
+                    and self._should_retry_with_max_completion_tokens(exc)
+                ):
+                    request.pop("max_tokens", None)
+                    request["max_completion_tokens"] = int(max_tokens)
+                    token_adjusted = True
+                    logger.info(
+                        "Retrying chat completion with max_completion_tokens for model compatibility",
+                        extra={"model": model},
+                    )
+                    continue
+                if (
+                    not temperature_adjusted
+                    and "temperature" in request
+                    and self._should_retry_without_temperature(exc)
+                ):
+                    request.pop("temperature", None)
+                    temperature_adjusted = True
+                    logger.info(
+                        "Retrying chat completion without temperature for model compatibility",
+                        extra={"model": model},
+                    )
+                    continue
+                raise
     
     async def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a text."""
@@ -271,11 +341,11 @@ class LLMService:
         """Generate a chat response using the LLM."""
         try:
             use_model = model or self.model
-            response = await self.client.chat.completions.create(
+            response = await self._create_chat_completion(
                 model=use_model,
                 messages=messages,
                 temperature=temperature,
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
             )
             self._record_usage(
                 kind=usage_kind or "chat_completion",
@@ -297,7 +367,7 @@ class LLMService:
     ) -> Dict[str, Any]:
         """Generate strict JSON output using response_format=json_object."""
         use_model = model or self.model
-        response = await self.client.chat.completions.create(
+        response = await self._create_chat_completion(
             model=use_model,
             messages=messages,
             temperature=temperature,
@@ -325,7 +395,7 @@ class LLMService:
     ) -> Dict[str, Any]:
         """Generate a chat response that can invoke function tools."""
         use_model = model or self.model
-        response = await self.client.chat.completions.create(
+        response = await self._create_chat_completion(
             model=use_model,
             messages=messages,
             temperature=temperature,

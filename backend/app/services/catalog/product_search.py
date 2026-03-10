@@ -55,6 +55,25 @@ class CatalogProductSearchService:
         "Tunnel": ["tunnel", "tunnels"],
         "Plug": ["plug", "plugs"],
     }
+    _FILTER_KEY_ALIASES: Dict[str, str] = {
+        "type": "jewelry_type",
+        "types": "jewelry_type",
+        "diameter": "outer_diameter",
+    }
+    _EAV_PARTIAL_MATCH_KEYS = {
+        "category",
+        "color",
+        "crystal_color",
+        "cz_color",
+        "design",
+        "jewelry_type",
+        "material",
+        "opal_color",
+        "packing_option",
+        "pearl_color",
+        "rack",
+        "threading",
+    }
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -88,6 +107,7 @@ class CatalogProductSearchService:
         out: Dict[str, str] = {}
         for key, value in (attribute_filters or {}).items():
             clean_key = str(key or "").strip().lower()
+            clean_key = CatalogProductSearchService._FILTER_KEY_ALIASES.get(clean_key, clean_key)
             clean_value = str(value or "").strip()
             if not clean_key or not clean_value:
                 continue
@@ -101,6 +121,26 @@ class CatalogProductSearchService:
     @staticmethod
     def _like_condition(column, expected_norm: str):
         return func.lower(func.coalesce(column, "")).like(f"%{expected_norm}%")
+
+    @staticmethod
+    def _eav_value_expr():
+        return func.coalesce(
+            ProductAttributeValue.value_norm,
+            func.lower(func.coalesce(ProductAttributeValue.value, "")),
+        )
+
+    @classmethod
+    def _eav_filter_condition(cls, *, attribute_id: int, key: str, expected_norm: str):
+        value_expr = cls._eav_value_expr()
+        if key in cls._EAV_PARTIAL_MATCH_KEYS:
+            return and_(
+                ProductAttributeValue.attribute_id == attribute_id,
+                value_expr.like(f"%{expected_norm}%"),
+            )
+        return and_(
+            ProductAttributeValue.attribute_id == attribute_id,
+            value_expr == expected_norm,
+        )
 
     @classmethod
     def _projection_filter_condition(cls, *, key: str, expected_norm: str):
@@ -534,8 +574,13 @@ class CatalogProductSearchService:
                 material_fallback_used = False
                 candidate_stmt = (
                     select(ProductAttributeValue.product_id)
-                    .where(ProductAttributeValue.attribute_id == first_def.id)
-                    .where(func.lower(func.coalesce(ProductAttributeValue.value, "")) == first_value_norm)
+                    .where(
+                        self._eav_filter_condition(
+                            attribute_id=int(first_def.id),
+                            key=first_key,
+                            expected_norm=first_value_norm,
+                        )
+                    )
                     .limit(cap)
                 )
                 candidate_ids = [row[0] for row in (await self.db.execute(candidate_stmt)).all()]
@@ -562,9 +607,10 @@ class CatalogProductSearchService:
                                 break
                             expected_norm = self._normalize_filter_value(expected)
                             conditions.append(
-                                and_(
-                                    ProductAttributeValue.attribute_id == definition.id,
-                                    func.lower(func.coalesce(ProductAttributeValue.value, "")) == expected_norm,
+                                self._eav_filter_condition(
+                                    attribute_id=int(definition.id),
+                                    key=name,
+                                    expected_norm=expected_norm,
                                 )
                             )
                             filtered_count += 1
@@ -723,8 +769,13 @@ class CatalogProductSearchService:
             first_value_norm = self._normalize_filter_value(clean_filters[first_key])
             candidate_stmt = (
                 select(ProductAttributeValue.product_id)
-                .where(ProductAttributeValue.attribute_id == first_def.id)
-                .where(func.lower(func.coalesce(ProductAttributeValue.value, "")) == first_value_norm)
+                .where(
+                    self._eav_filter_condition(
+                        attribute_id=int(first_def.id),
+                        key=first_key,
+                        expected_norm=first_value_norm,
+                    )
+                )
             )
             candidate_ids = [row[0] for row in (await self.db.execute(candidate_stmt)).all()]
             material_fallback_used = False
@@ -760,9 +811,10 @@ class CatalogProductSearchService:
                     return 0
                 expected_norm = self._normalize_filter_value(expected)
                 conditions.append(
-                    and_(
-                        ProductAttributeValue.attribute_id == definition.id,
-                        func.lower(func.coalesce(ProductAttributeValue.value, "")) == expected_norm,
+                    self._eav_filter_condition(
+                        attribute_id=int(definition.id),
+                        key=name,
+                        expected_norm=expected_norm,
                     )
                 )
                 filtered_count += 1

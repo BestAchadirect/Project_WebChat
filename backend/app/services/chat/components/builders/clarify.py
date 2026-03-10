@@ -12,6 +12,7 @@ class ClarifyComponent(BaseComponent):
     async def build(self, context: ComponentContext) -> ChatComponent:
         reason = str(context.ambiguity_reason or "missing details")
         message = "Please share more detail so I can match products accurately."
+        debug_meta = dict(context.debug or {})
         if reason == "compare_requires_two_skus":
             message = "Please provide two SKU codes to compare, for example: `Compare SKU123 and SKU124`."
         elif reason == "compare_not_supported":
@@ -35,6 +36,29 @@ class ClarifyComponent(BaseComponent):
             )
         elif reason == "attribute_list_no_results":
             message = "I could not find matching attribute options for that filter. Try a broader product filter."
+        elif reason == "structured_no_match":
+            message = "I couldn't find products matching those exact details. Try broader filters or remove one attribute."
+        elif reason == "detail_no_match":
+            message = "I couldn't find a product matching those exact details. Try a broader product request or share a SKU."
+        elif reason == "detail_request_needs_specific_product":
+            requested_fields = {
+                str(item or "").strip().lower()
+                for item in list(debug_meta.get("detail_requested_fields") or [])
+                if str(item or "").strip()
+            }
+            jewelry_type = str((context.attribute_filters or {}).get("jewelry_type") or "").strip().lower()
+            subject = jewelry_type or "product"
+            action = "look that up"
+            if "price" in requested_fields and "stock" in requested_fields:
+                action = "check the price and stock"
+            elif "price" in requested_fields:
+                action = "check the price"
+            elif "stock" in requested_fields:
+                action = "check the stock"
+            message = (
+                f"I'm not sure which {subject} you mean. "
+                f"Share a SKU or add details like material, gauge, size, or color, and I can {action}."
+            )
         return ChatComponent(
             type=self.component_type,
             data={

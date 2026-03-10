@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from datetime import datetime
 from uuid import UUID
 
@@ -103,6 +103,10 @@ DUAL_SOURCE_FALLBACKS: Dict[str, Dict[str, List[str]]] = {
 }
 
 
+def _facets_v2_read_enabled() -> bool:
+    return bool(getattr(settings, "FACETS_V2_READ_ENABLED", False))
+
+
 def _normalize_filter_values(values: Optional[List[str]]) -> List[str]:
     if not values:
         return []
@@ -159,17 +163,6 @@ def _search_text_token_condition(tokens: List[str]):
     return or_(*[search_text.like(f"%{token}%") for token in clean_tokens])
 
 
-def _fallback_filter_tokens(field: str, raw_value: str) -> List[str]:
-    key = str(raw_value or "").strip().lower()
-    if not key:
-        return []
-    mapping = DUAL_SOURCE_FALLBACKS.get(field, {})
-    for label, tokens in mapping.items():
-        if label.lower() == key:
-            return list(tokens)
-    return [key]
-
-
 def _infer_fallback_attribute_value(field: str, search_text: Optional[str]) -> Optional[str]:
     text = str(search_text or "").strip().lower()
     if not text:
@@ -188,35 +181,27 @@ def _apply_dual_source_attr_filter(
     count_query,
     *,
     field: str,
-    raw_values: List[str],
     normalized_values: List[str],
     attribute_id: Optional[UUID],
 ):
     if not normalized_values:
         return query, count_query
 
-    json_condition = _json_attr_text_expr(field).in_(normalized_values)
-    condition = json_condition
+    condition = _json_attr_text_expr(field).in_(normalized_values)
     if attribute_id is not None:
         eav_subq = (
             select(ProductAttributeValue.product_id)
             .where(
                 and_(
                     ProductAttributeValue.attribute_id == attribute_id,
-                    func.lower(func.btrim(ProductAttributeValue.value)).in_(normalized_values),
+                    func.coalesce(
+                        ProductAttributeValue.value_norm,
+                        func.lower(func.btrim(ProductAttributeValue.value)),
+                    ).in_(normalized_values),
                 )
             )
         ).subquery()
-        condition = or_(json_condition, Product.id.in_(select(eav_subq.c.product_id)))
-
-    fallback_conditions = []
-    for value in raw_values:
-        tokens = _fallback_filter_tokens(field, value)
-        if not tokens:
-            continue
-        fallback_conditions.append(_search_text_token_condition(tokens))
-    if fallback_conditions:
-        condition = or_(condition, or_(*fallback_conditions))
+        condition = or_(condition, Product.id.in_(select(eav_subq.c.product_id)))
 
     query = query.where(condition)
     count_query = count_query.where(condition)
@@ -294,19 +279,83 @@ def _category_group_condition(tokens: List[str]):
     return Product.id.in_(select(subq.c.product_id))
 
 
-def _apply_category_filter(query, count_query, raw_values: List[str]):
+def _apply_category_filter(
+    query,
+    count_query,
+    raw_values: List[str],
+    category_mode: Literal["any", "all"] = "any",
+):
     singles, groups = _prepare_category_filter_groups(raw_values)
     if not singles and not groups:
         return query, count_query
 
     conditions = []
     if singles:
-        conditions.append(_category_single_condition(singles))
+        if category_mode == "all":
+            conditions.append(_category_group_condition(singles))
+        else:
+            conditions.append(_category_single_condition(singles))
     for group in groups:
         conditions.append(_category_group_condition(group))
 
     if not conditions:
         return query, count_query
+    condition = and_(*conditions)
+    query = query.where(condition)
+    count_query = count_query.where(condition)
+    return query, count_query
+
+
+async def _apply_category_filter_eav(
+    db: AsyncSession,
+    query,
+    count_query,
+    raw_values: List[str],
+    category_mode: Literal["any", "all"] = "any",
+    category_definition: Any = None,
+):
+    singles, groups = _prepare_category_filter_groups(raw_values)
+    if not singles and not groups:
+        return query, count_query
+
+    category_def = category_definition
+    if category_def is None:
+        category_def = (await eav_service.get_definitions_by_name(db, ["category"])).get("category")
+    if not category_def:
+        return query.where(false()), count_query.where(false())
+    attribute_id = int(category_def.id)
+
+    conditions = []
+    singles_norm = _normalize_casefold_values(singles)
+    if singles_norm:
+        singles_query = (
+            select(ProductAttributeValue.product_id)
+            .where(ProductAttributeValue.attribute_id == attribute_id)
+            .where(ProductAttributeValue.value_norm.in_(singles_norm))
+            .group_by(ProductAttributeValue.product_id)
+        )
+        if category_mode == "all":
+            singles_query = singles_query.having(
+                func.count(func.distinct(ProductAttributeValue.value_norm)) >= len(singles_norm)
+            )
+        singles_subq = singles_query.subquery()
+        conditions.append(Product.id.in_(select(singles_subq.c.product_id)))
+
+    for group in groups:
+        group_norm = _normalize_casefold_values(group)
+        if not group_norm:
+            continue
+        group_subq = (
+            select(ProductAttributeValue.product_id)
+            .where(ProductAttributeValue.attribute_id == attribute_id)
+            .where(ProductAttributeValue.value_norm.in_(group_norm))
+            .group_by(ProductAttributeValue.product_id)
+            .having(func.count(func.distinct(ProductAttributeValue.value_norm)) >= len(group_norm))
+        ).subquery()
+        conditions.append(Product.id.in_(select(group_subq.c.product_id)))
+
+    if not conditions:
+        return query.where(false()), count_query.where(false())
     condition = and_(*conditions)
     query = query.where(condition)
     count_query = count_query.where(condition)
@@ -357,6 +406,37 @@ async def _build_category_facets(db: AsyncSession, base_subq) -> List[Dict[str, 
     ]
 
 
+async def _build_category_facets_eav(
+    db: AsyncSession,
+    base_subq,
+    category_definition: Any = None,
+) -> List[Dict[str, Any]]:
+    category_def = category_definition
+    if category_def is None:
+        category_def = (await eav_service.get_definitions_by_name(db, ["category"])).get("category")
+    if not category_def:
+        return []
+
+    stmt = (
+        select(
+            func.min(ProductAttributeValue.value).label("value"),
+            func.count(func.distinct(ProductAttributeValue.product_id)).label("count"),
+        )
+        .join(base_subq, ProductAttributeValue.product_id == base_subq.c.id)
+        .where(ProductAttributeValue.attribute_id == category_def.id)
+        .where(ProductAttributeValue.value_norm.isnot(None))
+        .where(ProductAttributeValue.value_norm != "")
+        .group_by(ProductAttributeValue.value_norm)
+        .order_by(func.count(func.distinct(ProductAttributeValue.product_id)).desc(), func.min(ProductAttributeValue.value).asc())
+    )
+    rows = (await db.execute(stmt)).all()
+    return [
+        {"value": row.value, "count": int(row.count)}
+        for row in rows
+        if row.value is not None and str(row.value).strip()
+    ]
+
+
 def _apply_base_filters(
     query,
     *,
@@ -373,6 +453,7 @@ def _apply_base_filters(
                 Product.name.ilike(f"%{search}%"),
                 Product.sku.ilike(f"%{search}%"),
                 Product.master_code.ilike(f"%{search}%"),
+                Product.klevu_id.ilike(f"%{search}%"),
             )
         )
 
@@ -414,6 +495,7 @@ def _build_product_schema(product: Product, attrs: dict) -> ProductSchema:
 
     return ProductSchema(
         id=str(product.id),
+        klevu_id=product.klevu_id,
         object_id=product.object_id,
         sku=product.sku,
         legacy_sku=product.legacy_sku,
@@ -452,15 +534,23 @@ def _build_product_schema(product: Product, attrs: dict) -> ProductSchema:
     )
 
 
-async def _apply_attribute_filters(db, query, count_query, filters: Dict[str, List[str]]):
+async def _apply_attribute_filters(
+    db,
+    query,
+    count_query,
+    filters: Dict[str, List[str]],
+    definitions: Optional[Dict[str, Any]] = None,
+):
     if not filters:
         return query, count_query
-    definitions = await eav_service.get_definitions_by_name(db, list(filters.keys()))
-    if len(definitions) != len(filters):
+    available_definitions = definitions
+    if available_definitions is None:
+        available_definitions = await eav_service.get_definitions_by_name(db, list(filters.keys()))
+    if not available_definitions:
         return query.where(false()), count_query.where(false())
     conditions = []
     for name, values in filters.items():
-        definition = definitions.get(name)
+        definition = available_definitions.get(name)
         if not definition:
             return query.where(false()), count_query.where(false())
         normalized_values = _normalize_casefold_values(values)
@@ -469,7 +559,7 @@ async def _apply_attribute_filters(db, query, count_query, filters: Dict[str, Li
         conditions.append(
             and_(
                 ProductAttributeValue.attribute_id == definition.id,
-                func.lower(func.btrim(ProductAttributeValue.value)).in_(normalized_values),
+                func.coalesce(ProductAttributeValue.value_norm, func.lower(func.btrim(ProductAttributeValue.value))).in_(normalized_values),
             )
         )
     if not conditions:
@@ -483,6 +573,134 @@ async def _apply_attribute_filters(db, query, count_query, filters: Dict[str, Li
     query = query.where(Product.id.in_(select(subq.c.product_id)))
     count_query = count_query.where(Product.id.in_(select(subq.c.product_id)))
     return query, count_query
+
+
+async def _apply_structured_filters(
+    db: AsyncSession,
+    query,
+    count_query,
+    *,
+    attr_filters: Dict[str, List[str]],
+    category_filters: List[str],
+    category_mode: Literal["any", "all"] = "any",
+    definitions: Optional[Dict[str, Any]] = None,
+    category_definition: Any = None,
+):
+    remaining_attr_filters: Dict[str, List[str]] = dict(attr_filters or {})
+
+    dual_source_fields = ("material", "jewelry_type")
+    dual_source_filters: Dict[str, List[str]] = {}
+    for field in dual_source_fields:
+        values = remaining_attr_filters.pop(field, [])
+        if values:
+            dual_source_filters[field] = values
+
+    if dual_source_filters:
+        dual_source_definitions = definitions
+        if dual_source_definitions is None:
+            dual_source_definitions = await eav_service.get_definitions_by_name(db, list(dual_source_filters.keys()))
+        for field, values in dual_source_filters.items():
+            normalized_values = _normalize_casefold_values(values)
+            definition = dual_source_definitions.get(field) if dual_source_definitions else None
+            query, count_query = _apply_dual_source_attr_filter(
+                query,
+                count_query,
+                field=field,
+                normalized_values=normalized_values,
+                attribute_id=(definition.id if definition else None),
+            )
+
+    if remaining_attr_filters:
+        query, count_query = await _apply_attribute_filters(
+            db,
+            query,
+            count_query,
+            remaining_attr_filters,
+            definitions=definitions,
+        )
+
+    if category_filters:
+        if _facets_v2_read_enabled():
+            query, count_query = await _apply_category_filter_eav(
+                db,
+                query,
+                count_query,
+                category_filters,
+                category_mode=category_mode,
+                category_definition=category_definition,
+            )
+        else:
+            query, count_query = _apply_category_filter(
+                query,
+                count_query,
+                category_filters,
+                category_mode=category_mode,
+            )
+
+    return query, count_query
+
+
+async def _build_attribute_facet_rows(
+    db: AsyncSession,
+    *,
+    field: str,
+    definition: Any,
+    base_subq,
+) -> List[Dict[str, Any]]:
+    stmt = (
+        select(
+            ProductAttributeValue.value,
+            func.count(func.distinct(ProductAttributeValue.product_id)).label("count"),
+        )
+        .join(base_subq, ProductAttributeValue.product_id == base_subq.c.id)
+        .where(ProductAttributeValue.attribute_id == definition.id)
+        .group_by(ProductAttributeValue.value)
+        .order_by(func.count(func.distinct(ProductAttributeValue.product_id)).desc(), ProductAttributeValue.value.asc())
+    )
+    rows = (await db.execute(stmt)).all()
+    payload = [
+        {"value": value, "count": int(count)}
+        for value, count in rows
+        if value is not None and str(value).strip()
+    ]
+    if payload or field not in ("material", "jewelry_type"):
+        return payload
+
+    fallback_stmt = (
+        select(
+            func.min(Product.attributes[field].astext).label("value"),
+            func.count(func.distinct(Product.id)).label("count"),
+        )
+        .join(base_subq, Product.id == base_subq.c.id)
+        .where(Product.attributes[field].astext.isnot(None))
+        .where(func.btrim(Product.attributes[field].astext) != "")
+        .group_by(_json_attr_text_expr(field))
+        .order_by(func.count(func.distinct(Product.id)).desc(), func.min(Product.attributes[field].astext).asc())
+    )
+    fallback_rows = (await db.execute(fallback_stmt)).all()
+    payload = [
+        {"value": row.value, "count": int(row.count)}
+        for row in fallback_rows
+        if row.value is not None and str(row.value).strip()
+    ]
+    if payload:
+        return payload
+
+    inferred_rows: List[Dict[str, Any]] = []
+    fallback_map = DUAL_SOURCE_FALLBACKS.get(field, {})
+    for label, tokens in fallback_map.items():
+        if not tokens:
+            continue
+        inferred_stmt = (
+            select(func.count(func.distinct(Product.id)).label("count"))
+            .join(base_subq, Product.id == base_subq.c.id)
+            .where(_search_text_token_condition(tokens))
+        )
+        inferred_count = int((await db.execute(inferred_stmt)).scalar() or 0)
+        if inferred_count > 0:
+            inferred_rows.append({"value": label, "count": inferred_count})
+    inferred_rows.sort(key=lambda item: int(item.get("count", 0)), reverse=True)
+    return inferred_rows
 
 
 def _normalize_id_list(ids: List[UUID]) -> List[UUID]:
@@ -514,6 +732,7 @@ async def list_products(
     page_size: int = Query(20, alias="pageSize", ge=1, le=9999),
     search: Optional[str] = None,
     category: Optional[List[str]] = Query(None),
+    category_mode: Literal["any", "all"] = Query("any"),
     visibility: Optional[bool] = None,
     is_featured: Optional[bool] = None,
     material: Optional[List[str]] = Query(None),
@@ -596,33 +815,18 @@ async def list_products(
         category=category,
     )
     category_filters = attr_filters.pop("category", [])
-    category_filters = attr_filters.pop("category", [])
-
-    dual_source_fields = ("material", "jewelry_type")
-    dual_source_filters: Dict[str, List[str]] = {}
-    for field in dual_source_fields:
-        values = attr_filters.pop(field, [])
-        if values:
-            dual_source_filters[field] = values
-
-    if dual_source_filters:
-        definitions = await eav_service.get_definitions_by_name(db, list(dual_source_filters.keys()))
-        for field, values in dual_source_filters.items():
-            normalized_values = _normalize_casefold_values(values)
-            definition = definitions.get(field) if definitions else None
-            query, count_query = _apply_dual_source_attr_filter(
-                query,
-                count_query,
-                field=field,
-                raw_values=values,
-                normalized_values=normalized_values,
-                attribute_id=(definition.id if definition else None),
-            )
-
-    if attr_filters:
-        query, count_query = await _apply_attribute_filters(db, query, count_query, attr_filters)
-    if category_filters:
-        query, count_query = _apply_category_filter(query, count_query, category_filters)
+    definitions = await eav_service.get_definitions_by_name(db, [name for name in FILTER_FACETS if name != "category"])
+    category_definition = (await eav_service.get_definitions_by_name(db, ["category"])).get("category")
+    query, count_query = await _apply_structured_filters(
+        db,
+        query,
+        count_query,
+        attr_filters=attr_filters,
+        category_filters=category_filters,
+        category_mode=category_mode,
+        definitions=definitions,
+        category_definition=category_definition,
+    )
     
     # Execute count
     count_result = await db.execute(count_query)
@@ -660,6 +864,7 @@ async def list_products(
 async def list_product_filters(
     search: Optional[str] = None,
     category: Optional[List[str]] = Query(None),
+    category_mode: Literal["any", "all"] = Query("any"),
     visibility: Optional[bool] = None,
     is_featured: Optional[bool] = None,
     material: Optional[List[str]] = Query(None),
@@ -721,32 +926,25 @@ async def list_product_filters(
         quantity_in_bulk=quantity_in_bulk,
         category=category,
     )
+    category_filters = attr_filters.pop("category", [])
 
-    dual_source_fields = ("material", "jewelry_type")
-    dual_source_filters: Dict[str, List[str]] = {}
-    for field in dual_source_fields:
-        values = attr_filters.pop(field, [])
-        if values:
-            dual_source_filters[field] = values
-
-    if dual_source_filters:
-        definitions = await eav_service.get_definitions_by_name(db, list(dual_source_filters.keys()))
-        for field, values in dual_source_filters.items():
-            normalized_values = _normalize_casefold_values(values)
-            definition = definitions.get(field) if definitions else None
-            base_query, _ = _apply_dual_source_attr_filter(
-                base_query,
-                base_query,
-                field=field,
-                raw_values=values,
-                normalized_values=normalized_values,
-                attribute_id=(definition.id if definition else None),
-            )
-
-    if attr_filters:
-        base_query, _ = await _apply_attribute_filters(db, base_query, base_query, attr_filters)
-    if category_filters:
-        base_query, _ = _apply_category_filter(base_query, base_query, category_filters)
+    definitions = await eav_service.get_definitions_by_name(db, FILTER_FACETS)
+    category_definition = (definitions or {}).get("category")
+    eav_definitions = {
+        name: definition
+        for name, definition in (definitions or {}).items()
+        if name != "category"
+    }
+    base_query, _ = await _apply_structured_filters(
+        db,
+        base_query,
+        base_query,
+        attr_filters=attr_filters,
+        category_filters=category_filters,
+        category_mode=category_mode,
+        definitions=eav_definitions,
+        category_definition=category_definition,
+    )
 
     base_subq = base_query.subquery()
     total_result = await db.execute(select(func.count()).select_from(base_subq))
@@ -754,72 +952,92 @@ async def list_product_filters(
 
     filters_payload: Dict[str, List[Dict[str, Any]]] = {name: [] for name in FILTER_FACETS}
 
-    eav_facets = [name for name in FILTER_FACETS if name != "category"]
-    definitions = await eav_service.get_definitions_by_name(db, eav_facets)
-    attr_id_to_name = {definition.id: name for name, definition in (definitions or {}).items()}
-    if attr_id_to_name:
-        stmt = (
-            select(
-                ProductAttributeValue.attribute_id,
-                ProductAttributeValue.value,
-                func.count(func.distinct(ProductAttributeValue.product_id)).label("count"),
-            )
-            .join(base_subq, ProductAttributeValue.product_id == base_subq.c.id)
-            .where(ProductAttributeValue.attribute_id.in_(attr_id_to_name.keys()))
-            .group_by(ProductAttributeValue.attribute_id, ProductAttributeValue.value)
-            .order_by(ProductAttributeValue.attribute_id, func.count(func.distinct(ProductAttributeValue.product_id)).desc())
+    enabled_definitions = {
+        name: definition
+        for name, definition in eav_definitions.items()
+        if bool(getattr(definition, "is_enabled", True))
+    }
+    scope_subquery_cache: Dict[str, Any] = {}
+
+    async def _scope_subquery_for(facet_name: str):
+        cached = scope_subquery_cache.get(facet_name)
+        if cached is not None:
+            return cached
+        same_as_base = (
+            (facet_name == "category" and not category_filters)
+            or (facet_name != "category" and facet_name not in attr_filters)
         )
-        result = await db.execute(stmt)
-        rows = result.all()
-        for attribute_id, value, count in rows:
-            name = attr_id_to_name.get(attribute_id)
-            if not name or value is None:
-                continue
-            filters_payload.setdefault(name, []).append({"value": value, "count": int(count)})
+        if same_as_base:
+            scope_subquery_cache[facet_name] = base_subq
+            return base_subq
 
-    for field in ("material", "jewelry_type"):
-        if filters_payload.get(field):
-            continue
-        fallback_stmt = (
-            select(
-                func.min(Product.attributes[field].astext).label("value"),
-                func.count(func.distinct(Product.id)).label("count"),
-            )
-            .join(base_subq, Product.id == base_subq.c.id)
-            .where(Product.attributes[field].astext.isnot(None))
-            .where(func.btrim(Product.attributes[field].astext) != "")
-            .group_by(_json_attr_text_expr(field))
-            .order_by(func.count(func.distinct(Product.id)).desc())
+        scoped_attr_filters = {name: values for name, values in attr_filters.items() if name != facet_name}
+        scoped_category_filters = [] if facet_name == "category" else category_filters
+
+        scoped_query = select(Product.id)
+        scoped_query = _apply_base_filters(
+            scoped_query,
+            search=search,
+            visibility=visibility,
+            is_featured=is_featured,
+            master_code=master_code,
+            min_price=min_price,
+            max_price=max_price,
         )
-        fallback_rows = (await db.execute(fallback_stmt)).all()
-        if fallback_rows:
-            filters_payload[field] = [
-                {"value": row.value, "count": int(row.count)}
-                for row in fallback_rows
-                if row.value is not None
-            ]
+        scoped_query, _ = await _apply_structured_filters(
+            db,
+            scoped_query,
+            scoped_query,
+            attr_filters=scoped_attr_filters,
+            category_filters=scoped_category_filters,
+            category_mode=category_mode,
+            definitions=eav_definitions,
+            category_definition=category_definition,
+        )
+        scoped_subq = scoped_query.subquery()
+        scope_subquery_cache[facet_name] = scoped_subq
+        return scoped_subq
 
-    for field in ("material", "jewelry_type"):
-        if filters_payload.get(field):
+    for facet_name in [name for name in FILTER_FACETS if name != "category"]:
+        definition = enabled_definitions.get(facet_name)
+        if not definition:
             continue
-        inferred_rows: List[Dict[str, Any]] = []
-        fallback_map = DUAL_SOURCE_FALLBACKS.get(field, {})
-        for label, tokens in fallback_map.items():
-            if not tokens:
-                continue
-            inferred_stmt = (
-                select(func.count(func.distinct(Product.id)).label("count"))
-                .join(base_subq, Product.id == base_subq.c.id)
-                .where(_search_text_token_condition(tokens))
-            )
-            inferred_count = int((await db.execute(inferred_stmt)).scalar() or 0)
-            if inferred_count > 0:
-                inferred_rows.append({"value": label, "count": inferred_count})
-        if inferred_rows:
-            inferred_rows.sort(key=lambda item: int(item.get("count", 0)), reverse=True)
-            filters_payload[field] = inferred_rows
+        facet_subq = await _scope_subquery_for(facet_name)
+        filters_payload[facet_name] = await _build_attribute_facet_rows(
+            db,
+            field=facet_name,
+            definition=definition,
+            base_subq=facet_subq,
+        )
 
-    filters_payload["category"] = await _build_category_facets(db, base_subq)
+    category_subq = await _scope_subquery_for("category")
+    if category_definition and not bool(getattr(category_definition, "is_enabled", True)):
+        filters_payload["category"] = []
+    elif _facets_v2_read_enabled():
+        filters_payload["category"] = await _build_category_facets_eav(
+            db,
+            category_subq,
+            category_definition=category_definition,
+        )
+    else:
+        filters_payload["category"] = await _build_category_facets(db, category_subq)
+
+    for facet_name, definition in enabled_definitions.items():
+        cap = getattr(definition, "option_cap", None)
+        if cap is None:
+            continue
+        if int(cap) <= 0:
+            filters_payload[facet_name] = []
+            continue
+        if filters_payload.get(facet_name):
+            filters_payload[facet_name] = list(filters_payload[facet_name])[: int(cap)]
+    if category_definition:
+        category_cap = getattr(category_definition, "option_cap", None)
+        if category_cap is not None:
+            if int(category_cap) <= 0:
+                filters_payload["category"] = []
+            elif filters_payload.get("category"):
+                filters_payload["category"] = list(filters_payload["category"])[: int(category_cap)]
 
     return {"total": total, "filters": filters_payload}
 
@@ -858,6 +1076,7 @@ async def list_master_code_variants(
         search_like = f"%{str(search).strip()}%"
         search_condition = or_(
             Product.sku.ilike(search_like),
+            Product.klevu_id.ilike(search_like),
             Product.object_id.ilike(search_like),
             Product.master_code.ilike(search_like),
         )
@@ -889,7 +1108,6 @@ async def list_master_code_variants(
                 query,
                 count_query,
                 field=field,
-                raw_values=values,
                 normalized_values=normalized_values,
                 attribute_id=(definition.id if definition else None),
             )
@@ -1155,6 +1373,104 @@ async def hard_delete_product_by_sku(
     await db.commit()
 
     return {"status": "success", "sku": normalized_sku, "deleted": True}
+
+
+@router.get("/health/category-facet-parity")
+async def category_facet_parity_health(
+    sample_limit: int = Query(20, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    taxonomy_sql = text(
+        """
+        SELECT
+            LOWER(BTRIM(c.label)) AS norm,
+            COUNT(DISTINCT pc.product_id)::int AS cnt
+        FROM product_categories pc
+        JOIN categories c ON c.id = pc.category_id
+        WHERE c.label IS NOT NULL
+        GROUP BY LOWER(BTRIM(c.label))
+        """
+    )
+    eav_sql = text(
+        """
+        WITH category_def AS (
+            SELECT id
+            FROM attribute_definitions
+            WHERE name = 'category'
+            LIMIT 1
+        )
+        SELECT
+            pav.value_norm AS norm,
+            COUNT(DISTINCT pav.product_id)::int AS cnt
+        FROM product_attribute_values pav
+        JOIN category_def cd ON cd.id = pav.attribute_id
+        WHERE pav.value_norm IS NOT NULL
+          AND pav.value_norm <> ''
+        GROUP BY pav.value_norm
+        """
+    )
+
+    taxonomy_rows = (await db.execute(taxonomy_sql)).all()
+    eav_rows = (await db.execute(eav_sql)).all()
+
+    taxonomy_counts = {str(row.norm): int(row.cnt) for row in taxonomy_rows if row.norm}
+    eav_counts = {str(row.norm): int(row.cnt) for row in eav_rows if row.norm}
+
+    taxonomy_only = sorted(
+        (
+            {"category_norm": key, "taxonomy_count": count}
+            for key, count in taxonomy_counts.items()
+            if key not in eav_counts
+        ),
+        key=lambda item: item["taxonomy_count"],
+        reverse=True,
+    )[:sample_limit]
+
+    eav_only = sorted(
+        (
+            {"category_norm": key, "eav_count": count}
+            for key, count in eav_counts.items()
+            if key not in taxonomy_counts
+        ),
+        key=lambda item: item["eav_count"],
+        reverse=True,
+    )[:sample_limit]
+
+    shared_deltas = sorted(
+        (
+            {
+                "category_norm": key,
+                "taxonomy_count": int(taxonomy_counts[key]),
+                "eav_count": int(eav_counts[key]),
+                "delta": int(eav_counts[key] - taxonomy_counts[key]),
+            }
+            for key in (set(taxonomy_counts.keys()) & set(eav_counts.keys()))
+            if taxonomy_counts[key] != eav_counts[key]
+        ),
+        key=lambda item: abs(item["delta"]),
+        reverse=True,
+    )[:sample_limit]
+
+    return {
+        "taxonomy_category_count": len(taxonomy_counts),
+        "eav_category_count": len(eav_counts),
+        "taxonomy_only_count": max(0, len([k for k in taxonomy_counts if k not in eav_counts])),
+        "eav_only_count": max(0, len([k for k in eav_counts if k not in taxonomy_counts])),
+        "shared_mismatch_count": max(
+            0,
+            len(
+                [
+                    key
+                    for key in (set(taxonomy_counts.keys()) & set(eav_counts.keys()))
+                    if taxonomy_counts[key] != eav_counts[key]
+                ]
+            ),
+        ),
+        "sample_limit": sample_limit,
+        "taxonomy_only_samples": taxonomy_only,
+        "eav_only_samples": eav_only,
+        "shared_delta_samples": shared_deltas,
+    }
 
 
 @router.get("/health/attribute-drift")

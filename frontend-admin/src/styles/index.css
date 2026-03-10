@@ -39,6 +39,23 @@
     .custom-scrollbar::-webkit-scrollbar-thumb:hover {
         background: #94a3b8;
     }
+
+    .sidebar-scrollbar::-webkit-scrollbar {
+        width: 5px;
+    }
+
+    .sidebar-scrollbar::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    .sidebar-scrollbar::-webkit-scrollbar-thumb {
+        background: #374151;
+        border-radius: 3px;
+    }
+
+    .sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
+        background: #4b5563;
+    }
 }
 
 /* Global styles */

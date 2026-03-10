@@ -4,6 +4,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.schemas.chat import ProductCard
+from app.services.chat import product_presentation
 
 
 def normalize_text(text: str) -> str:
@@ -164,7 +165,7 @@ def extract_product_attribute_values(
         "jewelry_type": ("jewelry_type", "type"),
         "material": ("material",),
         "gauge": ("gauge", "size"),
-        "color": ("color", "cz_color"),
+        "color": ("color", "cz_color", "opal_color", "crystal_color", "pearl_color"),
         "threading": ("threading",),
     }
     alias_keys = aliases.get(key, (key,))
@@ -199,6 +200,7 @@ def build_product_follow_up_questions(
     user_text: str,
     stopwords: set[str],
     product_terms: set[str],
+    has_more_results: bool = False,
     limit: int = 4,
 ) -> List[str]:
     cap = max(1, int(limit or 1))
@@ -231,6 +233,14 @@ def build_product_follow_up_questions(
             return
         seen.add(key)
         questions.append(text)
+
+    if has_more_results:
+        _add(
+            product_presentation.build_see_more_follow_up(
+                attribute_filters=attribute_filters,
+                user_text=user_text,
+            )
+        )
 
     if has_context:
         jewelry_type = context["jewelry_type"]

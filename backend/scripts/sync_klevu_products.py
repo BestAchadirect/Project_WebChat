@@ -9,11 +9,14 @@ from uuid import UUID
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.db.session import AsyncSessionLocal
-from app.services.imports.klevu_sync_service import klevu_product_sync_service
+from app.services.imports.klevu.service import klevu_product_sync_service
 
 
 async def _run(
     *,
+    worker: bool,
+    once: bool,
+    poll_seconds: float | None,
     full: bool,
     max_pages: int | None,
     page_size: int,
@@ -21,6 +24,14 @@ async def _run(
     stop_after_pages: int | None,
     resume_run_id: UUID | None,
 ) -> None:
+    if worker:
+        result = await klevu_product_sync_service.run_queued_full_sync_worker(
+            once=once,
+            poll_seconds=poll_seconds,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
     async with AsyncSessionLocal() as db:
         if full:
             result = await klevu_product_sync_service.run_full_sync_cli(
@@ -44,6 +55,9 @@ async def _run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync products from Klevu into local DB.")
+    parser.add_argument("--worker", action="store_true", help="Run queued full-sync worker loop (DB-backed queue mode).")
+    parser.add_argument("--once", action="store_true", help="With --worker, process at most one pending run then exit.")
+    parser.add_argument("--poll-seconds", type=float, default=None, help="With --worker, polling interval between checks.")
     parser.add_argument("--full", action="store_true", help="Run full sync mode with resumable run tracking.")
     parser.add_argument("--resume-run-id", type=UUID, default=None, help="Resume an existing failed/stopped full sync run.")
     parser.add_argument("--max-pages", type=int, default=None, help="Maximum pages to fetch (optional).")
@@ -51,8 +65,19 @@ def main() -> None:
     parser.add_argument("--rpm", type=int, default=None, help="Request rate cap per minute (<= 200 recommended).")
     parser.add_argument("--stop-after-pages", type=int, default=None, help="Stop after N pages (for controlled batch windows).")
     args = parser.parse_args()
+    if args.worker and args.full:
+        parser.error("--worker cannot be combined with --full.")
+    if args.worker and args.resume_run_id is not None:
+        parser.error("--worker cannot be combined with --resume-run-id.")
+    if not args.worker and args.once:
+        parser.error("--once requires --worker.")
+    if not args.worker and args.poll_seconds is not None:
+        parser.error("--poll-seconds requires --worker.")
     asyncio.run(
         _run(
+            worker=bool(args.worker),
+            once=bool(args.once),
+            poll_seconds=args.poll_seconds,
             full=bool(args.full),
             max_pages=args.max_pages,
             page_size=args.page_size,

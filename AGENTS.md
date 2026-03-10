@@ -42,13 +42,19 @@ Do not move or rename directories unless explicitly requested.
 
 ## Test Location Policy
 - New backend unit and service tests should go in `backend/tests/`.
+- Backend unit tests should go in `backend/tests/unit/`.
+- Backend service-level integration tests should go in `backend/tests/integration/`.
+- Backend regression datasets and regression contract tests should go in `backend/tests/regression/`.
+- Backend FastAPI request/response contract tests should go in `backend/tests/api/`.
+- Temporary compatibility and deprecation-window tests should go in `backend/tests/unit/compatibility/`.
 - Cross-service and end-to-end tests should go in `tests/`.
 - Existing files may remain in place during cleanup, but new tests must follow the rule above.
 
 ## Naming Conventions
 - Use kebab-case for folders and file names unless framework conventions require otherwise.
 - Use PascalCase for React component files.
-- Use `.test` or `.spec` suffix for test files.
+- Use `test_*.py` for Python pytest files in `backend/tests/`.
+- Use `.test` or `.spec` suffix for frontend or JavaScript/TypeScript tests.
 - Keep config files at the nearest relevant scope.
 
 ## Runtime and Generated Artifacts (Never Commit)
@@ -79,4 +85,4 @@ Do not move or rename directories unless explicitly requested.
 
 ## Ownership
 - Owner: Project maintainers.
-- Last reviewed: 2026-03-04.
+- Last reviewed: 2026-03-10.

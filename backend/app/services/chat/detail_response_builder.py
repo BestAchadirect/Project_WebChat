@@ -13,10 +13,16 @@ FIELD_LABELS = {
 }
 
 HIGHLIGHT_ATTRIBUTE_ORDER = (
+    "category",
     "material",
     "color",
+    "design",
     "jewelry_type",
     "gauge",
+    "length",
+    "size",
+    "outer_diameter",
+    "ring_size",
     "threading",
 )
 

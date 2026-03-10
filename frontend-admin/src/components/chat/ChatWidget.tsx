@@ -2,16 +2,20 @@ import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import apiClient from '../../api/client';
+import {
+    buildFallbackAssistantComponents,
+    getAssistantMessageText,
+    getQuickReplies,
+    normalizeChatComponents,
+} from '../../utils/chatComponentContract';
 
 interface Message {
     role: 'user' | 'assistant' | 'system';
     content: string;
-    carouselMsg?: string;
-    productCarousel?: ProductCard[];
+    quickReplies?: string[];
     viewButtonText?: string;
     materialLabel?: string;
     jewelryTypeLabel?: string;
-    followUpQuestions?: string[];  // Add follow-up questions support
     qaLogId?: string;
     feedbackValue?: 1 | -1;
     feedbackPending?: boolean;
@@ -32,10 +36,6 @@ interface KnowledgeSource {
 
 interface ChatResponse {
     conversation_id: number;
-    reply_text: string;
-    carousel_msg?: string;
-    product_carousel: ProductCard[];
-    follow_up_questions: string[];
     intent: string;
     sources?: KnowledgeSource[];
     view_button_text?: string;
@@ -58,7 +58,9 @@ type ChatComponentType =
     | 'clarify'
     | 'knowledge_answer'
     | 'action_result'
-    | 'error';
+    | 'error'
+    | 'assistant_message'
+    | 'quick_replies';
 
 interface ChatComponent {
     type: ChatComponentType | string;
@@ -76,7 +78,7 @@ interface ChatResponseMeta {
 interface ChatHistoryMessage {
     role: 'user' | 'assistant' | 'system';
     content: string;
-    product_data?: ProductCard[] | null;
+    components?: ChatComponent[];
     created_at?: string | null;
 }
 
@@ -346,7 +348,7 @@ const ProductCarousel: React.FC<{
     jewelryTypeLabel?: string;
     thbToUsdRate?: number;
     onQuickReply?: (text: string) => void;
-}> = ({ items, primaryColor, displayCurrency, viewButtonText, materialLabel, jewelryTypeLabel, thbToUsdRate, onQuickReply }) => {
+}> = ({ items, primaryColor, displayCurrency, viewButtonText, materialLabel, jewelryTypeLabel, thbToUsdRate }) => {
     if (!items || items.length === 0) return null;
 
     const toBaseImageUrl = (value?: string | null): string => {
@@ -360,18 +362,6 @@ const ProductCarousel: React.FC<{
         if (!raw) return '';
         return raw.replace('/wholesale1_b/', '/wholesale1_t/');
     };
-
-    const [expandedMasters, setExpandedMasters] = useState<Record<string, boolean>>({});
-    type VariantFeedState = {
-        items: ProductCard[];
-        page: number;
-        totalItems: number;
-        totalPages: number;
-        loading: boolean;
-        error: string;
-        inStockOnly: boolean;
-    };
-    const [variantFeedByMaster, setVariantFeedByMaster] = useState<Record<string, VariantFeedState>>({});
 
     const formatPrice = (p: ProductCard) => {
         const currency = (p.currency || '').toUpperCase();
@@ -394,17 +384,6 @@ const ProductCarousel: React.FC<{
     const isOutOfStock = (status?: string | null): boolean => {
         const normalized = normalizeStockStatus(status);
         return normalized === 'out_of_stock' || normalized === 'outofstock';
-    };
-
-    const stockLabel = (status?: string | null): string => {
-        const normalized = normalizeStockStatus(status);
-        if (!normalized || normalized === 'in_stock' || normalized === 'instock') {
-            return 'In stock';
-        }
-        if (normalized === 'out_of_stock' || normalized === 'outofstock') {
-            return 'Out of stock';
-        }
-        return String(status || 'Checking...');
     };
 
     const isHiddenAttributeValue = (value: any): boolean => {
@@ -464,155 +443,28 @@ const ProductCarousel: React.FC<{
         return Array.from(map.values());
     })();
 
-    const mergeUniqueCards = (cards: ProductCard[]): ProductCard[] => {
-        const out: ProductCard[] = [];
-        const seen = new Set<string>();
-        for (const card of cards) {
-            const key = `${card.id || ''}|${card.sku || ''}`.toLowerCase();
-            if (!key || seen.has(key)) continue;
-            seen.add(key);
-            out.push(card);
-        }
-        return out;
-    };
-
-    const VARIANTS_PAGE_SIZE = 10;
-
-    const fetchMasterVariants = async (
-        masterCode: string,
-        opts?: { page?: number; append?: boolean; inStockOnly?: boolean },
-    ) => {
-        const key = masterCode.toLowerCase();
-        const current = variantFeedByMaster[key];
-        const page = Math.max(1, Number(opts?.page || 1));
-        const append = !!opts?.append;
-        const inStockOnly = opts?.inStockOnly ?? current?.inStockOnly ?? false;
-
-        setVariantFeedByMaster((prev) => {
-            const existing = prev[key] || {
-                items: [],
-                page: 0,
-                totalItems: 0,
-                totalPages: 1,
-                loading: false,
-                error: '',
-                inStockOnly: false,
-            };
-            return {
-                ...prev,
-                [key]: {
-                    ...existing,
-                    loading: true,
-                    error: '',
-                    inStockOnly,
-                },
-            };
-        });
-
-        try {
-            const response = await apiClient.get(`/products/master/${encodeURIComponent(masterCode)}/variants`, {
-                params: {
-                    page,
-                    pageSize: VARIANTS_PAGE_SIZE,
-                    in_stock: inStockOnly ? true : undefined,
-                },
-            });
-            const payload = asRecord(response?.data) || {};
-            const fetched = asRecordArray(payload.items).map(apiVariantToCard);
-            const safePage = Math.max(1, asNumber(payload.page, page));
-            const totalItems = Math.max(0, asNumber(payload.totalItems, fetched.length));
-            const totalPages = Math.max(1, asNumber(payload.totalPages, 1));
-
-            setVariantFeedByMaster((prev) => {
-                const existing = prev[key] || {
-                    items: [],
-                    page: 0,
-                    totalItems: 0,
-                    totalPages: 1,
-                    loading: false,
-                    error: '',
-                    inStockOnly,
-                };
-                const nextItems = append ? mergeUniqueCards([...existing.items, ...fetched]) : fetched;
-                return {
-                    ...prev,
-                    [key]: {
-                        ...existing,
-                        items: nextItems,
-                        page: safePage,
-                        totalItems,
-                        totalPages,
-                        loading: false,
-                        error: '',
-                        inStockOnly,
-                    },
-                };
-            });
-        } catch (error) {
-            setVariantFeedByMaster((prev) => {
-                const existing = prev[key] || {
-                    items: [],
-                    page: 0,
-                    totalItems: 0,
-                    totalPages: 1,
-                    loading: false,
-                    error: '',
-                    inStockOnly,
-                };
-                return {
-                    ...prev,
-                    [key]: {
-                        ...existing,
-                        loading: false,
-                        error: 'Unable to load variants right now.',
-                    },
-                };
-            });
-        }
-    };
-
-    const toggleMaster = (masterCode: string) => {
-        const key = masterCode.toLowerCase();
-        const nextExpanded = !expandedMasters[key];
-        setExpandedMasters((prev) => ({ ...prev, [key]: nextExpanded }));
-        if (!nextExpanded) {
-            return;
-        }
-        const feed = variantFeedByMaster[key];
-        if (feed && (feed.page > 0 || feed.loading)) {
-            return;
-        }
-        void fetchMasterVariants(masterCode, {
-            page: 1,
-            append: false,
-            inStockOnly: !!feed?.inStockOnly,
-        });
-    };
-
     return (
         <div className="mt-3">
             <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-custom">
                 {groupedProducts.map((group) => {
                     const { masterCode } = group;
-                    const masterKey = masterCode.toLowerCase();
-                    const localGroupItems = group.items;
-                    const feed = variantFeedByMaster[masterKey];
-                    const groupItems = (feed && feed.items.length > 0) ? feed.items : localGroupItems;
-                    const totalVariants = (feed && feed.totalItems > 0) ? feed.totalItems : localGroupItems.length;
-                    const totalPages = feed?.totalPages || 1;
-                    const currentPage = feed?.page || 0;
-                    const canLoadMore = currentPage > 0 && currentPage < totalPages;
-
-                    const rep = groupItems.find((item) => !!item.image_url) || groupItems[0];
+                    const groupItems = group.items;
+                    const totalVariants = groupItems.length;
+                    const rep =
+                        groupItems.find((item) => !!item.product_url && !!item.image_url)
+                        || groupItems.find((item) => !!item.product_url)
+                        || groupItems.find((item) => !!item.image_url)
+                        || groupItems[0];
                     const repBaseImageUrl = toBaseImageUrl(rep.image_url);
                     const repThumbnailImageUrl = toThumbnailImageUrl(repBaseImageUrl || rep.image_url);
+                    const productUrl = asString(rep.product_url || '').trim();
                     const prices = groupItems
                         .map((item) => Number(item.price))
                         .filter((value) => Number.isFinite(value));
                     const minPrice = prices.length ? Math.min(...prices) : null;
                     const maxPrice = prices.length ? Math.max(...prices) : null;
                     const inStockCount = groupItems.filter((item) => !isOutOfStock(item.stock_status)).length;
-                    const expanded = !!expandedMasters[masterCode.toLowerCase()];
+                    const repAttrs = getVisibleAttributes(rep.attributes).slice(0, 3);
 
                     return (
                         <div
@@ -663,95 +515,34 @@ const ProductCarousel: React.FC<{
                                         <div className="font-bold text-gray-700">{inStockCount}/{groupItems.length}</div>
                                     </div>
                                 </div>
+                                {repAttrs.length > 0 && (
+                                    <div className="mt-3 flex flex-wrap gap-1.5">
+                                        {repAttrs.map(([attrKey, value]) => (
+                                            <span key={`${masterCode}-${attrKey}`} className="text-[10px] uppercase font-bold tracking-wide bg-gray-100 text-gray-600 px-2 py-1 rounded-md">
+                                                {formatAttributeLabel(attrKey)}: {formatAttributeValue(value)}
+                                            </span>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
 
                             <div className="px-3 pb-3">
-                                <button
-                                    onClick={() => toggleMaster(masterCode)}
-                                    className="w-full text-center py-2 rounded-lg text-sm font-bold border border-gray-200 text-gray-700 hover:bg-gray-50 transition-all active:scale-95"
-                                >
-                                    {expanded ? "Hide variants" : `View variants (${totalVariants})`}
-                                </button>
-                            </div>
-
-                            {expanded && (
-                                <div className="border-t border-gray-100 bg-gray-50/40 px-3 pb-3 pt-2 space-y-2">
-                                    <div className="flex items-center justify-between gap-2">
-                                        <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
-                                            {groupItems.length} loaded / {totalVariants}
-                                        </div>
-                                        <button
-                                            onClick={() => {
-                                                void fetchMasterVariants(masterCode, {
-                                                    page: 1,
-                                                    append: false,
-                                                    inStockOnly: !(feed?.inStockOnly || false),
-                                                });
-                                            }}
-                                            className="text-[11px] font-bold px-2 py-1 rounded-md border border-gray-200 text-gray-700 hover:bg-gray-50"
-                                        >
-                                            {feed?.inStockOnly ? "Show all" : "In-stock only"}
-                                        </button>
+                                {productUrl ? (
+                                    <a
+                                        href={productUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="block w-full text-center py-2 rounded-lg text-sm font-bold text-white transition-all active:scale-95"
+                                        style={{ backgroundColor: primaryColor }}
+                                    >
+                                        {viewButtonText || 'View product'}
+                                    </a>
+                                ) : (
+                                    <div className="w-full text-center py-2 rounded-lg text-sm font-bold border border-gray-200 text-gray-400 bg-gray-50">
+                                        Product link unavailable
                                     </div>
-                                    {feed?.loading && groupItems.length === 0 && (
-                                        <div className="text-xs text-gray-500">Loading variants...</div>
-                                    )}
-                                    {feed?.error && (
-                                        <div className="text-xs text-red-600 font-semibold">{feed.error}</div>
-                                    )}
-                                    {groupItems.map((variant) => {
-                                        const attrs = getVisibleAttributes(variant.attributes).slice(0, 3);
-                                        return (
-                                            <div key={`variant-${variant.id}`} className="bg-white border border-gray-100 rounded-lg px-2.5 py-2">
-                                                <div className="flex items-start justify-between gap-2">
-                                                    <div>
-                                                        <div className="text-[11px] uppercase text-gray-400 font-black">SKU</div>
-                                                        <div className="text-sm font-bold text-gray-800">{variant.sku}</div>
-                                                    </div>
-                                                    <div className={`text-[11px] font-bold px-2 py-0.5 rounded-md ${isOutOfStock(variant.stock_status) ? 'text-red-700 bg-red-100' : 'text-green-700 bg-green-100'}`}>
-                                                        {stockLabel(variant.stock_status)}
-                                                    </div>
-                                                </div>
-                                                {attrs.length > 0 && (
-                                                    <div className="mt-2 flex flex-wrap gap-1.5">
-                                                        {attrs.map(([attrKey, value]) => (
-                                                            <span key={`${variant.id}-${attrKey}`} className="text-[10px] uppercase font-bold tracking-wide bg-gray-100 text-gray-600 px-2 py-1 rounded-md">
-                                                                {formatAttributeLabel(attrKey)}: {formatAttributeValue(value)}
-                                                            </span>
-                                                        ))}
-                                                    </div>
-                                                )}
-                                                <div className="mt-2 flex items-center justify-between gap-2">
-                                                    <div className="text-xs font-black text-gray-800">{formatPrice(variant)}</div>
-                                                    {onQuickReply && (
-                                                        <button
-                                                            onClick={() => onQuickReply(`Show full details for SKU ${variant.sku}.`)}
-                                                            className="text-xs font-bold px-2.5 py-1 rounded-md border border-gray-200 text-gray-700 hover:bg-gray-50"
-                                                        >
-                                                            View details
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                                    {canLoadMore && (
-                                        <button
-                                            onClick={() => {
-                                                void fetchMasterVariants(masterCode, {
-                                                    page: (feed?.page || 1) + 1,
-                                                    append: true,
-                                                    inStockOnly: !!feed?.inStockOnly,
-                                                });
-                                            }}
-                                            disabled={!!feed?.loading}
-                                            className="w-full text-center py-2 rounded-lg text-xs font-bold border border-gray-200 text-gray-700 hover:bg-gray-50 transition-all disabled:opacity-50"
-                                        >
-                                            {feed?.loading ? "Loading..." : "Load more variants"}
-                                        </button>
-                                    )}
-                                </div>
-                            )}
+                                )}
+                            </div>
                         </div>
                     );
                 })}
@@ -796,51 +587,6 @@ const asRecordArray = (value: unknown): Record<string, unknown>[] => {
     return value.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => item !== null);
 };
 
-const apiVariantToCard = (raw: Record<string, unknown>): ProductCard => {
-    const attrKeys = [
-        'material',
-        'jewelry_type',
-        'color',
-        'gauge',
-        'threading',
-        'length',
-        'size',
-        'cz_color',
-        'opal_color',
-        'outer_diameter',
-        'design',
-        'crystal_color',
-        'pearl_color',
-    ];
-    const attributes: Record<string, unknown> = {};
-    const masterCode = asString(raw.master_code || raw.name || '').trim();
-    if (masterCode) attributes.master_code = masterCode;
-    for (const key of attrKeys) {
-        const value = asString(raw[key] || '').trim();
-        if (!value) continue;
-        attributes[key] = value;
-    }
-
-    const id = asString(raw.id || raw.sku || raw.object_id || '').trim();
-    const sku = asString(raw.sku || raw.object_id || id).trim();
-    const stockStatusRaw = asString(raw.stock_status || '').trim();
-    const inStock = asBoolean(raw.in_stock);
-    return {
-        id: id || sku,
-        object_id: asString(raw.object_id || sku),
-        sku,
-        legacy_sku: [],
-        name: masterCode || sku,
-        description: asString(raw.description || ''),
-        price: asNumber(raw.price, 0),
-        currency: asString(raw.currency, 'USD'),
-        stock_status: stockStatusRaw || (inStock ? 'in_stock' : 'out_of_stock'),
-        image_url: asString(raw.image_url || '') || null,
-        product_url: asString(raw.url || raw.product_url || '') || null,
-        attributes,
-    };
-};
-
 const componentProductToCard = (raw: Record<string, unknown>): ProductCard => {
     const productId = asString(raw.product_id || raw.id || raw.sku || '');
     const sku = asString(raw.sku || raw.object_id || productId || '');
@@ -860,6 +606,20 @@ const componentProductToCard = (raw: Record<string, unknown>): ProductCard => {
         image_url: asString(raw.image_url || '') || null,
         product_url: asString(raw.product_url || '') || null,
         attributes: asRecord(raw.attributes) || {},
+    };
+};
+
+const normalizeAssistantMessage = (message: Message): Message => {
+    if (message.role !== 'assistant') return message;
+    const normalized = normalizeChatComponents(message.components);
+    const components = normalized.length > 0
+        ? normalized
+        : buildFallbackAssistantComponents(message.content);
+    return {
+        ...message,
+        content: getAssistantMessageText(components) || asString(message.content).trim(),
+        quickReplies: getQuickReplies(components),
+        components: components as ChatComponent[],
     };
 };
 
@@ -905,6 +665,10 @@ const ChatComponentsRenderer: React.FC<{
 
                 if (type === 'query_summary') {
                     // Keep query_summary in API/meta for diagnostics, but do not render it in chat UI.
+                    return null;
+                }
+
+                if (type === 'assistant_message' || type === 'quick_replies') {
                     return null;
                 }
 
@@ -1292,10 +1056,10 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                 },
             });
 
-            const hydrated: Message[] = (history.messages || []).map((msg) => ({
+            const hydrated: Message[] = (history.messages || []).map((msg) => normalizeAssistantMessage({
                 role: msg.role,
                 content: msg.content,
-                productCarousel: Array.isArray(msg.product_data) ? msg.product_data : undefined,
+                components: Array.isArray(msg.components) ? msg.components : [],
             }));
             setMessages((prev) => {
                 if (prev.length > 0) {
@@ -1528,19 +1292,16 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
             localStorage.setItem('genai_conversation_id', String(data.conversation_id));
             localStorage.setItem('chat_conversation_id', String(data.conversation_id));
             setMessages(prev => {
-                const assistantMessage: Message = {
+                const assistantMessage = normalizeAssistantMessage({
                     role: 'assistant',
-                    content: data.reply_text,
-                    carouselMsg: data.carousel_msg,
-                    productCarousel: data.product_carousel || [],
+                    content: '',
                     viewButtonText: data.view_button_text,
                     materialLabel: data.material_label,
                     jewelryTypeLabel: data.jewelry_type_label,
-                    followUpQuestions: data.follow_up_questions || [],
                     qaLogId: data.qa_log_id || undefined,
                     components: Array.isArray(data.components) ? data.components : [],
                     meta: data.meta,
-                };
+                });
                 const updated: Message[] = [...prev, assistantMessage];
                 return updated;
             });
@@ -1752,16 +1513,6 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                 )}
                                 {messages.map((msg, idx) => (
                                     (() => {
-                                        const componentTypes = new Set(
-                                            (msg.components || []).map((component) => String(component?.type || '').trim().toLowerCase())
-                                        );
-                                        const hasComponentProductView =
-                                            componentTypes.has('product_cards') ||
-                                            componentTypes.has('product_detail') ||
-                                            componentTypes.has('product_table') ||
-                                            componentTypes.has('product_bullets') ||
-                                            componentTypes.has('compare');
-
                                         return (
                                     <div key={idx} className={`flex flex-col mb-4 animate-fade-in-up ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                                         <div className="max-w-[85%]">
@@ -1782,29 +1533,6 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                             </div>
                                         </div>
 
-                                        {msg.role === 'assistant' && msg.carouselMsg && !hasComponentProductView && (
-                                            <div className="max-w-[90%] mt-2 px-4 py-2 bg-gray-100/50 text-gray-500 rounded-xl text-[11px] font-bold uppercase tracking-wider border border-gray-100/50">
-                                                {msg.carouselMsg}
-                                            </div>
-                                        )}
-
-                                        {msg.role === 'assistant' && msg.productCarousel && msg.productCarousel.length > 0 && !hasComponentProductView && (
-                                            <div className="max-w-full w-full">
-                                                <ProductCarousel
-                                                    items={msg.productCarousel}
-                                                    primaryColor={config.primaryColor}
-                                                    displayCurrency={config.displayCurrency}
-                                                    viewButtonText={msg.viewButtonText}
-                                                    materialLabel={msg.materialLabel}
-                                                    jewelryTypeLabel={msg.jewelryTypeLabel}
-                                                    thbToUsdRate={config.thbToUsdRate}
-                                                    onQuickReply={(question) => {
-                                                        void sendMessage(question);
-                                                    }}
-                                                />
-                                            </div>
-                                        )}
-
                                         {msg.role === 'assistant' && msg.components && msg.components.length > 0 && (
                                             <div className="max-w-full w-full">
                                                 <ChatComponentsRenderer
@@ -1823,10 +1551,10 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                         )}
 
                                         {/* Follow-up Questions / Quick Reply Slider */}
-                                        {msg.role === 'assistant' && msg.followUpQuestions && msg.followUpQuestions.length > 0 && (
+                                        {msg.role === 'assistant' && msg.quickReplies && msg.quickReplies.length > 0 && (
                                             <div className="w-full mt-3 overflow-hidden">
                                                 <div className="flex gap-2 overflow-x-auto pb-4 px-1 scrollbar-hide">
-                                                    {msg.followUpQuestions.map((question, qIdx) => (
+                                                    {msg.quickReplies.map((question, qIdx) => (
                                                         <button
                                                             key={qIdx}
                                                             onClick={() => sendMessage(question)}

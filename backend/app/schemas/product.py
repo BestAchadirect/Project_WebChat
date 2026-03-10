@@ -12,6 +12,7 @@ class StockStatus(str, enum.Enum):
 class Product(BaseModel):
     """Product information from Magento."""
     id: str
+    klevu_id: Optional[str] = None
     object_id: Optional[str] = None
     sku: str
     legacy_sku: List[str] = []

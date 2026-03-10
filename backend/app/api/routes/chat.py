@@ -103,6 +103,7 @@ async def get_chat_history(
             role=str(item.get("role") or ""),
             content=str(item.get("content") or ""),
             product_data=item.get("product_data"),
+            components=item.get("components") or [],
             created_at=item.get("created_at"),
         )
         for item in history

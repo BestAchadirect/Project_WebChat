@@ -1,4 +1,5 @@
 import React from 'react';
+import newAchaLogo from '../../assets/new acha logo.png';
 
 interface MobileHeaderProps {
     onOpenSidebar: () => void;
@@ -7,9 +8,11 @@ interface MobileHeaderProps {
 export const MobileHeader: React.FC<MobileHeaderProps> = ({ onOpenSidebar }) => {
     return (
         <header className="md:hidden bg-gray-900 text-white p-4 flex items-center justify-between border-b border-gray-700 sticky top-0 z-40">
-            <h1 className="text-xl font-bold bg-gradient-to-r from-primary-400 to-secondary-400 bg-clip-text text-transparent">
-                GenAI Admin
-            </h1>
+            <img
+                src={newAchaLogo}
+                alt="ACHA logo"
+                className="h-8 w-auto object-contain"
+            />
             <button
                 onClick={onOpenSidebar}
                 className="p-2 rounded-lg hover:bg-gray-800 transition-colors"

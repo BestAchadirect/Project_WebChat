@@ -1,18 +1,38 @@
 # Documentation Index
 
-This folder contains architecture notes and operational runbooks.
+## Purpose
+Provide a single navigation point for architecture docs, AI/prompt-ops docs, and operational runbooks.
 
-## Architecture
-- System overview: `architecture.md`
-- Task system: `architecture/task-system.md`
-- Services redesign: `architecture/services-redesign.md`
-- Frontend pagination controls: `pagination-controls.md`
-- Database table catalog: `database-tables.md`
+## Context
+The repository combines chat runtime, catalog and knowledge retrieval, admin workflows, and import systems. Documentation is organized under `docs/` by domain.
 
-## Runbooks
-- Database troubleshooting: `runbooks/database-troubleshooting.md`
-- Services deprecation: `runbooks/services-deprecation.md`
+## Content
 
-## Notes
-- Keep docs under `docs/` rather than app folders.
-- Link new docs from this index when added.
+### Architecture
+
+- `architecture/system-overview.md`
+- `architecture/task-system.md`
+- `architecture/services-redesign.md`
+- `architecture/conversation-state-design.md`
+- `architecture/commerce-intent-schema.md`
+- `architecture/implementation-roadmap.md`
+- `database-tables.md`
+- `pagination-controls.md`
+
+### AI and Prompt Ops
+
+- `ai/README.md`
+- `ai/chat-commerce-audit-prompt.md`
+- `ai/architecture-planning-prompt.md`
+
+### Runbooks
+
+- `runbooks/database-troubleshooting.md`
+- `runbooks/services-deprecation.md`
+
+## Related Files
+
+- `README.md`
+- `AGENTS.md`
+- `backend/app/prompts/nlu.py`
+- `backend/app/prompts/localization.py`

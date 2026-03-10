@@ -17,6 +17,7 @@ class Product(Base):
     __tablename__ = "products"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    klevu_id = Column(String, index=True, nullable=True)
     object_id = Column(String, unique=True, index=True, nullable=True)  # Internal/Magento ID
     sku = Column(String, unique=True, index=True, nullable=False)
     legacy_sku = Column(ARRAY(String), default=list)  # Multiple SKUs

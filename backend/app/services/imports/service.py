@@ -511,7 +511,7 @@ class DataImportService:
                 )
                 logger.info("Projection import sync rows=%s", projection_synced)
 
-            if pending_category_updates:
+            if pending_category_updates and bool(getattr(settings, "FACETS_V2_DUAL_WRITE_ENABLED", True)):
                 category_cache: Dict[str, int] = {}
                 for product_id, raw_category in pending_category_updates:
                     await category_taxonomy_service.sync_product_categories(

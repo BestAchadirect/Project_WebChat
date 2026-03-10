@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     
     # OpenAI
     OPENAI_API_KEY: str
-    OPENAI_MODEL: str = "gpt-4-turbo-preview"
+    OPENAI_MODEL: str = "gpt-5.4"
     OPENAI_TIMEOUT_SECONDS: float = 12.0
     OPENAI_MAX_RETRIES: int = 1
     EMBEDDING_MODEL: str = "text-embedding-3-small"
@@ -42,12 +42,12 @@ class Settings(BaseSettings):
     THB_TO_USD_RATE: float = 1.0
     BASE_CURRENCY: str = "USD"
     CURRENCY_RATES_JSON: str = "{}"
-    NLU_MODEL: str = "gpt-4o-mini"
+    NLU_MODEL: str = "gpt-5-mini"
     NLU_MAX_TOKENS: int = 250
     NLU_FAST_PATH_ENABLED: bool = True
 
     UI_LOCALIZATION_ENABLED: bool = True
-    UI_LOCALIZATION_MODEL: str = "gpt-4o-mini"
+    UI_LOCALIZATION_MODEL: str = "gpt-5-mini"
     UI_LOCALIZATION_MAX_TOKENS: int = 220
     UI_LOCALIZATION_TEMPERATURE: float = 0.1
     UI_LOCALIZATION_CACHE_MAX_ITEMS: int = 256
@@ -74,14 +74,14 @@ class Settings(BaseSettings):
 
     # Answer polishing (rewrite-only, optional)
     ANSWER_POLISHER_ENABLED: bool = False
-    ANSWER_POLISHER_MODEL: str = "gpt-4o-mini"
+    ANSWER_POLISHER_MODEL: str = "gpt-5-mini"
     ANSWER_POLISHER_MAX_TOKENS: int = 200
 
     # RAG pipeline (routing should not depend on distance thresholds)
     RAG_RETRIEVE_TOPK_KNOWLEDGE: int = 30
     RAG_MAX_CHUNK_CHARS_FOR_CONTEXT: int = 1200
-    RAG_ANSWER_MODEL: str = "gpt-4o-mini"
-    RAG_DECOMPOSE_MODEL: str = "gpt-4o-mini"
+    RAG_ANSWER_MODEL: str = "gpt-5-mini"
+    RAG_DECOMPOSE_MODEL: str = "gpt-5-mini"
     RAG_DECOMPOSE_MAX_SUBQUESTIONS: int = 8
     RAG_DECOMPOSE_WEAK_DISTANCE: float = 0.55
     RAG_DECOMPOSE_GAP_THRESHOLD: float = 0.06
@@ -122,9 +122,12 @@ class Settings(BaseSettings):
     CHAT_COMPONENT_BUCKETS_SHADOW_MODE: bool = False
     CHAT_COMPONENT_BUCKETS_REQUIRE_COMPONENTS: bool = False
     CHAT_COMPONENT_BUCKETS_ENABLED_CHANNELS: str = "widget"
+    CHAT_CONVERSATION_STATE_ENABLED: bool = False
     CHAT_REDIS_CACHE_ENABLED: bool = False
     CHAT_REDIS_URL: str = ""
     CHAT_REDIS_KEY_PREFIX: str = "chat:components"
+    FACETS_V2_DUAL_WRITE_ENABLED: bool = True
+    FACETS_V2_READ_ENABLED: bool = True
 
     # Klevu product sync
     KLEVU_API_ENDPOINT: str = "https://eucs30v2.ksearchnet.com/cs/v2/search"
@@ -137,6 +140,13 @@ class Settings(BaseSettings):
     KLEVU_SYNC_TIMEOUT_SECONDS: float = 30.0
     KLEVU_SYNC_BULK_EAV_ENABLED: bool = True
     KLEVU_SYNC_DISABLE_GROUPING: bool = True
+    KLEVU_SYNC_ROW_SAVEPOINT_ENABLED: bool = True
+    KLEVU_SYNC_COMMIT_EVERY_PAGES: int = 1
+    KLEVU_SYNC_CANCEL_CHECK_EVERY_PAGES: int = 1
+    KLEVU_SYNC_DEFER_SEARCH_TEXT: bool = False
+    KLEVU_SYNC_STALE_RUNNING_MINUTES: int = 10
+    KLEVU_SYNC_USE_EXTERNAL_WORKER: bool = False
+    KLEVU_SYNC_WORKER_POLL_SECONDS: float = 5.0
 
     # Logging
     LOG_DIR: str = "logs"
