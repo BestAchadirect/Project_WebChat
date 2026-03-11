@@ -151,7 +151,7 @@ class TicketService:
                 dest.write_bytes(contents)
                 new_image_urls.append(f"/uploads/tickets/{filename}")
             
-            # Combine or replace? User said "upload or update", if they upload more, we should probably append or replace based on intent.
+            # Combine or replace? User said "upload or update"; if they upload more, we should probably append or replace based on the requested action.
             # Usually "Update detail" with new images replaces the old ones, or appends.
             # Given the request "multiple image upload", I'll append to existing image_urls if they exist.
             current_urls = list(ticket.image_urls or [])

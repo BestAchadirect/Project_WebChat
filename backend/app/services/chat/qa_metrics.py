@@ -7,7 +7,8 @@ def derive_response_status(*, response: ChatResponse) -> str:
     reply_text = str(getattr(response, "reply_text", "") or "").strip().lower()
     if not reply_text:
         return "no_answer"
-    if str(getattr(response, "intent", "") or "").strip().lower() == "fallback_general":
+    workflow = str(getattr(getattr(response, "routing", None), "workflow", "") or "").strip().lower()
+    if workflow == "fallback":
         return "fallback"
     if "don't have enough information" in reply_text:
         return "fallback"
@@ -28,28 +29,26 @@ def build_chat_qa_metrics(
     agentic = debug.get("agentic") if isinstance(debug.get("agentic"), dict) else {}
     meta = getattr(response, "meta", None)
     meta_source = getattr(meta, "source", None) if meta is not None else None
-    response_intent = str(getattr(response, "intent", "") or "").strip()
+    routing = getattr(response, "routing", None)
+    response_workflow = str(getattr(routing, "workflow", "") or "").strip()
     normalized_status = derive_response_status(response=response)
     action_kind = ""
     action_completed = bool(agentic.get("used_tools", False))
 
-    if response_intent in {"add_to_cart", "view_cart", "start_checkout"}:
-        action_kind = response_intent
-        action_completed = normalized_status == "success"
-    elif action_completed:
+    if action_completed:
         action_kind = "agentic_tools"
 
     return {
         "question_length": len(str(user_text or "").strip()),
-        "intent": str(debug.get("intent") or response_intent or "").strip(),
-        "response_intent": response_intent,
-        "route": str(debug.get("route") or response_intent or "").strip(),
+        "workflow": str(debug.get("workflow") or response_workflow or "").strip(),
+        "response_workflow": response_workflow,
+        "route": str(debug.get("workflow_path") or "").strip(),
         "status": normalized_status,
         "channel": str(channel or "").strip() or None,
         "component_mode": str(debug.get("component_mode") or "legacy"),
         "retrieval_source": str(
             debug.get("component_source")
-            or debug.get("route_source")
+            or debug.get("workflow_source")
             or meta_source
             or ""
         ).strip() or None,
@@ -64,7 +63,7 @@ def build_chat_qa_metrics(
         "follow_up_count": len(list(response.follow_up_questions or [])),
         "use_products": bool(retrieval_gate.get("use_products", False)),
         "use_knowledge": bool(retrieval_gate.get("use_knowledge", False)),
-        "is_policy_intent": bool(retrieval_gate.get("is_policy_intent", False)),
+        "is_policy_like": bool(retrieval_gate.get("is_policy_like", False)),
         "agentic_used_tools": bool(agentic.get("used_tools", False)),
         "conversation_state_written": bool(debug.get("conversation_state_written", False)),
         "external_call_count": int(debug.get("external_call_count", 0) or 0),
@@ -93,7 +92,7 @@ def extract_chat_metrics(token_usage: Optional[Dict[str, Any]]) -> Dict[str, Any
 
 def summarize_chat_metrics(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     totals_by_status: Dict[str, int] = {}
-    totals_by_intent: Dict[str, int] = {}
+    totals_by_workflow: Dict[str, int] = {}
     totals_by_action: Dict[str, int] = {}
     action_completed = 0
     total_rows = 0
@@ -102,10 +101,10 @@ def summarize_chat_metrics(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         metrics = dict(row or {})
         total_rows += 1
         status = str(metrics.get("status") or "unknown").strip() or "unknown"
-        intent = str(metrics.get("intent") or "unknown").strip() or "unknown"
+        workflow = str(metrics.get("workflow") or "unknown").strip() or "unknown"
         action_kind = str(metrics.get("action_kind") or "").strip()
         totals_by_status[status] = totals_by_status.get(status, 0) + 1
-        totals_by_intent[intent] = totals_by_intent.get(intent, 0) + 1
+        totals_by_workflow[workflow] = totals_by_workflow.get(workflow, 0) + 1
         if action_kind:
             totals_by_action[action_kind] = totals_by_action.get(action_kind, 0) + 1
         if bool(metrics.get("action_completed", False)):
@@ -114,7 +113,7 @@ def summarize_chat_metrics(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "total_rows": total_rows,
         "by_status": dict(sorted(totals_by_status.items())),
-        "by_intent": dict(sorted(totals_by_intent.items())),
+        "by_workflow": dict(sorted(totals_by_workflow.items())),
         "by_action_kind": dict(sorted(totals_by_action.items())),
         "action_completed": action_completed,
     }

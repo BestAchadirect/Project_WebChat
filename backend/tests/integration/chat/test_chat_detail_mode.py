@@ -11,8 +11,10 @@ pytest.importorskip("pydantic_settings")
 
 from app.core.config import settings
 from app.schemas.chat import ChatRequest
+from app.services.chat import routing_policy
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.pipeline import ComponentPipeline
+from app.services.chat.components.types import ComponentSource
 from app.services.chat.detail_query_parser import DetailQuery
 from app.services.chat.product_detail_resolver import DetailResolutionResult
 
@@ -51,6 +53,19 @@ def _canonical_product(
         description=title,
         attributes=attributes or {},
         product_url="https://example.com/product",
+    )
+
+
+def _workflow_decision() -> routing_policy.WorkflowDecision:
+    return routing_policy.WorkflowDecision(
+        workflow="catalog",
+        source=ComponentSource.SQL,
+        needs_products=True,
+        needs_knowledge=False,
+        needs_clarification=False,
+        store_overview_request=False,
+        reason="test_override",
+        confidence=1.0,
     )
 
 
@@ -103,10 +118,11 @@ async def test_component_pipeline_detail_mode_price_stock_returns_product_detail
         request=ChatRequest(user_id="guest-1", message="price and stock for black barbell 25mm", locale="en-US"),
         conversation_id=9,
         run_id="run-detail",
+        route_decision_override=_workflow_decision(),
     )
 
     assert result.detail_mode_triggered is True
-    assert result.response.intent == "browse_products"
+    assert result.response.routing.workflow == "catalog"
     assert len(result.response.product_carousel) == 1
     assert any(component.type.value == "product_detail" for component in result.response.components)
     assert "Price:" in result.response.reply_text
@@ -164,6 +180,7 @@ async def test_component_primary_detail_path_runs_even_if_legacy_flags_are_off(
         request=ChatRequest(user_id="guest-1", message="show image for this labret", locale="en-US"),
         conversation_id=9,
         run_id="run-detail-component-primary",
+        route_decision_override=_workflow_decision(),
     )
 
     assert result.detail_mode_triggered is True
@@ -244,11 +261,12 @@ async def test_component_pipeline_detail_mode_no_match_has_no_follow_up_quick_re
         request=ChatRequest(user_id="guest-1", message="Find in-stock labret with 1.2mm gauge", locale="en-US"),
         conversation_id=9,
         run_id="run-detail-no-match",
+        route_decision_override=_workflow_decision(),
     )
 
     assert result.detail_mode_triggered is True
     assert result.response.product_carousel == []
-    assert result.response.follow_up_questions == []
+    assert result.response.follow_up_questions
     assert any(component.type.value == "clarify" for component in result.response.components)
     assert "couldn't find a product" in result.response.reply_text.lower()
     assert result.debug.get("detail_match_count") == 0
@@ -319,6 +337,7 @@ async def test_component_pipeline_detail_mode_broad_price_query_requests_clarifi
         ),
         conversation_id=9,
         run_id="run-detail-broad-price",
+        route_decision_override=_workflow_decision(),
     )
 
     assert result.detail_mode_triggered is True

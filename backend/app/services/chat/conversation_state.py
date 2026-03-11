@@ -34,7 +34,7 @@ _FOLLOW_UP_TOKENS = {
 def _default_state() -> Dict[str, Any]:
     return {
         "version": CONVERSATION_STATE_VERSION,
-        "last_intent": "",
+        "last_workflow": "",
         "last_refined_query": "",
         "last_attribute_filters": {},
         "last_requested_fields": [],
@@ -114,7 +114,7 @@ def load_state(raw: Any) -> Dict[str, Any]:
         version = CONVERSATION_STATE_VERSION
 
     normalized["version"] = version
-    normalized["last_intent"] = _clean_text(raw.get("last_intent"))
+    normalized["last_workflow"] = _clean_text(raw.get("last_workflow"))
     normalized["last_refined_query"] = _clean_text(raw.get("last_refined_query"))
     normalized["last_attribute_filters"] = _clean_attribute_filters(raw.get("last_attribute_filters"))
     normalized["last_requested_fields"] = _clean_requested_fields(raw.get("last_requested_fields"))
@@ -153,15 +153,15 @@ def should_merge_follow_up_filters(
     return any(token in _FOLLOW_UP_TOKENS for token in tokens)
 
 
-def apply_intent_update(
+def apply_workflow_update(
     state: Any,
     *,
-    intent: str,
+    workflow: str,
     refined_query: str,
     attribute_filters: Any,
 ) -> Dict[str, Any]:
     updated = load_state(state)
-    updated["last_intent"] = _clean_text(intent)
+    updated["last_workflow"] = _clean_text(workflow)
     updated["last_refined_query"] = _clean_text(refined_query)
     updated["last_attribute_filters"] = _clean_attribute_filters(attribute_filters)
     return updated

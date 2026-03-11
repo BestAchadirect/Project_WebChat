@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from app.schemas.chat import ChatComponent, ChatResponse, ChatResponseMeta
+from app.schemas.chat import ChatComponent, ChatResponse, ChatResponseMeta, ChatRouting
 from app.services.ai.llm_service import llm_service
 from app.services.chat.components.pipeline import ComponentPipelineResult
 from app.services.chat.service import ChatService
@@ -35,8 +35,48 @@ class KnowledgeStub:
 
 
 def patch_llm_tracking(monkeypatch: Any) -> None:
+    async def fake_generate_chat_json(**kwargs: Any) -> dict[str, Any]:
+        usage_kind = str(kwargs.get("usage_kind") or "")
+        if usage_kind != "routing_decision":
+            return {}
+        messages = list(kwargs.get("messages") or [])
+        payload = str(messages[-1].get("content") if messages else "").lower()
+        if any(token in payload for token in ("stock", "inventory", "availability")):
+            return {
+                "workflow": "catalog",
+                "execution_mode": "agentic",
+                "needs_products": True,
+                "needs_knowledge": False,
+                "needs_clarification": False,
+                "store_overview_request": False,
+                "reason": "stock_lookup",
+                "confidence": 0.9,
+            }
+        if any(token in payload for token in ("policy", "contact", "support")):
+            return {
+                "workflow": "knowledge",
+                "execution_mode": "component",
+                "needs_products": False,
+                "needs_knowledge": True,
+                "needs_clarification": False,
+                "store_overview_request": False,
+                "reason": "knowledge_request",
+                "confidence": 0.8,
+            }
+        return {
+            "workflow": "catalog",
+            "execution_mode": "component",
+            "needs_products": True,
+            "needs_knowledge": False,
+            "needs_clarification": False,
+            "store_overview_request": False,
+            "reason": "default_component",
+            "confidence": 0.6,
+        }
+
     monkeypatch.setattr(llm_service, "begin_token_tracking", lambda: None)
     monkeypatch.setattr(llm_service, "consume_token_usage", lambda: {})
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
 
 
 def patch_chat_service_lifecycle(
@@ -70,7 +110,7 @@ def build_component_pipeline_result(
     conversation_id: int,
     reply_text: str,
     component_text: str | None = None,
-    response_intent: str = "browse_products",
+    response_workflow: str = "catalog",
     source: str = "sql",
     debug: dict[str, Any] | None = None,
     response_debug: dict[str, Any] | None = None,
@@ -90,7 +130,15 @@ def build_component_pipeline_result(
             carousel_msg="",
             product_carousel=[],
             follow_up_questions=[],
-            intent=response_intent,
+            routing=ChatRouting(
+                workflow=response_workflow,
+                execution_mode="component",
+                needs_products=response_workflow in {"catalog", "comparison", "recommendation"},
+                needs_knowledge=response_workflow == "knowledge",
+                needs_clarification=response_workflow == "fallback",
+                reason="fixture",
+                selection_source="fixture",
+            ),
             sources=[],
             debug=response_debug or {},
             components=[ChatComponent(type="query_summary", data={"text": component_text or reply_text})],

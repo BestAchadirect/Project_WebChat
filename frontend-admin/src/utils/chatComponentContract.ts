@@ -60,19 +60,3 @@ export const getAssistantMessageText = (components: ChatComponentLike[]): string
     }
     return '';
 };
-
-export const getQuickReplies = (components: ChatComponentLike[]): string[] => {
-    const component = components.find((item) => item.type === 'quick_replies');
-    if (!component || !Array.isArray(component.data.items)) return [];
-    const items: string[] = [];
-    const seen = new Set<string>();
-    for (const raw of component.data.items) {
-        const text = String(raw || '').trim();
-        if (!text) continue;
-        const key = text.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        items.push(text);
-    }
-    return items;
-};

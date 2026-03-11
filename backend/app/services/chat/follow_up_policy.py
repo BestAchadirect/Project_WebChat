@@ -37,7 +37,7 @@ def is_follow_up_relevant(
     has_products: bool,
     use_products: bool,
     use_knowledge: bool,
-    is_policy_intent: bool,
+    is_policy_like: bool,
     stopwords: set[str],
     product_terms: set[str],
     policy_terms: set[str],
@@ -46,7 +46,7 @@ def is_follow_up_relevant(
         return False
 
     route_norm = str(route or "").strip().lower()
-    if route_norm == "fallback_general":
+    if route_norm in {"fallback", "fallback_general"}:
         return False
     if route_norm == "detail_mode":
         return True
@@ -71,7 +71,7 @@ def is_follow_up_relevant(
         return True
 
     user_has_policy_signal = bool(user_tokens & policy_terms)
-    if use_knowledge and has_policy_signal and (is_policy_intent or user_has_policy_signal):
+    if use_knowledge and has_policy_signal and (is_policy_like or user_has_policy_signal):
         return True
 
     return False
@@ -95,7 +95,7 @@ def filter_follow_up_questions(
     gate = retrieval_gate if isinstance(retrieval_gate, dict) else {}
     use_products = bool(gate.get("use_products", has_products))
     use_knowledge = bool(gate.get("use_knowledge", not use_products))
-    is_policy_intent = bool(gate.get("is_policy_intent", False))
+    is_policy_like = bool(gate.get("is_policy_like", False))
 
     deduped: List[str] = []
     seen: set[str] = set()
@@ -118,7 +118,7 @@ def filter_follow_up_questions(
             has_products=has_products,
             use_products=use_products,
             use_knowledge=use_knowledge,
-            is_policy_intent=is_policy_intent,
+            is_policy_like=is_policy_like,
             stopwords=stopwords,
             product_terms=product_terms,
             policy_terms=policy_terms,

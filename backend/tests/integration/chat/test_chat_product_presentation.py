@@ -10,6 +10,7 @@ pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ChatComponent, ChatRequest, KnowledgeSource, ProductCard
 from app.services.ai.llm_service import llm_service
+from app.services.chat import routing_policy
 from app.services.chat import product_presentation
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.context import ComponentContext
@@ -32,6 +33,26 @@ def _canonical_product(*, sku: str, title: str, master_code: str) -> CanonicalPr
         description="Sample product",
         attributes={"master_code": master_code, "material": "Gold", "color": "Gold"},
         product_url="https://example.com/product",
+    )
+
+
+def _workflow_decision(
+    workflow: str,
+    *,
+    store_overview_request: bool = False,
+) -> routing_policy.WorkflowDecision:
+    source = ComponentSource.KNOWLEDGE if workflow == "knowledge" else ComponentSource.SQL
+    if workflow == "fallback":
+        source = ComponentSource.ERROR
+    return routing_policy.WorkflowDecision(
+        workflow=workflow,
+        source=source,
+        needs_products=workflow in {"catalog", "comparison", "recommendation"},
+        needs_knowledge=workflow == "knowledge",
+        needs_clarification=workflow == "fallback",
+        store_overview_request=store_overview_request,
+        reason="test_override",
+        confidence=1.0,
     )
 
 
@@ -78,7 +99,7 @@ def test_component_pipeline_derive_legacy_uses_attribute_copy_and_see_more() -> 
     context = ComponentContext(
         user_text="I am looking for Gold product",
         locale="en-US",
-        intent="browse_products",
+        workflow="catalog",
         query_summary="I am looking for Gold product",
         source=ComponentSource.SQL,
         selected_components=[ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS],
@@ -94,7 +115,8 @@ def test_component_pipeline_derive_legacy_uses_attribute_copy_and_see_more() -> 
     payload = ComponentPipeline._derive_legacy(context=context, components=components)
 
     assert payload["reply_text"] == "I found products that match what you're looking for in Gold color with Gold material."
-    assert payload["follow_up_questions"] == ["See more in Gold color"]
+    assert payload["follow_up_questions"][0] == "See more in Gold color"
+    assert "Compare A-1 and B-1" in payload["follow_up_questions"]
     assert len(payload["product_carousel"]) == 2
 
 
@@ -194,9 +216,10 @@ async def test_component_pipeline_uses_complementary_mapping_for_recommendation_
         request=ChatRequest(user_id="guest-1", message="What goes with this labret?", locale="en-US"),
         conversation_id=42,
         run_id="run-1",
+        route_decision_override=_workflow_decision("recommendation"),
     )
 
-    assert result.response.intent == "recommend_products"
+    assert result.response.routing.workflow == "recommendation"
     assert result.debug.get("recommendation_mode_requested") == "complementary_items"
     assert result.debug.get("recommendation_expand_source") == "complementary_mapping"
     assert result.debug.get("recommendation_complementary_label") == "Labret tops"
@@ -265,9 +288,10 @@ async def test_component_pipeline_store_overview_request_returns_featured_produc
         request=ChatRequest(user_id="guest-1", message="What do you have in your store?", locale="en-US"),
         conversation_id=42,
         run_id="run-store-overview",
+        route_decision_override=_workflow_decision("catalog", store_overview_request=True),
     )
 
-    assert result.response.intent == "browse_products"
+    assert result.response.routing.workflow == "catalog"
     assert result.debug.get("store_overview_request") is True
     assert "We carry products like" in result.response.reply_text
     assert len(result.response.product_carousel) == 2
@@ -312,6 +336,7 @@ async def test_component_pipeline_knowledge_answer_falls_back_when_llm_reply_emp
             )
         ],
         locale="en-US",
+        store_overview_request=False,
         llm_cache_key="test-key",
     )
 

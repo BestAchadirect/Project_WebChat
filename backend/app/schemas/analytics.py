@@ -42,3 +42,16 @@ class ChatStatsResponse(BaseModel):
     avgResponseTime: float
     userSatisfaction: float
     period: str
+
+
+class ChatProductClickRequest(BaseModel):
+    conversation_id: int
+    qa_log_id: Optional[str] = None
+    product_id: str
+    sku: Optional[str] = None
+    rank: Optional[int] = None
+    timestamp: Optional[datetime] = None
+
+
+class ChatProductClickResponse(BaseModel):
+    saved: bool = True

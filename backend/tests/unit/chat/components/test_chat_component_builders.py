@@ -57,7 +57,7 @@ def _sample_context() -> ComponentContext:
     return ComponentContext(
         user_text="compare SKU-1 and SKU-2",
         locale="en-US",
-        intent="browse_products",
+        workflow="catalog",
         query_summary="compare products",
         source=ComponentSource.SQL,
         selected_components=[ComponentType.QUERY_SUMMARY],
@@ -97,3 +97,28 @@ async def test_builder_outputs_shape(builder_cls, expected_type: ComponentType, 
     component = await builder_cls().build(context)
     assert str(component.type.value) == expected_type.value
     assert expected_key in component.data
+
+
+@pytest.mark.asyncio
+async def test_clarify_builder_hides_questions_and_suggestions_from_public_payload() -> None:
+    context = _sample_context()
+    context.ambiguity_reason = "knowledge_needs_clarification"
+    context.debug = {
+        "clarify_message": "I want to give you the right answer, but I need one more detail.",
+        "clarify_questions": [
+            "Which policy or contact detail do you need?",
+            "Is this for sales or support?",
+        ],
+        "clarify_suggestions": [
+            "How can I contact you?",
+            "What is your shipping policy?",
+            "What is your refund policy?",
+            "extra item should be trimmed",
+        ],
+    }
+
+    component = await ClarifyComponent().build(context)
+
+    assert component.data["message"] == "I want to give you the right answer, but I need one more detail."
+    assert "questions" not in component.data
+    assert "suggestions" not in component.data

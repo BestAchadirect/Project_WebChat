@@ -12,7 +12,7 @@ from app.services.chat.components.types import ComponentSource, ComponentType
 class ComponentContext:
     user_text: str
     locale: str
-    intent: str
+    workflow: str
     query_summary: str
     source: ComponentSource
     selected_components: List[ComponentType]
@@ -26,4 +26,3 @@ class ComponentContext:
     ambiguity_reason: Optional[str] = None
     error_message: Optional[str] = None
     debug: Dict[str, Any] = field(default_factory=dict)
-

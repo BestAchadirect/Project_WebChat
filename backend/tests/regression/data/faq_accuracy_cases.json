@@ -6,7 +6,9 @@
     "bucket": "policy_contract",
     "kind": "response_contract",
     "actual_response": {
-      "intent": "knowledge_query",
+      "routing": {
+        "workflow": "knowledge"
+      },
       "reply_text": "You can return eligible items within 30 days. Items need to meet the return conditions, and our team will guide you through the return process.",
       "follow_up_questions": [
         "How do I start a return?"
@@ -22,7 +24,7 @@
       }
     },
     "expected": {
-      "intent": "knowledge_query",
+      "workflow": "knowledge",
       "reply_must_include": [
         "return",
         "30 days",
@@ -47,7 +49,9 @@
     "bucket": "policy_contract",
     "kind": "response_contract",
     "actual_response": {
-      "intent": "knowledge_query",
+      "routing": {
+        "workflow": "knowledge"
+      },
       "reply_text": "Shipping options depend on the destination and service level. We can confirm shipping methods, timing, and customs details before dispatch.",
       "follow_up_questions": [
         "Do you ship internationally?"
@@ -63,7 +67,7 @@
       }
     },
     "expected": {
-      "intent": "knowledge_query",
+      "workflow": "knowledge",
       "reply_must_include": [
         "shipping",
         "destination",
@@ -87,7 +91,9 @@
     "bucket": "policy_contract",
     "kind": "response_contract",
     "actual_response": {
-      "intent": "knowledge_query",
+      "routing": {
+        "workflow": "knowledge"
+      },
       "reply_text": "Our warranty policy covers eligible manufacturing issues. The support team can confirm coverage terms and the claim process for your order.",
       "follow_up_questions": [
         "How do I make a warranty claim?"
@@ -103,7 +109,7 @@
       }
     },
     "expected": {
-      "intent": "knowledge_query",
+      "workflow": "knowledge",
       "reply_must_include": [
         "warranty",
         "manufacturing",

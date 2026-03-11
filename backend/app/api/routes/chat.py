@@ -12,6 +12,7 @@ from app.schemas.chat import (
     ChatHistoryMessage,
     ActiveConversationResponse,
 )
+from app.services.chat.public_response import prepare_public_chat_response
 from app.services.chat.service import ChatService
 
 router = APIRouter()
@@ -31,7 +32,7 @@ async def chat(
     service = ChatService(db)
     try:
         response = await service.process_chat(request, channel="widget")
-        return response
+        return prepare_public_chat_response(response)
     except Exception as e:
         import traceback
         traceback.print_exc()

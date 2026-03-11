@@ -46,7 +46,7 @@ DEFAULT_PROMPTS = [
 ]
 
 STAGE_KEYS = [
-    "intent_routing_ms",
+    "workflow_routing_ms",
     "detail_query_parser_ms",
     "retrieval_gate_ms",
     "vector_search_ms",
@@ -152,7 +152,7 @@ def read_new_latency_event(path: Path, offset: int) -> Optional[Dict[str, Any]]:
 def normalize_latency_event(event: Optional[Dict[str, Any]], external_total_ms: float) -> Dict[str, Any]:
     base = {
         "total_ms": round(float(external_total_ms), 2),
-        "intent_routing_ms": 0.0,
+        "workflow_routing_ms": 0.0,
         "detail_mode_triggered": False,
         "detail_query_parser_ms": 0.0,
         "retrieval_gate_ms": 0.0,

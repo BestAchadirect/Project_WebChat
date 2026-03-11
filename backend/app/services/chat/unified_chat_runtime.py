@@ -4,8 +4,10 @@ import time
 from typing import Any, Dict, Optional
 
 from app.core.config import settings
-from app.schemas.chat import ChatComponent, ChatRequest, ChatResponse, ChatResponseMeta
+from app.schemas.chat import ChatComponent, ChatRequest, ChatResponse, ChatResponseMeta, ChatRouting
 from app.services.ai.llm_service import llm_service
+from app.services.chat import routing_policy
+from app.services.chat.detail_query_parser import DetailQueryParser
 
 
 async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) -> ChatResponse:
@@ -17,7 +19,7 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
     config_fingerprint = self._config_fingerprint()
     debug_meta: Dict[str, Any] = {
         "run_id": run_id,
-        "route": "component_primary",
+        "workflow_path": "component_primary",
         "channel": channel,
         "config_fingerprint": config_fingerprint,
         "openai_timeout_seconds": float(getattr(settings, "OPENAI_TIMEOUT_SECONDS", 12.0)),
@@ -47,6 +49,31 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
         debug_meta["llm_call_count"] = int(getattr(component_result, "llm_calls", 0) or 0)
         debug_meta["external_call_retries_used"] = 0
 
+    def _build_agentic_response(
+        *,
+        routing: ChatRouting,
+        query_summary: str,
+        agentic_result: Any,
+    ) -> ChatResponse:
+        return ChatResponse(
+            conversation_id=conversation_id_value,
+            reply_text=str(getattr(agentic_result, "final_reply", "") or ""),
+            carousel_msg=str(getattr(agentic_result, "carousel_msg", "") or ""),
+            product_carousel=list(getattr(agentic_result, "product_carousel", []) or []),
+            follow_up_questions=list(getattr(agentic_result, "follow_up_questions", []) or []),
+            routing=routing,
+            sources=list(getattr(agentic_result, "sources", []) or []),
+            debug={},
+            components=[],
+            meta=ChatResponseMeta(
+                query_summary=str(query_summary or ""),
+                latency_ms=0.0,
+                source="tool",
+                llm_calls=0,
+                embedding_calls=0,
+            ),
+        )
+
     async def _finalize_component_response(component_result: Any) -> ChatResponse:
         nonlocal detail_mode_enabled
         detail_mode_enabled = bool(getattr(component_result, "detail_mode_triggered", False))
@@ -68,16 +95,136 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
             conversation_state=getattr(component_result, "conversation_state", None),
         )
 
+    async def _finalize_agentic_response(*, routing: ChatRouting, agentic_result: Any) -> ChatResponse:
+        response = _build_agentic_response(
+            routing=routing,
+            query_summary=text,
+            agentic_result=agentic_result,
+        )
+        token_usage = llm_service.consume_token_usage()
+        return await self._finalize_with_latency(
+            conversation_id=conversation_id_value,
+            user_text=text,
+            response=response,
+            token_usage=token_usage if isinstance(token_usage, dict) else None,
+            channel=channel,
+            run_id=run_id,
+            debug_meta=debug_meta,
+            spans=spans,
+            total_started=total_started,
+            detail_mode_triggered=False,
+        )
+
     try:
         user = await self.get_or_create_user(req.user_id, req.customer_name, req.email)
         conversation = await self.get_or_create_conversation(user, req.conversation_id)
         conversation_id_value = _safe_conversation_id(conversation, conversation_id_value)
+
+        detail = DetailQueryParser.parse(user_text=text, nlu_data={})
+        sku_tokens = routing_policy.extract_sku_tokens(text)
+        execution_decision = await routing_policy.decide_execution_mode_with_llm(
+            text=text,
+            channel=channel,
+            locale=str(req.locale or ""),
+            detail_has_filters=bool(detail.attribute_filters),
+            detail_request=bool(detail.is_detail_request),
+            sku_tokens=sku_tokens,
+        )
+        route_decision = execution_decision.route_decision
+        public_routing = execution_decision.to_public_routing()
+        debug_meta["workflow"] = route_decision.workflow
+        debug_meta["workflow_source"] = route_decision.source.value
+        debug_meta["workflow_needs_products"] = route_decision.needs_products
+        debug_meta["workflow_needs_knowledge"] = route_decision.needs_knowledge
+        debug_meta["workflow_needs_clarification"] = route_decision.needs_clarification
+        debug_meta["workflow_store_overview_request"] = route_decision.store_overview_request
+        debug_meta["execution_mode"] = execution_decision.execution_mode
+        debug_meta["routing_selection_source"] = execution_decision.selection_source
+        debug_meta["routing_confidence_gate_applied"] = execution_decision.confidence_gate_applied
+        debug_meta["routing_shadow_mode"] = execution_decision.shadow_mode
+        debug_meta["routing"] = public_routing.model_dump(mode="json")
+        debug_meta["agentic"] = {
+            "selected": execution_decision.execution_mode == "agentic",
+            "selection_reason": execution_decision.reason,
+            "selection_source": execution_decision.selection_source,
+            "feature_enabled": execution_decision.feature_enabled,
+            "channel_allowed": execution_decision.channel_allowed,
+            "tool_suitable": execution_decision.tool_suitable,
+            "llm_reason": execution_decision.llm_reason,
+            "llm_confidence": execution_decision.llm_confidence,
+            "llm_workflow": execution_decision.llm_workflow,
+            "llm_execution_mode": execution_decision.llm_execution_mode,
+            "confidence_gate_applied": execution_decision.confidence_gate_applied,
+            "shadow_mode": execution_decision.shadow_mode,
+            "used_tools": False,
+            "trace": [],
+            "fallback_to_component": False,
+        }
+
+        if execution_decision.execution_mode == "agentic":
+            agentic_started = time.perf_counter()
+            agentic_result = None
+            agentic_error: Optional[Exception] = None
+            try:
+                agentic_result = await self._run_agentic_workflow(
+                    user_text=text,
+                    conversation_id=conversation_id_value,
+                    run_id=run_id,
+                    channel=channel,
+                    reply_language=str(req.locale or "en-US"),
+                )
+            except Exception as exc:
+                agentic_error = exc
+                debug_meta["agentic_error"] = str(exc)
+            self._add_latency_span(
+                spans,
+                "agentic_orchestrator_ms",
+                (time.perf_counter() - agentic_started) * 1000.0,
+            )
+
+            fallback_enabled = bool(getattr(settings, "AGENTIC_ENABLE_FALLBACK", True))
+            if agentic_result is not None and bool(getattr(agentic_result, "used_tools", False)):
+                debug_meta["workflow_path"] = "agentic_primary"
+                debug_meta["component_mode"] = "agentic"
+                debug_meta["component_plan"] = ["agentic_workflow"]
+                debug_meta["component_source"] = "tool"
+                debug_meta["external_call_counts"] = {}
+                debug_meta["external_call_count"] = int(len(list(getattr(agentic_result, "trace", []) or [])))
+                debug_meta["llm_call_count"] = 0
+                debug_meta["external_call_retries_used"] = 0
+                debug_meta["agentic"] = {
+                    **dict(debug_meta.get("agentic") or {}),
+                    "used_tools": True,
+                    "trace": list(getattr(agentic_result, "trace", []) or []),
+                    "fallback_to_component": False,
+                }
+                return await _finalize_agentic_response(
+                    routing=public_routing,
+                    agentic_result=agentic_result,
+                )
+
+            fallback_reason = "empty_result"
+            if agentic_error is not None:
+                fallback_reason = "agentic_error"
+            elif agentic_result is not None and not bool(getattr(agentic_result, "used_tools", False)):
+                fallback_reason = "no_tool_usage"
+            debug_meta["agentic"] = {
+                **dict(debug_meta.get("agentic") or {}),
+                "fallback_to_component": True,
+                "fallback_reason": fallback_reason,
+            }
+            if agentic_error is not None and not fallback_enabled:
+                raise agentic_error
+            if agentic_result is None and not fallback_enabled:
+                raise RuntimeError("agentic workflow returned no result")
 
         component_started = time.perf_counter()
         component_result = await self._run_component_pipeline(
             request=req,
             conversation_id=conversation_id_value,
             run_id=run_id,
+            route_decision_override=route_decision,
+            routing_selection_source=execution_decision.selection_source,
         )
         self._add_latency_span(
             spans,
@@ -114,7 +261,13 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
             carousel_msg="",
             product_carousel=[],
             follow_up_questions=[],
-            intent="fallback_general",
+            routing=ChatRouting(
+                workflow="fallback",
+                execution_mode="component",
+                needs_clarification=True,
+                reason="runtime_error",
+                selection_source="llm_fallback",
+            ),
             sources=[],
             debug={},
             components=[

@@ -9,7 +9,6 @@ from openai import AsyncOpenAI
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.prompts.localization import ui_localization_prompt
-from app.prompts.nlu import unified_nlu_prompt
 
 logger = get_logger(__name__)
 
@@ -241,6 +240,10 @@ class LLMService:
             and "default" in message
         )
 
+    @staticmethod
+    def _uses_gpt5_compat_mode(model: str) -> bool:
+        return str(model or "").strip().lower().startswith("gpt-5")
+
     async def _create_chat_completion(
         self,
         *,
@@ -250,14 +253,17 @@ class LLMService:
         max_tokens: Optional[int] = None,
         **extra: Any,
     ) -> Any:
+        gpt5_compat = self._uses_gpt5_compat_mode(model)
         request: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": temperature,
             **extra,
         }
+        if not gpt5_compat:
+            request["temperature"] = temperature
         if max_tokens is not None:
-            request["max_tokens"] = int(max_tokens)
+            token_key = "max_completion_tokens" if gpt5_compat else "max_tokens"
+            request[token_key] = int(max_tokens)
         temperature_adjusted = False
         token_adjusted = False
 
@@ -337,6 +343,7 @@ class LLMService:
         max_tokens: Optional[int] = None,
         model: Optional[str] = None,
         usage_kind: Optional[str] = None,
+        **extra: Any,
     ) -> str:
         """Generate a chat response using the LLM."""
         try:
@@ -346,6 +353,7 @@ class LLMService:
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                **extra,
             )
             self._record_usage(
                 kind=usage_kind or "chat_completion",
@@ -364,6 +372,7 @@ class LLMService:
         temperature: float = 0.0,
         max_tokens: Optional[int] = 300,
         usage_kind: Optional[str] = None,
+        **extra: Any,
     ) -> Dict[str, Any]:
         """Generate strict JSON output using response_format=json_object."""
         use_model = model or self.model
@@ -373,6 +382,7 @@ class LLMService:
             temperature=temperature,
             max_tokens=max_tokens,
             response_format={"type": "json_object"},
+            **extra,
         )
         self._record_usage(
             kind=usage_kind or "chat_json",
@@ -392,6 +402,7 @@ class LLMService:
         max_tokens: Optional[int] = 500,
         tool_choice: str = "auto",
         usage_kind: Optional[str] = None,
+        **extra: Any,
     ) -> Dict[str, Any]:
         """Generate a chat response that can invoke function tools."""
         use_model = model or self.model
@@ -402,6 +413,7 @@ class LLMService:
             max_tokens=max_tokens,
             tools=tools,
             tool_choice=tool_choice,
+            **extra,
         )
         self._record_usage(
             kind=usage_kind or "chat_with_tools",
@@ -440,42 +452,6 @@ class LLMService:
             "finish_reason": response.choices[0].finish_reason,
         }
     
-    async def run_nlu(
-        self,
-        *,
-        user_message: str,
-        history: Optional[List[Dict[str, str]]] = None,
-        locale: Optional[str] = None,
-        supported_currencies: Optional[List[str]] = None,
-        model: Optional[str] = None,
-        max_tokens: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Return a unified NLU analysis for the user message (strict JSON)."""
-        system_prompt = unified_nlu_prompt(supported_currencies)
-        messages = [{"role": "system", "content": system_prompt}]
-        if locale:
-            messages.append({"role": "system", "content": f"Locale: {locale}"})
-        
-        if history:
-            messages.extend(history)
-            
-        messages.append({"role": "user", "content": user_message})
-
-        use_model = model or getattr(settings, "NLU_MODEL", None) or self.model
-        token_limit = max_tokens or int(getattr(settings, "NLU_MAX_TOKENS", 250))
-
-        try:
-            return await self.generate_chat_json(
-                messages=messages,
-                model=use_model,
-                temperature=0.0,
-                max_tokens=token_limit,
-                usage_kind="nlu",
-            )
-        except Exception as e:
-            logger.error(f"NLU analysis failed: {e}")
-            return {}
-
     async def translate_product_descriptions(
         self,
         *,

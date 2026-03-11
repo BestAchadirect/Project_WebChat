@@ -7,7 +7,7 @@ def test_load_state_normalizes_and_preserves_unknown_keys() -> None:
     state = conversation_state.load_state(
         {
             "version": "2",
-            "last_intent": " browse_products ",
+            "last_workflow": " catalog ",
             "last_attribute_filters": {"Material": " titanium ", "color": ""},
             "last_requested_fields": ["Price", "price", "", "stock"],
             "last_product_ids": ["123", "", "123", "456"],
@@ -17,7 +17,7 @@ def test_load_state_normalizes_and_preserves_unknown_keys() -> None:
     )
 
     assert state["version"] == 2
-    assert state["last_intent"] == "browse_products"
+    assert state["last_workflow"] == "catalog"
     assert state["last_attribute_filters"] == {"material": "titanium"}
     assert state["last_requested_fields"] == ["price", "stock"]
     assert state["last_product_ids"] == ["123", "456"]

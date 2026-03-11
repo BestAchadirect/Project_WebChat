@@ -11,8 +11,10 @@ pytest.importorskip("pydantic_settings")
 
 from app.core.config import settings
 from app.schemas.chat import ChatRequest
+from app.services.chat import routing_policy
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.pipeline import ComponentPipeline
+from app.services.chat.components.types import ComponentSource
 from tests.fixtures.chat import KnowledgeStub, RedisStub
 from tests.fixtures.persistence import ConversationStateDB
 
@@ -43,6 +45,19 @@ def canonical_product(*, sku: str, name: str, attributes: dict | None = None) ->
         description=name,
         attributes=attributes or {},
         product_url="https://example.com/product",
+    )
+
+
+def _workflow_decision() -> routing_policy.WorkflowDecision:
+    return routing_policy.WorkflowDecision(
+        workflow="catalog",
+        source=ComponentSource.SQL,
+        needs_products=True,
+        needs_knowledge=False,
+        needs_clarification=False,
+        store_overview_request=False,
+        reason="test_override",
+        confidence=1.0,
     )
 
 
@@ -95,6 +110,7 @@ async def test_component_pipeline_merges_filters_from_conversation_state(monkeyp
         request=ChatRequest(user_id="guest-1", message="cheaper ones", locale="en-US"),
         conversation_id=77,
         run_id="run-state-merge",
+        route_decision_override=_workflow_decision(),
     )
 
     assert captured["attribute_filters"] == {
@@ -109,7 +125,7 @@ async def test_component_pipeline_merges_filters_from_conversation_state(monkeyp
         "jewelry_type": "belly ring",
     }
     assert result.conversation_state["last_product_ids"] == [str(product.product_id)]
-    assert result.conversation_state["last_route"] == "browse_products"
+    assert result.conversation_state["last_route"] == "catalog"
 
 
 @pytest.mark.asyncio
@@ -153,6 +169,7 @@ async def test_component_pipeline_does_not_merge_filters_when_state_disabled(mon
         request=ChatRequest(user_id="guest-1", message="cheaper ones", locale="en-US"),
         conversation_id=77,
         run_id="run-state-disabled",
+        route_decision_override=_workflow_decision(),
     )
 
     assert captured["attribute_filters"] == {}

@@ -33,6 +33,51 @@ class KnowledgeRetrievalResult:
 
 
 class KnowledgePipeline:
+    _STORE_PROFILE_COMPANY_TERMS = (
+        "company",
+        "about us",
+        "about",
+        "business",
+        "who are you",
+        "your company",
+        "store",
+        "showroom",
+    )
+    _STORE_PROFILE_CONTACT_TERMS = (
+        "contact",
+        "sales team",
+        "sales",
+        "support",
+        "email",
+        "phone",
+        "whatsapp",
+        "hotline",
+    )
+    _STORE_PROFILE_LOCATION_TERMS = (
+        "where",
+        "location",
+        "address",
+        "showroom",
+        "buy in person",
+        "in person",
+        "visit",
+        "pick up",
+        "pickup",
+    )
+    _STORE_PROFILE_CATEGORY_BOOSTS = {
+        "contact": 2.4,
+        "about": 2.1,
+        "company": 2.1,
+        "trust & compliance": 0.8,
+        "trust and compliance": 0.8,
+    }
+    _STORE_PROFILE_NEGATIVE_CATEGORIES = {
+        "samples": -0.7,
+        "refunds": -0.7,
+        "custom orders": -0.45,
+        "products": -0.3,
+    }
+
     def __init__(
         self,
         *,
@@ -42,6 +87,90 @@ class KnowledgePipeline:
         self.db = db
         self._log_event = log_event
 
+    @staticmethod
+    def _normalize_text(text: Any) -> str:
+        return " ".join(str(text or "").strip().lower().split())
+
+    @classmethod
+    def _store_query_profile(
+        cls,
+        *,
+        query_text: str,
+        store_overview_request: bool,
+    ) -> Dict[str, bool]:
+        normalized = cls._normalize_text(query_text)
+        wants_company = bool(
+            store_overview_request
+            or any(term in normalized for term in cls._STORE_PROFILE_COMPANY_TERMS)
+        )
+        wants_contact = bool(any(term in normalized for term in cls._STORE_PROFILE_CONTACT_TERMS))
+        wants_location = bool(any(term in normalized for term in cls._STORE_PROFILE_LOCATION_TERMS))
+        return {
+            "active": bool(wants_company or wants_contact or wants_location),
+            "company": wants_company,
+            "contact": wants_contact,
+            "location": wants_location,
+        }
+
+    @classmethod
+    def _store_source_priority_score(
+        cls,
+        *,
+        source: KnowledgeSource,
+        profile: Dict[str, bool],
+    ) -> float:
+        if not profile.get("active"):
+            return 0.0
+
+        title = cls._normalize_text(source.title)
+        category = cls._normalize_text(source.category)
+        url = cls._normalize_text(source.url)
+        snippet = cls._normalize_text(source.content_snippet)
+        haystacks = (title, url, snippet)
+
+        score = float(cls._STORE_PROFILE_CATEGORY_BOOSTS.get(category, 0.0))
+        score += float(cls._STORE_PROFILE_NEGATIVE_CATEGORIES.get(category, 0.0))
+
+        if profile.get("company"):
+            company_markers = ("company", "about", "acha", "business", "showroom", "contact")
+            if any(marker in field for marker in company_markers for field in haystacks):
+                score += 1.15
+        if profile.get("contact"):
+            contact_markers = ("contact", "sales", "support", "email", "phone", "tel", "whatsapp")
+            if any(marker in field for marker in contact_markers for field in haystacks):
+                score += 1.45
+        if profile.get("location"):
+            location_markers = ("address", "location", "showroom", "bangkok", "visit", "in person", "hours")
+            if any(marker in field for marker in location_markers for field in haystacks):
+                score += 1.65
+
+        return score
+
+    @classmethod
+    def _rerank_sources_for_store_profile(
+        cls,
+        *,
+        sources: Sequence[KnowledgeSource],
+        query_text: str,
+        store_overview_request: bool,
+    ) -> List[KnowledgeSource]:
+        ranked = list(sources or [])
+        profile = cls._store_query_profile(
+            query_text=query_text,
+            store_overview_request=store_overview_request,
+        )
+        if not profile.get("active"):
+            return ranked
+
+        return sorted(
+            ranked,
+            key=lambda source: (
+                -cls._store_source_priority_score(source=source, profile=profile),
+                float(source.distance) if source.distance is not None else 9999.0,
+                cls._normalize_text(source.title),
+            ),
+        )
+
     async def search_knowledge(
         self,
         query_text: str,
@@ -49,6 +178,7 @@ class KnowledgePipeline:
         limit: int = 10,
         must_tags: Optional[List[str]] = None,
         boost_tags: Optional[List[str]] = None,
+        store_overview_request: bool = False,
         run_id: Optional[str] = None,
     ) -> Tuple[List[KnowledgeSource], Optional[float]]:
         tag_join_needed = bool(must_tags or boost_tags)
@@ -175,6 +305,11 @@ class KnowledgePipeline:
                 except Exception:
                     pass
 
+        sources = self._rerank_sources_for_store_profile(
+            sources=sources,
+            query_text=query_text,
+            store_overview_request=store_overview_request,
+        )
         return sources, best_distance
 
     async def _decompose_query(self, *, question: str, run_id: str) -> List[str]:
@@ -234,7 +369,7 @@ class KnowledgePipeline:
         return sub_questions
 
     async def _retrieve_knowledge_for_query(
-        self, *, query_text: str, run_id: str
+        self, *, query_text: str, run_id: str, store_overview_request: bool = False
     ) -> Tuple[List[KnowledgeSource], Optional[float]]:
         query_embedding = await llm_service.generate_embedding(query_text)
         sources, best = await self.search_knowledge(
@@ -243,6 +378,7 @@ class KnowledgePipeline:
             limit=settings.RAG_RETRIEVE_TOPK_KNOWLEDGE,
             must_tags=None,
             boost_tags=None,
+            store_overview_request=store_overview_request,
             run_id=run_id,
         )
         return sources, best
@@ -266,9 +402,10 @@ class KnowledgePipeline:
         knowledge_embedding: Optional[List[float]],
         is_complex: bool,
         is_question_like: bool,
-        is_policy_intent: bool,
+        is_policy_like: bool,
         policy_topic_count: int,
         max_sub_questions: int,
+        store_overview_request: bool = False,
         run_id: str,
     ) -> KnowledgeRetrievalResult:
         knowledge_sources_primary, knowledge_best_primary = await self.search_knowledge(
@@ -277,13 +414,14 @@ class KnowledgePipeline:
             limit=settings.RAG_RETRIEVE_TOPK_KNOWLEDGE,
             must_tags=None,
             boost_tags=None,
+            store_overview_request=store_overview_request,
             run_id=run_id,
         )
 
         d1_primary, d10_primary, gap_primary = self._distance_stats(knowledge_sources_primary)
         decompose_weak_thr = float(getattr(settings, "RAG_DECOMPOSE_WEAK_DISTANCE", 0.55))
         decompose_gap_thr = float(getattr(settings, "RAG_DECOMPOSE_GAP_THRESHOLD", 0.06))
-        policy_like = bool(is_policy_intent or policy_topic_count >= 2)
+        policy_like = bool(is_policy_like or policy_topic_count >= 2)
         weak_retrieval = (knowledge_best_primary is None) or (
             float(knowledge_best_primary) >= decompose_weak_thr
         )
@@ -363,7 +501,11 @@ class KnowledgePipeline:
                 sources_q = knowledge_sources_primary
                 best_q = knowledge_best_primary
             else:
-                sources_q, best_q = await self._retrieve_knowledge_for_query(query_text=q, run_id=run_id)
+                sources_q, best_q = await self._retrieve_knowledge_for_query(
+                    query_text=q,
+                    run_id=run_id,
+                    store_overview_request=store_overview_request,
+                )
             per_query_best.append(best_q)
             kept_ids: List[str] = []
             for s in sources_q[:per_query_keep]:

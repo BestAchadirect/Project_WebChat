@@ -5,14 +5,12 @@ import apiClient from '../../api/client';
 import {
     buildFallbackAssistantComponents,
     getAssistantMessageText,
-    getQuickReplies,
     normalizeChatComponents,
 } from '../../utils/chatComponentContract';
 
 interface Message {
     role: 'user' | 'assistant' | 'system';
     content: string;
-    quickReplies?: string[];
     viewButtonText?: string;
     materialLabel?: string;
     jewelryTypeLabel?: string;
@@ -36,7 +34,17 @@ interface KnowledgeSource {
 
 interface ChatResponse {
     conversation_id: number;
-    intent: string;
+    routing?: {
+        workflow?: string;
+        execution_mode?: string;
+        needs_products?: boolean;
+        needs_knowledge?: boolean;
+        needs_clarification?: boolean;
+        store_overview_request?: boolean;
+        reason?: string;
+        confidence?: number;
+        selection_source?: string;
+    };
     sources?: KnowledgeSource[];
     view_button_text?: string;
     material_label?: string;
@@ -59,8 +67,7 @@ type ChatComponentType =
     | 'knowledge_answer'
     | 'action_result'
     | 'error'
-    | 'assistant_message'
-    | 'quick_replies';
+    | 'assistant_message';
 
 interface ChatComponent {
     type: ChatComponentType | string;
@@ -348,7 +355,17 @@ const ProductCarousel: React.FC<{
     jewelryTypeLabel?: string;
     thbToUsdRate?: number;
     onQuickReply?: (text: string) => void;
-}> = ({ items, primaryColor, displayCurrency, viewButtonText, materialLabel, jewelryTypeLabel, thbToUsdRate }) => {
+    onProductClick?: (product: ProductCard, rank: number) => void;
+}> = ({
+    items,
+    primaryColor,
+    displayCurrency,
+    viewButtonText,
+    materialLabel,
+    jewelryTypeLabel,
+    thbToUsdRate,
+    onProductClick,
+}) => {
     if (!items || items.length === 0) return null;
 
     const toBaseImageUrl = (value?: string | null): string => {
@@ -446,7 +463,7 @@ const ProductCarousel: React.FC<{
     return (
         <div className="mt-3">
             <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-custom">
-                {groupedProducts.map((group) => {
+                {groupedProducts.map((group, groupIndex) => {
                     const { masterCode } = group;
                     const groupItems = group.items;
                     const totalVariants = groupItems.length;
@@ -532,6 +549,7 @@ const ProductCarousel: React.FC<{
                                         href={productUrl}
                                         target="_blank"
                                         rel="noreferrer"
+                                        onClick={() => onProductClick?.(rep, groupIndex + 1)}
                                         className="block w-full text-center py-2 rounded-lg text-sm font-bold text-white transition-all active:scale-95"
                                         style={{ backgroundColor: primaryColor }}
                                     >
@@ -618,7 +636,6 @@ const normalizeAssistantMessage = (message: Message): Message => {
     return {
         ...message,
         content: getAssistantMessageText(components) || asString(message.content).trim(),
-        quickReplies: getQuickReplies(components),
         components: components as ChatComponent[],
     };
 };
@@ -644,6 +661,7 @@ const ChatComponentsRenderer: React.FC<{
     materialLabel?: string;
     jewelryTypeLabel?: string;
     onQuickReply: (text: string) => void;
+    onProductClick?: (product: ProductCard, rank: number) => void;
 }> = ({
     message,
     primaryColor,
@@ -653,6 +671,7 @@ const ChatComponentsRenderer: React.FC<{
     materialLabel,
     jewelryTypeLabel,
     onQuickReply,
+    onProductClick,
 }) => {
     const components = Array.isArray(message.components) ? message.components : [];
     if (components.length === 0) return null;
@@ -695,6 +714,7 @@ const ChatComponentsRenderer: React.FC<{
                             jewelryTypeLabel={jewelryTypeLabel}
                             thbToUsdRate={thbToUsdRate}
                             onQuickReply={onQuickReply}
+                            onProductClick={onProductClick}
                         />
                     );
                 }
@@ -713,6 +733,7 @@ const ChatComponentsRenderer: React.FC<{
                             jewelryTypeLabel={jewelryTypeLabel}
                             thbToUsdRate={thbToUsdRate}
                             onQuickReply={onQuickReply}
+                            onProductClick={onProductClick}
                         />
                     );
                 }
@@ -1322,6 +1343,23 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         }
     };
 
+    const trackProductClick = async (product: ProductCard, rank: number, qaLogId?: string) => {
+        if (!conversationId || !product.id) return;
+        try {
+            const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/analytics/chat-clicks` : '/analytics/chat-clicks';
+            await apiClient.post(endpoint, {
+                conversation_id: conversationId,
+                qa_log_id: qaLogId || undefined,
+                product_id: product.id,
+                sku: product.sku || undefined,
+                rank,
+                timestamp: new Date().toISOString(),
+            });
+        } catch (error) {
+            console.error('Product click tracking error:', error);
+        }
+    };
+
     const submitFeedback = async (messageIndex: number, qaLogId: string, feedback: 1 | -1) => {
         if (!qaLogId) return;
         const current = messages[messageIndex];
@@ -1546,28 +1584,10 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                                     onQuickReply={(question) => {
                                                         void sendMessage(question);
                                                     }}
+                                                    onProductClick={(product, rank) => {
+                                                        void trackProductClick(product, rank, msg.qaLogId);
+                                                    }}
                                                 />
-                                            </div>
-                                        )}
-
-                                        {/* Follow-up Questions / Quick Reply Slider */}
-                                        {msg.role === 'assistant' && msg.quickReplies && msg.quickReplies.length > 0 && (
-                                            <div className="w-full mt-3 overflow-hidden">
-                                                <div className="flex gap-2 overflow-x-auto pb-4 px-1 scrollbar-hide">
-                                                    {msg.quickReplies.map((question, qIdx) => (
-                                                        <button
-                                                            key={qIdx}
-                                                            onClick={() => sendMessage(question)}
-                                                            className="whitespace-nowrap flex-shrink-0 px-4 py-2 bg-white hover:bg-gray-50 text-gray-700 rounded-full text-xs font-bold transition-all border-2 shadow-sm hover:shadow-md active:scale-95 flex items-center gap-1.5"
-                                                            style={{ borderColor: config.primaryColor }}
-                                                        >
-                                                            <span>{question}</span>
-                                                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                                                <path d="M7.5 6.175L8.675 5L13.675 10L8.675 15L7.5 13.825L11.3167 10L7.5 6.175Z" fill="currentColor" />
-                                                            </svg>
-                                                        </button>
-                                                    ))}
-                                                </div>
                                             </div>
                                         )}
 

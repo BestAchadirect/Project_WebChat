@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from app.schemas.chat import ChatHistoryMessage, ChatResponse, ProductCard
+from app.schemas.chat import ChatHistoryMessage, ChatResponse, ChatRouting, ProductCard
 
 
 def _product_card() -> ProductCard:
@@ -29,7 +29,7 @@ def test_chat_response_serializes_as_component_first_contract() -> None:
         carousel_msg="Matching products are shown below.",
         product_carousel=[_product_card()],
         follow_up_questions=["See more titanium labrets"],
-        intent="browse_products",
+        routing=ChatRouting(workflow="catalog", execution_mode="component", needs_products=True),
         sources=[],
         debug={},
     )
@@ -42,7 +42,6 @@ def test_chat_response_serializes_as_component_first_contract() -> None:
     assert [component["type"] for component in payload["components"]] == [
         "assistant_message",
         "product_cards",
-        "quick_replies",
     ]
 
 

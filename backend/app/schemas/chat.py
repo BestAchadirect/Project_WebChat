@@ -1,8 +1,9 @@
-from enum import Enum
-from pydantic import BaseModel, Field, model_validator
-from typing import Literal, Optional, List, Dict, Any
-from datetime import datetime
 import uuid
+from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class ProductCard(BaseModel):
@@ -45,8 +46,8 @@ class ChatContext(BaseModel):
     text: str
     is_question_like: bool
     looks_like_product: bool
-    has_store_intent: bool
-    is_policy_intent: bool
+    has_store_signal: bool
+    is_policy_like: bool
     policy_topic_count: int
     sku_token: Optional[str] = None
     requested_currency: Optional[str] = None
@@ -58,8 +59,8 @@ class ChatContext(BaseModel):
         text: str,
         is_question_like: bool,
         looks_like_product: bool,
-        has_store_intent: bool,
-        is_policy_intent: bool,
+        has_store_signal: bool,
+        is_policy_like: bool,
         policy_topic_count: int,
         sku_token: Optional[str],
         requested_currency: Optional[str],
@@ -68,26 +69,26 @@ class ChatContext(BaseModel):
             text=text,
             is_question_like=is_question_like,
             looks_like_product=looks_like_product,
-            has_store_intent=has_store_intent,
-            is_policy_intent=is_policy_intent,
+            has_store_signal=has_store_signal,
+            is_policy_like=is_policy_like,
             policy_topic_count=policy_topic_count,
             sku_token=sku_token,
             requested_currency=requested_currency,
         )
 
 
-class RouteDecision(BaseModel):
-    route: Literal["smalltalk", "general_chat", "product", "knowledge", "mixed", "clarify", "fallback_general"]
-    reason: str
-
-
-class ParsedQuery(BaseModel):
-    intent: Literal["search_products", "ask_info", "mixed", "smalltalk", "other"]
-    query_text: str
-    language: Literal["en", "th", "auto"]
-    filters: Dict[str, str] = {}
-    price_min: Optional[float] = None
-    price_max: Optional[float] = None
+class ChatRouting(BaseModel):
+    workflow: Literal["catalog", "knowledge", "comparison", "recommendation", "smalltalk", "fallback"] = (
+        "fallback"
+    )
+    execution_mode: Literal["component", "agentic"] = "component"
+    needs_products: bool = False
+    needs_knowledge: bool = False
+    needs_clarification: bool = False
+    store_overview_request: bool = False
+    reason: str = ""
+    confidence: float = 0.0
+    selection_source: str = ""
 
 
 class ChatComponentType(str, Enum):
@@ -133,27 +134,11 @@ def _product_card_to_component_payload(card: ProductCard) -> Dict[str, Any]:
     }
 
 
-def _clean_quick_reply_items(items: List[str]) -> List[str]:
-    cleaned: List[str] = []
-    seen: set[str] = set()
-    for item in list(items or []):
-        text = str(item or "").strip()
-        if not text:
-            continue
-        key = text.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        cleaned.append(text)
-    return cleaned
-
-
 def _augment_chat_components(
     *,
     components: List[ChatComponent],
     reply_text: str = "",
     product_carousel: Optional[List[ProductCard]] = None,
-    follow_up_questions: Optional[List[str]] = None,
 ) -> List[ChatComponent]:
     augmented = list(components or [])
     seen = {_component_type_value(component) for component in augmented}
@@ -187,14 +172,6 @@ def _augment_chat_components(
         )
         seen.add(ChatComponentType.PRODUCT_CARDS.value)
 
-    quick_replies = _clean_quick_reply_items(list(follow_up_questions or []))
-    if quick_replies and ChatComponentType.QUICK_REPLIES.value not in seen:
-        augmented.append(
-            ChatComponent(
-                type=ChatComponentType.QUICK_REPLIES,
-                data={"items": quick_replies},
-            )
-        )
     return augmented
 
 
@@ -212,7 +189,7 @@ class ChatResponse(BaseModel):
     carousel_msg: Optional[str] = Field(default=None, exclude=True)
     product_carousel: List[ProductCard] = Field(default_factory=list, exclude=True)
     follow_up_questions: List[str] = Field(default_factory=list, exclude=True)
-    intent: str = "retrieval_router"
+    routing: ChatRouting = Field(default_factory=ChatRouting)
     sources: List[KnowledgeSource] = []
     debug: Dict[str, Any] = Field(default_factory=dict)
     view_button_text: str = "View Product Details"
@@ -228,7 +205,6 @@ class ChatResponse(BaseModel):
             components=list(self.components or []),
             reply_text=self.reply_text,
             product_carousel=list(self.product_carousel or []),
-            follow_up_questions=list(self.follow_up_questions or []),
         )
         return self
 
@@ -267,7 +243,6 @@ class ChatHistoryMessage(BaseModel):
             components=list(self.components or []),
             reply_text=self.content,
             product_carousel=product_cards,
-            follow_up_questions=[],
         )
         return self
 

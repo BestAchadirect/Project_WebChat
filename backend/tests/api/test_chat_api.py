@@ -5,8 +5,9 @@ import pytest
 pytest.importorskip("pydantic_settings")
 
 from app.api.routes.chat import router
+from app.core.config import settings
 from app.dependencies import get_db
-from app.schemas.chat import ChatRequest, ChatResponse
+from app.schemas.chat import ChatRequest, ChatResponse, ChatRouting
 from app.services.chat.service import ChatService
 
 
@@ -21,9 +22,24 @@ def response_payload() -> ChatResponse:
         carousel_msg="",
         product_carousel=[],
         follow_up_questions=[],
-        intent="browse_products",
+        routing=ChatRouting(workflow="catalog", execution_mode="component", needs_products=True),
         sources=[],
-        debug={},
+        debug={
+            "run_id": "chat-123",
+            "workflow": "catalog",
+            "workflow_path": "component_primary",
+            "component_mode": "primary",
+            "execution_mode": "component",
+            "component_source": "sql",
+            "config_fingerprint": {"hash": "abc123", "flags": {"x": True}},
+            "latency_spans": {"total_ms": 12.34, "db_product_lookup_ms": 10.0},
+            "agentic": {
+                "selected": False,
+                "used_tools": False,
+                "fallback_to_component": False,
+                "llm_reason": "timeout",
+            },
+        },
         components=[],
     )
 
@@ -55,8 +71,48 @@ def test_chat_endpoint_returns_service_response(build_client, monkeypatch: pytes
     assert "follow_up_questions" not in payload
     assert payload["components"][0]["type"] == "assistant_message"
     assert payload["components"][0]["data"]["text"] == "api response"
+    assert payload["debug"] == {
+        "run_id": "chat-123",
+        "workflow": "catalog",
+        "workflow_path": "component_primary",
+        "execution_mode": "component",
+        "component_mode": "primary",
+        "source": "sql",
+        "latency_ms": 12.34,
+        "agentic": {
+            "selected": False,
+            "used_tools": False,
+            "fallback_to_component": False,
+        },
+    }
     assert captured["channel"] == "widget"
     assert isinstance(captured["request"], ChatRequest)
+
+
+def test_chat_endpoint_can_return_full_debug_when_enabled(
+    build_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_process_chat(self, request: ChatRequest, channel: str | None = None) -> ChatResponse:
+        return response_payload()
+
+    monkeypatch.setattr(ChatService, "process_chat", fake_process_chat)
+    monkeypatch.setattr(settings, "CHAT_PUBLIC_DEBUG_ENABLED", True)
+    client = build_client(
+        router=router,
+        prefix="/api/v1/chat",
+        dependency_overrides={get_db: override_get_db},
+    )
+
+    response = client.post(
+        "/api/v1/chat/",
+        json={"user_id": "guest-1", "message": "show steel rings", "locale": "en-US"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "config_fingerprint" in payload["debug"]
+    assert payload["debug"]["component_source"] == "sql"
 
 
 def test_chat_endpoint_rejects_invalid_request(build_client) -> None:

@@ -7,9 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db
+from app.core.logging import get_logger
 from app.models.chat import Conversation, Message, MessageRole
 from app.models.qa_log import QALog
 from app.schemas.analytics import (
+    ChatProductClickRequest,
+    ChatProductClickResponse,
     ChatStatsResponse,
     ChatLogListResponse,
     ChatLogResponse,
@@ -20,6 +23,7 @@ from app.utils.pagination import normalize_pagination
 
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -261,3 +265,27 @@ async def get_chat_log_details(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     return _build_chat_log(conversation)
+
+
+@router.post("/chat-clicks", response_model=ChatProductClickResponse)
+async def track_chat_product_click(
+    request: ChatProductClickRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ChatProductClickResponse:
+    del db
+    logger.info(
+        "chat_product_click",
+        extra={
+            "conversation_id": int(request.conversation_id),
+            "qa_log_id": str(request.qa_log_id or ""),
+            "product_id": str(request.product_id or ""),
+            "sku": str(request.sku or ""),
+            "rank": int(request.rank or 0),
+            "timestamp": (
+                request.timestamp.isoformat()
+                if isinstance(request.timestamp, datetime)
+                else datetime.now(timezone.utc).isoformat()
+            ),
+        },
+    )
+    return ChatProductClickResponse(saved=True)

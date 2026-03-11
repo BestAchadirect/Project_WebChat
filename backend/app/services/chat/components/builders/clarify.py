@@ -13,11 +13,14 @@ class ClarifyComponent(BaseComponent):
         reason = str(context.ambiguity_reason or "missing details")
         message = "Please share more detail so I can match products accurately."
         debug_meta = dict(context.debug or {})
-        if reason == "compare_requires_two_skus":
+        debug_message = str(debug_meta.get("clarify_message") or "").strip()
+        if debug_message:
+            message = debug_message
+        if not debug_message and reason == "compare_requires_two_skus":
             message = "Please provide two SKU codes to compare, for example: `Compare SKU123 and SKU124`."
-        elif reason == "compare_not_supported":
+        elif not debug_message and reason == "compare_not_supported":
             message = "Compare view is currently unavailable. Share one SKU or product filters and I will show matching items."
-        elif reason == "compare_missing_sku":
+        elif not debug_message and reason == "compare_missing_sku":
             missing = list((context.debug or {}).get("compare_missing_skus") or [])
             if missing:
                 message = (
@@ -27,20 +30,20 @@ class ClarifyComponent(BaseComponent):
                 )
             else:
                 message = "I could not find one or more SKU codes to compare. Please verify the SKUs and try again."
-        elif reason == "image_only_no_results":
+        elif not debug_message and reason == "image_only_no_results":
             message = "No matching products currently have images. Ask for SKU/price/stock."
-        elif reason == "image_request_missing_context":
+        elif not debug_message and reason == "image_request_missing_context":
             message = (
                 "Sure, which product are you looking for? "
                 "Share SKU or details like type, material, and gauge, and I can show images."
             )
-        elif reason == "attribute_list_no_results":
+        elif not debug_message and reason == "attribute_list_no_results":
             message = "I could not find matching attribute options for that filter. Try a broader product filter."
-        elif reason == "structured_no_match":
+        elif not debug_message and reason == "structured_no_match":
             message = "I couldn't find products matching those exact details. Try broader filters or remove one attribute."
-        elif reason == "detail_no_match":
+        elif not debug_message and reason == "detail_no_match":
             message = "I couldn't find a product matching those exact details. Try a broader product request or share a SKU."
-        elif reason == "detail_request_needs_specific_product":
+        elif not debug_message and reason == "detail_request_needs_specific_product":
             requested_fields = {
                 str(item or "").strip().lower()
                 for item in list(debug_meta.get("detail_requested_fields") or [])
@@ -59,6 +62,10 @@ class ClarifyComponent(BaseComponent):
                 f"I'm not sure which {subject} you mean. "
                 f"Share a SKU or add details like material, gauge, size, or color, and I can {action}."
             )
+        elif not debug_message and reason == "knowledge_needs_clarification":
+            message = "I want to give you the right policy details, but I need a little more context first."
+        elif not debug_message and reason == "knowledge_unavailable":
+            message = "I may be missing the latest policy details right now. Tell me which topic you need and I will narrow it down."
         return ChatComponent(
             type=self.component_type,
             data={

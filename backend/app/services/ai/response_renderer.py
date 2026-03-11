@@ -2,13 +2,37 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from app.schemas.chat import ChatResponse, KnowledgeSource, ProductCard
+from app.schemas.chat import ChatResponse, ChatRouting, KnowledgeSource, ProductCard
 from app.services.ai.answer_polisher import answer_polisher
 from app.services.currency_service import currency_service
 from app.services.ai.llm_service import llm_service
 
 
 class ResponseRenderer:
+    @staticmethod
+    def _routing_for_route(route: str) -> ChatRouting:
+        normalized = str(route or "").strip().lower()
+        workflow_map = {
+            "product": "catalog",
+            "browse_products": "catalog",
+            "search_specific": "catalog",
+            "knowledge_query": "knowledge",
+            "compare_products": "comparison",
+            "recommend_products": "recommendation",
+            "smalltalk": "smalltalk",
+            "fallback_general": "fallback",
+        }
+        workflow = workflow_map.get(normalized, "fallback")
+        return ChatRouting(
+            workflow=workflow,
+            execution_mode="component",
+            needs_products=workflow in {"catalog", "comparison", "recommendation"},
+            needs_knowledge=workflow == "knowledge",
+            needs_clarification=workflow == "fallback",
+            reason="legacy_response_renderer",
+            selection_source="legacy_renderer",
+        )
+
     def _strip_sources_block(self, text: str) -> str:
         if not text:
             return text
@@ -113,7 +137,7 @@ class ResponseRenderer:
             carousel_msg=carousel_msg,
             product_carousel=product_carousel,
             follow_up_questions=follow_up_questions,
-            intent=route,
+            routing=self._routing_for_route(route),
             sources=sources,
             debug=debug,
             view_button_text=button_text,

@@ -22,7 +22,7 @@ from app.schemas.chat import (
 )
 from app.services.ai.llm_service import llm_service
 from app.services.catalog.product_search import CatalogProductSearchService
-from app.services.chat import commerce_intents, conversation_state, product_presentation, result_policy, routing_policy
+from app.services.chat import conversation_state, product_presentation, result_policy, routing_policy
 from app.services.chat.components.cache import RedisComponentCache, stable_cache_key
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.field_resolver import FieldDependencyResolver
@@ -48,45 +48,6 @@ class ComponentPipelineResult:
 
 
 class ComponentPipeline:
-    _SMALLTALK_TERMS = {
-        "hi",
-        "hello",
-        "hey",
-        "good morning",
-        "good afternoon",
-        "good evening",
-    }
-    _POLICY_TERMS = {
-        "shipping",
-        "warranty",
-        "refund",
-        "return",
-        "payment",
-        "tax",
-        "vat",
-        "customs",
-        "policy",
-        "sample",
-        "minimum order",
-        "moq",
-    }
-    _PRODUCT_TERMS = {
-        "sku",
-        "ring",
-        "barbell",
-        "labret",
-        "clicker",
-        "plug",
-        "tunnel",
-        "color",
-        "material",
-        "gauge",
-        "threading",
-        "compare",
-        "table",
-        "stock",
-        "price",
-    }
     _ATTRIBUTE_LIST_TERMS = {
         "material": "material",
         "materials": "material",
@@ -100,6 +61,24 @@ class ComponentPipeline:
         "types": "jewelry_type",
     }
     _DETAIL_CLARIFY_FIELDS = {"price", "stock"}
+    _HIGH_RISK_KNOWLEDGE_TERMS = {
+        "shipping",
+        "delivery",
+        "refund",
+        "return",
+        "payment",
+        "warranty",
+        "customs",
+        "contact",
+        "sales contact",
+        "sales team",
+        "support",
+        "customer service",
+        "email",
+        "phone",
+        "hotline",
+        "whatsapp",
+    }
     _KNOWLEDGE_UNAVAILABLE_MESSAGE = (
         "I can share a brief answer right now, but detailed knowledge search is temporarily unavailable."
     )
@@ -123,86 +102,141 @@ class ComponentPipeline:
     def _normalize_text(text: str) -> str:
         return " ".join(str(text or "").strip().lower().split())
 
-    @classmethod
-    def _is_smalltalk(cls, text: str) -> bool:
-        normalized = cls._normalize_text(text)
-        if not normalized:
-            return False
-        return normalized in cls._SMALLTALK_TERMS
-
     @staticmethod
-    def _is_probable_sku_token(token: str) -> bool:
-        cleaned = (token or "").strip().strip(".,!?;:'\"()[]{}<>")
-        if not cleaned:
-            return False
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{1,31}", cleaned):
-            return False
-        has_alpha = any(ch.isalpha() for ch in cleaned)
-        has_digit = any(ch.isdigit() for ch in cleaned)
-        if not has_alpha:
-            return False
-        if has_digit:
-            return True
-        # Without digits, accept only explicit uppercase code-like tokens (e.g. "SKU-ABC").
-        return cleaned == cleaned.upper() and any(ch in "._-" for ch in cleaned)
-
-    @classmethod
-    def _extract_sku_tokens(cls, text: str) -> List[str]:
-        pattern = r"\b[A-Za-z0-9]{2,}(?:[-._][A-Za-z0-9]{1,})+\b"
-        found = re.findall(pattern, str(text or ""))
+    def _dedupe_follow_up_questions(items: Sequence[str], *, limit: int = 5) -> List[str]:
         deduped: List[str] = []
-        seen = set()
-        for token in found:
-            if not cls._is_probable_sku_token(token):
+        seen: set[str] = set()
+        for raw in list(items or []):
+            text = str(raw or "").strip()
+            if not text:
                 continue
-            key = token.lower().strip()
-            if not key or key in seen:
+            key = text.lower()
+            if key in seen:
                 continue
             seen.add(key)
-            deduped.append(token)
+            deduped.append(text)
+            if len(deduped) >= max(1, int(limit)):
+                break
         return deduped
 
     @classmethod
-    def _is_knowledge_intent(
+    def _contains_any_term(cls, *, text: str, terms: Sequence[str]) -> bool:
+        normalized = cls._normalize_text(text)
+        return bool(normalized and any(term in normalized for term in terms))
+
+    @classmethod
+    def _is_high_risk_knowledge_request(cls, *, text: str) -> bool:
+        return cls._contains_any_term(text=text, terms=cls._HIGH_RISK_KNOWLEDGE_TERMS)
+
+    @staticmethod
+    def _knowledge_sources_are_weak(*, sources: Sequence[KnowledgeSource], min_relevance: float) -> bool:
+        if not sources:
+            return True
+        top_relevance = max(float(getattr(source, "relevance", 0.0) or 0.0) for source in list(sources or []))
+        return top_relevance < float(min_relevance)
+
+    @staticmethod
+    def _product_sku(product: Any) -> str:
+        return str(getattr(product, "sku", "") or "").strip()
+
+    @classmethod
+    def _build_product_clarify_follow_ups(
         cls,
         *,
-        text: str,
-        detail_has_filters: bool,
-        detail_request: bool,
-        sku_tokens: List[str],
-    ) -> bool:
-        normalized = cls._normalize_text(text)
-        if detail_request or detail_has_filters or sku_tokens:
-            return False
-        if any(term in normalized for term in cls._POLICY_TERMS):
-            return True
-        if any(term in normalized for term in cls._PRODUCT_TERMS):
-            return False
-        return normalized.endswith("?")
+        products: Sequence[Any],
+        attribute_filters: Dict[str, str],
+        needs_knowledge: bool,
+        limit: int = 3,
+    ) -> List[str]:
+        follow_ups: List[str] = []
+        for product in list(products or [])[:3]:
+            sku = cls._product_sku(product)
+            if sku:
+                follow_ups.append(f"Show details for SKU {sku}")
+        if not follow_ups:
+            if "material" not in attribute_filters:
+                follow_ups.extend(["Show titanium jewelry", "Show gold jewelry"])
+            if "jewelry_type" not in attribute_filters:
+                follow_ups.append("Show labret")
+        if needs_knowledge:
+            follow_ups.append("How can I contact you?")
+        return cls._dedupe_follow_up_questions(follow_ups, limit=limit)
 
-    @staticmethod
-    def _is_compare_requested(text: str) -> bool:
-        normalized = text.lower()
-        return "compare" in normalized or "vs" in normalized
-
-    @staticmethod
-    def _wants_recommendation(text: str) -> bool:
-        return commerce_intents.is_recommendation_request(text)
-
-    @staticmethod
-    def _is_store_overview_request(
+    @classmethod
+    def _build_knowledge_clarify_follow_ups(
+        cls,
         *,
-        text: str,
-        detail_has_filters: bool,
-        detail_request: bool,
-        sku_tokens: List[str],
-    ) -> bool:
-        return bool(
-            commerce_intents.is_store_overview_request(text)
-            and not detail_has_filters
-            and not detail_request
-            and not sku_tokens
+        user_text: str,
+        limit: int = 3,
+    ) -> List[str]:
+        normalized = cls._normalize_text(user_text)
+        follow_ups: List[str] = []
+        if "shipping" in normalized or "delivery" in normalized:
+            follow_ups.extend(["What is your shipping policy?", "How long is delivery?"])
+        if "refund" in normalized or "return" in normalized:
+            follow_ups.extend(["What is your refund policy?", "What can I return?"])
+        if any(term in normalized for term in {"contact", "support", "sales", "email", "phone", "whatsapp"}):
+            follow_ups.extend(["How can I contact you?", "How can I contact your sales team?"])
+        if not follow_ups:
+            follow_ups.extend(
+                [
+                    "What is your shipping policy?",
+                    "What is your refund policy?",
+                    "How can I contact you?",
+                ]
+            )
+        return cls._dedupe_follow_up_questions(follow_ups, limit=limit)
+
+    @classmethod
+    def _build_conversion_follow_ups(
+        cls,
+        *,
+        products: Sequence[Any],
+        attribute_filters: Dict[str, str],
+        user_text: str,
+        needs_knowledge: bool,
+        limit: int = 5,
+    ) -> List[str]:
+        if not bool(getattr(settings, "CHAT_CONVERSION_FOLLOW_UPS_ENABLED", True)):
+            return []
+        follow_ups: List[str] = [
+            product_presentation.build_see_more_follow_up(
+                attribute_filters=attribute_filters,
+                user_text=user_text,
+            )
+        ]
+        if "material" not in attribute_filters:
+            for material in cls._top_product_attributes(products=products, key="material", limit=2):
+                follow_ups.append(f"Show {material} jewelry")
+        if "jewelry_type" not in attribute_filters:
+            for jewelry_type in cls._top_product_attributes(products=products, key="jewelry_type", limit=2):
+                follow_ups.append(f"Show {jewelry_type}")
+        has_opal = any(
+            str(dict(getattr(product, "attributes", {}) or {}).get("opal_color") or "").strip()
+            for product in list(products or [])
         )
+        if has_opal:
+            follow_ups.append("Show opal colors")
+        skus = [cls._product_sku(product) for product in list(products or []) if cls._product_sku(product)]
+        if len(skus) >= 2:
+            follow_ups.append(f"Compare {skus[0]} and {skus[1]}")
+        if needs_knowledge:
+            follow_ups.append("How can I contact you?")
+        return cls._dedupe_follow_up_questions(follow_ups, limit=limit)
+
+    @staticmethod
+    def _apply_clarify_debug(
+        *,
+        debug_meta: Dict[str, Any],
+        reason: str,
+        message: str = "",
+        questions: Sequence[str] | None = None,
+        suggestions: Sequence[str] | None = None,
+    ) -> None:
+        debug_meta["clarify_reason"] = str(reason or "").strip()
+        debug_meta["clarify_message"] = str(message or "").strip()
+        debug_meta["clarify_questions"] = ComponentPipeline._dedupe_follow_up_questions(list(questions or []), limit=2)
+        debug_meta["clarify_suggestions"] = ComponentPipeline._dedupe_follow_up_questions(list(suggestions or []), limit=3)
 
     @staticmethod
     def _to_product_card(product) -> ProductCard:
@@ -278,13 +312,13 @@ class ComponentPipeline:
         cls,
         *,
         user_text: str,
-        intent: str,
+        workflow: str,
         product_count: int,
         is_detail_mode: bool,
         is_ambiguous: bool,
     ) -> List[ComponentType]:
         text = cls._normalize_text(user_text)
-        intent_norm = cls._normalize_text(intent)
+        workflow_norm = cls._normalize_text(workflow)
 
         if not text:
             return [ComponentType.ERROR]
@@ -292,24 +326,18 @@ class ComponentPipeline:
         if is_ambiguous:
             return [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
 
-        if intent_norm in {"knowledge_query", "knowledge", "faq", "off_topic"}:
+        if workflow_norm in {"knowledge", "smalltalk"}:
             return [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
 
-        wants_reco = commerce_intents.is_recommendation_request(text)
-        if intent_norm == "compare_products":
+        wants_reco = workflow_norm == "recommendation"
+        if workflow_norm == "comparison":
             if product_count <= 0:
                 return [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
             return [ComponentType.QUERY_SUMMARY, ComponentType.COMPARE]
 
         components: List[ComponentType] = [ComponentType.QUERY_SUMMARY]
 
-        product_intent = intent_norm.startswith("product") or intent_norm in {
-            "browse_products",
-            "search_specific",
-            "recommend_products",
-            "compare_products",
-        }
-        if product_count <= 0 and product_intent:
+        if workflow_norm in {"catalog", "recommendation"} and product_count <= 0:
             return [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
         if is_detail_mode:
             components.append(ComponentType.PRODUCT_DETAIL)
@@ -592,6 +620,7 @@ class ComponentPipeline:
             reply_text = str(mapped["error"].get("message") or "I could not process this request.")
         elif "clarify" in mapped:
             reply_text = str(mapped["clarify"].get("message") or "Please share more details.")
+            follow_ups.extend(list(context.debug.get("clarify_suggestions") or []))
         elif "knowledge_answer" in mapped:
             reply_text = str(mapped["knowledge_answer"].get("answer") or query_summary)
         elif "compare" in mapped:
@@ -637,11 +666,14 @@ class ComponentPipeline:
             product_carousel = [cls._to_product_card(item) for item in display_products]
             if not carousel_msg:
                 carousel_msg = "Matching products are shown below."
-            if int(context.result_count or 0) > len(product_carousel) and not bool(context.debug.get("store_overview_request")):
-                follow_ups.append(
-                    product_presentation.build_see_more_follow_up(
+            if not bool(context.debug.get("store_overview_request")):
+                follow_ups.extend(
+                    cls._build_conversion_follow_ups(
+                        products=display_products,
                         attribute_filters=context.attribute_filters,
                         user_text=user_text,
+                        needs_knowledge=bool(context.debug.get("workflow_needs_knowledge", False)),
+                        limit=5,
                     )
                 )
 
@@ -653,7 +685,7 @@ class ComponentPipeline:
             "reply_text": reply_text,
             "carousel_msg": carousel_msg,
             "product_carousel": product_carousel,
-            "follow_up_questions": follow_ups[:5],
+            "follow_up_questions": cls._dedupe_follow_up_questions(follow_ups, limit=5),
         }
 
     async def _knowledge_answer_once(
@@ -662,6 +694,7 @@ class ComponentPipeline:
         question: str,
         sources: List[KnowledgeSource],
         locale: str,
+        store_overview_request: bool,
         llm_cache_key: str,
     ) -> tuple[str, bool]:
         cached = await self._redis_cache.get_json(llm_cache_key)
@@ -674,12 +707,22 @@ class ComponentPipeline:
                 for source in (sources or [])[:5]
             ]
         )
+        store_overview_prompt = ""
+        if store_overview_request:
+            store_overview_prompt = (
+                "If the question is about the company, showroom, location, or contact details, "
+                "prioritize those business details from the context before anything else. "
+            )
+
         messages = [
             {
                 "role": "system",
                 "content": (
                     "Answer strictly from provided context. "
+                    "Use a professional and warm tone. Keep the answer concise and practical. "
                     "Do not invent products, SKUs, or policies not in context. "
+                    "If the context is not enough, ask one short clarifying question instead of guessing. "
+                    f"{store_overview_prompt}"
                     "Return JSON with a single key `reply`."
                 ),
             },
@@ -712,6 +755,8 @@ class ComponentPipeline:
         request: ChatRequest,
         conversation_id: int,
         run_id: str,
+        route_decision_override: Optional[routing_policy.WorkflowDecision] = None,
+        routing_selection_source: str = "",
     ) -> ComponentPipelineResult:
         started = time.perf_counter()
         text = str(request.message or "").strip()
@@ -723,7 +768,7 @@ class ComponentPipeline:
         conversation_state_filter_merge_applied = False
         if conversation_state_enabled:
             state_working = await self._load_conversation_state(conversation_id=conversation_id)
-        sku_tokens = self._extract_sku_tokens(text)
+        sku_tokens = routing_policy.extract_sku_tokens(text)
         unique_sku_tokens = [token for token in dict.fromkeys([str(item).strip() for item in sku_tokens]) if token]
         if conversation_state_enabled and state_working is not None:
             debug_state_version = int(
@@ -744,18 +789,25 @@ class ComponentPipeline:
                 detail = replace(detail, attribute_filters=merged_filters)
                 conversation_state_filter_merge_applied = True
 
-        route_decision = routing_policy.decide_route(
-            text=text,
-            detail_has_filters=bool(detail.attribute_filters),
-            detail_request=bool(detail.is_detail_request),
-            sku_tokens=sku_tokens,
-        )
-        compare_requested = route_decision.compare_requested
-        recommendation_requested = route_decision.recommendation_requested
+        route_decision = route_decision_override
+        if route_decision is None:
+            route_decision = routing_policy.WorkflowDecision(
+                workflow="fallback",
+                source=ComponentSource.ERROR,
+                needs_products=False,
+                needs_knowledge=False,
+                needs_clarification=True,
+                store_overview_request=False,
+                reason="missing_workflow_override",
+                confidence=0.0,
+            )
+        workflow = route_decision.workflow
+        compare_requested = workflow == "comparison"
+        recommendation_requested = workflow == "recommendation"
         store_overview_request = route_decision.store_overview_request
-        smalltalk_intent = route_decision.smalltalk_intent
-        knowledge_intent = route_decision.knowledge_intent
-        intent = route_decision.intent
+        smalltalk_workflow = workflow == "smalltalk"
+        knowledge_workflow = workflow == "knowledge"
+        fallback_workflow = workflow == "fallback"
         source = route_decision.source
         ambiguity_reason = None
 
@@ -763,7 +815,7 @@ class ComponentPipeline:
         embedding_calls = 0
         external_call_counts: Dict[str, int] = {}
         spans: Dict[str, float] = {
-            "intent_routing_ms": 0.0,
+            "workflow_routing_ms": 0.0,
             "db_product_lookup_ms": 0.0,
             "vector_search_ms": 0.0,
             "llm_answer_ms": 0.0,
@@ -771,8 +823,13 @@ class ComponentPipeline:
         }
         debug_meta: Dict[str, Any] = {
             "component_pipeline_enabled": True,
-            "component_intent": intent,
+            "component_workflow": workflow,
+            "workflow_needs_products": bool(route_decision.needs_products),
+            "workflow_needs_knowledge": bool(route_decision.needs_knowledge),
+            "workflow_needs_clarification": bool(route_decision.needs_clarification),
             "path_kind": "component_pipeline",
+            "route_override_used": route_decision_override is not None,
+            "routing_selection_source": str(routing_selection_source or "component_pipeline"),
             "image_only_filter_applied": False,
             "image_only_result_count": 0,
             "image_followup_context_used": False,
@@ -785,15 +842,15 @@ class ComponentPipeline:
             "detail_requested_fields": list(detail.requested_fields or []),
         }
         if conversation_state_enabled and state_working is not None:
-            state_working = conversation_state.apply_intent_update(
+            state_working = conversation_state.apply_workflow_update(
                 state_working,
-                intent=intent,
+                workflow=workflow,
                 refined_query=text,
                 attribute_filters=detail.attribute_filters,
             )
 
-        intent_started = time.perf_counter()
-        spans["intent_routing_ms"] = (time.perf_counter() - intent_started) * 1000.0
+        workflow_started = time.perf_counter()
+        spans["workflow_routing_ms"] = (time.perf_counter() - workflow_started) * 1000.0
 
         query_summary = text if text else "Please provide a question."
         selected_components: List[ComponentType] = []
@@ -810,7 +867,7 @@ class ComponentPipeline:
         display_limit = product_presentation.PRODUCT_DISPLAY_LIMIT
         result_fetch_limit = max(display_limit * 6, 20)
 
-        if smalltalk_intent:
+        if smalltalk_workflow:
             selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
             knowledge_answer = (
                 "Hi! Tell me what product you are looking for, for example type, material, gauge, or SKU."
@@ -828,7 +885,7 @@ class ComponentPipeline:
             debug_meta["store_overview_candidate_count"] = int(result_count)
         # Generic image follow-up can reuse latest conversation product context.
         if (
-            not smalltalk_intent
+            not smalltalk_workflow
             and not ambiguity_reason
             and bool(detail.wants_image)
             and not unique_sku_tokens
@@ -849,7 +906,11 @@ class ComponentPipeline:
             else:
                 ambiguity_reason = "image_request_missing_context"
 
-        if not smalltalk_intent and not knowledge_intent and not ambiguity_reason and not store_overview_request:
+        if (
+            workflow in {"catalog", "comparison", "recommendation"}
+            and not ambiguity_reason
+            and not store_overview_request
+        ):
             attribute_list_target = self._detect_attribute_list_target(text)
             if (
                 attribute_list_target
@@ -882,7 +943,11 @@ class ComponentPipeline:
                 else:
                     ambiguity_reason = "attribute_list_no_results"
 
-        if not smalltalk_intent and not knowledge_intent and not ambiguity_reason and not handled_attribute_list:
+        if (
+            workflow in {"catalog", "comparison", "recommendation"}
+            and not ambiguity_reason
+            and not handled_attribute_list
+        ):
             if product_ids:
                 debug_meta["query_id_cache_hit"] = False
                 debug_meta["structured_read_mode"] = "history"
@@ -969,7 +1034,7 @@ class ComponentPipeline:
                         debug_meta["structured_read_mode"] = structured_meta.get("structured_read_mode")
                         debug_meta["projection_hit"] = structured_meta.get("projection_hit")
                         semantic_decision = result_policy.semantic_fallback_decision(
-                            intent=intent,
+                            workflow=workflow,
                             attribute_filters=detail.attribute_filters,
                             sku_tokens=unique_sku_tokens,
                             detail_mode=bool(detail.is_detail_request),
@@ -1052,7 +1117,7 @@ class ComponentPipeline:
 
             selected_components = self._plan_components(
                 user_text=text,
-                intent=intent,
+                workflow=workflow,
                 product_count=len(product_ids),
                 is_detail_mode=bool(detail.is_detail_request),
                 is_ambiguous=bool(ambiguity_reason),
@@ -1270,17 +1335,19 @@ class ComponentPipeline:
             result_count = max(int(result_count or 0), int(total_unique_products))
             if recommendation_requested and not recommendations:
                 recommendations = list(canonical_products[:5])
-        elif not smalltalk_intent and not knowledge_intent and not handled_attribute_list:
+        elif workflow in {"catalog", "comparison", "recommendation"} and not handled_attribute_list:
             selected_components = self._plan_components(
                 user_text=text,
-                intent=intent,
+                workflow=workflow,
                 product_count=0,
                 is_detail_mode=bool(detail.is_detail_request),
                 is_ambiguous=True,
             )
-        elif not smalltalk_intent and knowledge_intent:
+        elif knowledge_workflow:
             selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
             knowledge_error_message = ""
+            knowledge_is_high_risk = self._is_high_risk_knowledge_request(text=text)
+            min_knowledge_relevance = float(getattr(settings, "CHAT_KNOWLEDGE_MIN_RELEVANCE", 0.55))
             if int(getattr(settings, "CHAT_HARD_MAX_EMBEDDINGS_PER_REQUEST", 1)) > 0:
                 try:
                     embed_started = time.perf_counter()
@@ -1293,6 +1360,7 @@ class ComponentPipeline:
                         query_text=text,
                         query_embedding=embedding,
                         limit=5,
+                        store_overview_request=store_overview_request,
                         run_id=run_id,
                     )
                     spans["vector_search_ms"] += (time.perf_counter() - knowledge_started) * 1000.0
@@ -1306,6 +1374,7 @@ class ComponentPipeline:
                         "q": normalized_text,
                         "locale": locale.lower(),
                         "source_ids": [source.source_id for source in knowledge_sources],
+                        "store_overview_request": bool(store_overview_request),
                     },
                 )
                 try:
@@ -1314,6 +1383,7 @@ class ComponentPipeline:
                         question=text,
                         sources=knowledge_sources,
                         locale=locale,
+                        store_overview_request=store_overview_request,
                         llm_cache_key=llm_cache_key,
                     )
                     spans["llm_answer_ms"] += (time.perf_counter() - llm_started) * 1000.0
@@ -1324,7 +1394,27 @@ class ComponentPipeline:
                     debug_meta["component_knowledge_answer_error"] = str(exc)
                     knowledge_error_message = self._KNOWLEDGE_UNAVAILABLE_MESSAGE
 
-            if knowledge_error_message:
+            knowledge_sources_weak = self._knowledge_sources_are_weak(
+                sources=knowledge_sources,
+                min_relevance=min_knowledge_relevance,
+            )
+            debug_meta["knowledge_sources_weak"] = knowledge_sources_weak
+            debug_meta["knowledge_is_high_risk"] = knowledge_is_high_risk
+            debug_meta["knowledge_min_relevance"] = min_knowledge_relevance
+
+            if knowledge_error_message and knowledge_is_high_risk:
+                ambiguity_reason = "knowledge_unavailable"
+                selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                retrieval_source = ComponentSource.KNOWLEDGE
+                result_count = 0
+                debug_meta["component_knowledge_fail_soft"] = True
+            elif knowledge_sources_weak and knowledge_is_high_risk:
+                ambiguity_reason = "knowledge_needs_clarification"
+                selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                retrieval_source = ComponentSource.KNOWLEDGE
+                result_count = 0
+                debug_meta["component_knowledge_needs_clarification"] = True
+            elif knowledge_error_message:
                 selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.ERROR]
                 retrieval_source = ComponentSource.ERROR
                 result_count = 0
@@ -1332,11 +1422,59 @@ class ComponentPipeline:
             else:
                 retrieval_source = ComponentSource.KNOWLEDGE
                 result_count = len(knowledge_sources)
+        elif fallback_workflow:
+            ambiguity_reason = ambiguity_reason or "routing_fallback"
+            selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+            retrieval_source = ComponentSource.ERROR
+            result_count = 0
+
+        if ComponentType.CLARIFY in selected_components:
+            if ambiguity_reason in {"structured_no_match", "detail_no_match", "detail_request_needs_specific_product"}:
+                self._apply_clarify_debug(
+                    debug_meta=debug_meta,
+                    reason=str(ambiguity_reason or ""),
+                    questions=[
+                        "Which item should I narrow down for you?",
+                    ],
+                    suggestions=self._build_product_clarify_follow_ups(
+                        products=canonical_products,
+                        attribute_filters=dict(detail.attribute_filters or {}),
+                        needs_knowledge=bool(route_decision.needs_knowledge),
+                        limit=3,
+                    ),
+                )
+            elif ambiguity_reason in {"knowledge_needs_clarification", "knowledge_unavailable"}:
+                self._apply_clarify_debug(
+                    debug_meta=debug_meta,
+                    reason=str(ambiguity_reason or ""),
+                    message=(
+                        "I want to give you the right policy details, but I need a little more context."
+                        if ambiguity_reason == "knowledge_needs_clarification"
+                        else "I may be missing the latest policy details right now."
+                    ),
+                    questions=["Which policy or contact detail do you need?"],
+                    suggestions=self._build_knowledge_clarify_follow_ups(
+                        user_text=text,
+                        limit=3,
+                    ),
+                )
+            elif ambiguity_reason == "routing_fallback":
+                self._apply_clarify_debug(
+                    debug_meta=debug_meta,
+                    reason="routing_fallback",
+                    message="I want to make sure I help with the right thing.",
+                    questions=["Are you looking for products, policy information, or something else?"],
+                    suggestions=[
+                        "Show titanium jewelry",
+                        "How can I contact you?",
+                        "What is your shipping policy?",
+                    ],
+                )
 
         context = ComponentContext(
             user_text=text,
             locale=locale,
-            intent=intent,
+            workflow=workflow,
             query_summary=query_summary,
             source=retrieval_source,
             selected_components=selected_components,
@@ -1348,7 +1486,7 @@ class ComponentPipeline:
             attribute_filters=dict(detail.attribute_filters or {}),
             sku_tokens=list(sku_tokens),
             ambiguity_reason=ambiguity_reason,
-            error_message=knowledge_error_message if knowledge_intent else None,
+            error_message=knowledge_error_message if knowledge_workflow else None,
             debug=debug_meta,
         )
 
@@ -1374,7 +1512,10 @@ class ComponentPipeline:
             carousel_msg=str(legacy["carousel_msg"] or ""),
             product_carousel=list(legacy["product_carousel"] or []),
             follow_up_questions=list(legacy["follow_up_questions"] or []),
-            intent=intent,
+            routing=route_decision.to_public_routing(
+                execution_mode="component",
+                selection_source=str(routing_selection_source or "component_pipeline"),
+            ),
             sources=knowledge_sources,
             debug={},
             components=components,
@@ -1385,7 +1526,7 @@ class ComponentPipeline:
             state_working = conversation_state.apply_retrieval_update(
                 state_working,
                 product_ids=conversation_state.product_ids_from_cards(response.product_carousel),
-                route=intent,
+                route=workflow,
             )
             state_working = conversation_state.apply_response_update(
                 state_working,
@@ -1395,7 +1536,7 @@ class ComponentPipeline:
                     if list(response.product_carousel or [])
                     else ""
                 ),
-                route=intent,
+                route=workflow,
                 product_ids=conversation_state.product_ids_from_cards(response.product_carousel),
             )
             conversation_state_payload = dict(state_working)

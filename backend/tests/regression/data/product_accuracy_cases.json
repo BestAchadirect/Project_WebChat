@@ -102,7 +102,9 @@
     "bucket": "response_contract",
     "kind": "response_contract",
     "actual_response": {
-      "intent": "browse_products",
+      "routing": {
+        "workflow": "catalog"
+      },
       "reply_text": "I found products that match what you're looking for in Gold color with Gold material.",
       "follow_up_questions": [
         "See more in Gold color"
@@ -121,7 +123,7 @@
       }
     },
     "expected": {
-      "intent": "browse_products",
+      "workflow": "catalog",
       "reply_must_include": [
         "match what you're looking for",
         "gold color",

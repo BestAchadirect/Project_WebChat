@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("pydantic_settings")
 
-from app.schemas.chat import ChatResponse, KnowledgeSource, ProductCard
+from app.schemas.chat import ChatResponse, ChatRouting, KnowledgeSource, ProductCard
 from app.services.chat import persistence, qa_metrics
 from tests.fixtures.persistence import PersistenceDB
 
@@ -34,7 +34,7 @@ def test_build_chat_qa_metrics_extracts_turn_observability() -> None:
         carousel_msg="",
         product_carousel=[_product()],
         follow_up_questions=["See more titanium labrets"],
-        intent="recommend_products",
+        routing=ChatRouting(workflow="recommendation", execution_mode="component", needs_products=True),
         sources=[
             KnowledgeSource(
                 source_id="product_listings",
@@ -44,12 +44,12 @@ def test_build_chat_qa_metrics_extracts_turn_observability() -> None:
             )
         ],
         debug={
-            "intent": "recommend_products",
-            "route": "recommend_products",
+            "workflow": "recommendation",
+            "workflow_path": "component_primary",
             "reply_mode": "deterministic_recommendation",
             "recommendation_mode": "similar_items",
             "component_mode": "legacy",
-            "retrieval_gate": {"use_products": True, "use_knowledge": False, "is_policy_intent": False},
+            "retrieval_gate": {"use_products": True, "use_knowledge": False, "is_policy_like": False},
             "latency_spans": {"total_ms": 123.4},
             "external_call_count": 1,
             "llm_call_count": 0,
@@ -62,7 +62,8 @@ def test_build_chat_qa_metrics_extracts_turn_observability() -> None:
         channel="widget",
     )
 
-    assert metrics["intent"] == "recommend_products"
+    assert metrics["workflow"] == "recommendation"
+    assert metrics["response_workflow"] == "recommendation"
     assert metrics["status"] == "success"
     assert metrics["has_products"] is True
     assert metrics["product_count"] == 1
@@ -79,9 +80,9 @@ async def test_finalize_response_persists_chat_metrics_in_token_usage() -> None:
         carousel_msg="",
         product_carousel=[],
         follow_up_questions=[],
-        intent="fallback_general",
+        routing=ChatRouting(workflow="fallback", execution_mode="component", needs_clarification=True),
         sources=[],
-        debug={"intent": "knowledge_query", "route": "fallback_general"},
+        debug={"workflow": "knowledge", "workflow_path": "fallback_component"},
     )
 
     await persistence.finalize_response(
@@ -97,5 +98,5 @@ async def test_finalize_response_persists_chat_metrics_in_token_usage() -> None:
     qa_log = next(obj for obj in db.added if getattr(obj, "__tablename__", "") == "qa_logs")
     assistant_msg = db.added[1]
     assert qa_log.token_usage["chat_metrics"]["status"] == "fallback"
-    assert qa_log.token_usage["chat_metrics"]["intent"] == "knowledge_query"
-    assert assistant_msg.token_usage["chat_metrics"]["route"] == "fallback_general"
+    assert qa_log.token_usage["chat_metrics"]["workflow"] == "knowledge"
+    assert qa_log.token_usage["chat_metrics"]["route"] == "fallback_component"

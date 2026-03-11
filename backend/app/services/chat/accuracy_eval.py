@@ -131,7 +131,7 @@ def _evaluate_response_contract(
         }
 
     actual = {
-        "intent": str(actual_response.get("intent") or ""),
+        "workflow": str(actual_response.get("workflow") or ""),
         "reply_text": str(actual_response.get("reply_text") or ""),
         "follow_up_questions": list(actual_response.get("follow_up_questions") or []),
         "source_count": int(len(list(actual_response.get("sources") or []))),
@@ -156,9 +156,9 @@ def _evaluate_response_contract(
 
 def _compare_response_contract(*, actual: Dict[str, Any], expected: Dict[str, Any]) -> List[str]:
     mismatches: List[str] = []
-    if "intent" in expected and str(actual.get("intent") or "") != str(expected.get("intent") or ""):
+    if "workflow" in expected and str(actual.get("workflow") or "") != str(expected.get("workflow") or ""):
         mismatches.append(
-            f"intent: expected {expected.get('intent')!r}, got {actual.get('intent')!r}"
+            f"workflow: expected {expected.get('workflow')!r}, got {actual.get('workflow')!r}"
         )
 
     reply_text = str(actual.get("reply_text") or "")
@@ -290,7 +290,7 @@ def _normalize_actual_result(payload: Any) -> Dict[str, Any]:
     if not product_carousel:
         product_carousel = _product_carousel_from_components(components)
     return {
-        "intent": item.get("intent"),
+        "workflow": dict(item.get("routing") or {}).get("workflow"),
         "reply_text": reply_text,
         "follow_up_questions": follow_up_questions,
         "sources": list(item.get("sources") or []),

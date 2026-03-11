@@ -19,14 +19,14 @@ class SemanticFallbackDecision:
 
 def semantic_fallback_decision(
     *,
-    intent: str,
+    workflow: str,
     attribute_filters: Mapping[str, str],
     sku_tokens: Sequence[str],
     detail_mode: bool,
     compare_requested: bool,
     store_overview_request: bool,
 ) -> SemanticFallbackDecision:
-    intent_norm = str(intent or "").strip().lower()
+    workflow_norm = str(workflow or "").strip().lower()
     if store_overview_request:
         return SemanticFallbackDecision(False, "store_overview_request")
     if compare_requested:
@@ -37,8 +37,8 @@ def semantic_fallback_decision(
         return SemanticFallbackDecision(False, "sku_present")
     if dict(attribute_filters or {}):
         return SemanticFallbackDecision(False, "structured_filters_present")
-    if intent_norm not in {"browse_products", "search_specific", "recommend_products"}:
-        return SemanticFallbackDecision(False, "intent_not_product_discovery")
+    if workflow_norm not in {"catalog", "recommendation"}:
+        return SemanticFallbackDecision(False, "workflow_not_product_discovery")
     return SemanticFallbackDecision(True, "discovery_query")
 
 

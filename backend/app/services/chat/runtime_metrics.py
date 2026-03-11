@@ -14,7 +14,6 @@ def feature_flags_snapshot() -> Dict[str, Any]:
         "chat_structured_query_cache_enabled": bool(
             getattr(settings, "CHAT_STRUCTURED_QUERY_CACHE_ENABLED", True)
         ),
-        "chat_nlu_heuristic_threshold": float(getattr(settings, "CHAT_NLU_HEURISTIC_THRESHOLD", 0.85)),
         "chat_external_call_budget": int(getattr(settings, "CHAT_EXTERNAL_CALL_BUDGET", 3)),
         "chat_external_call_retry_max": int(getattr(settings, "CHAT_EXTERNAL_CALL_RETRY_MAX", 1)),
         "chat_external_call_fail_fast_seconds": float(
@@ -46,9 +45,27 @@ def feature_flags_snapshot() -> Dict[str, Any]:
         "chat_redis_cache_enabled": bool(getattr(settings, "CHAT_REDIS_CACHE_ENABLED", False)),
         "chat_catalog_version": str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
         "chat_prompt_version": str(getattr(settings, "CHAT_PROMPT_VERSION", "v1")),
+        "chat_llm_routing_enabled": bool(getattr(settings, "CHAT_LLM_ROUTING_ENABLED", False)),
+        "chat_llm_routing_model": str(getattr(settings, "CHAT_LLM_ROUTING_MODEL", "")),
+        "chat_llm_routing_max_tokens": int(getattr(settings, "CHAT_LLM_ROUTING_MAX_TOKENS", 180)),
+        "chat_llm_routing_timeout_ms": int(getattr(settings, "CHAT_LLM_ROUTING_TIMEOUT_MS", 1200)),
+        "chat_llm_routing_min_confidence": float(
+            getattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
+        ),
+        "chat_llm_routing_shadow_mode": bool(getattr(settings, "CHAT_LLM_ROUTING_SHADOW_MODE", False)),
+        "chat_agentic_min_confidence": float(getattr(settings, "CHAT_AGENTIC_MIN_CONFIDENCE", 0.8)),
+        "chat_clarify_guardrails_enabled": bool(
+            getattr(settings, "CHAT_CLARIFY_GUARDRAILS_ENABLED", True)
+        ),
+        "chat_knowledge_min_relevance": float(getattr(settings, "CHAT_KNOWLEDGE_MIN_RELEVANCE", 0.55)),
+        "chat_conversion_follow_ups_enabled": bool(
+            getattr(settings, "CHAT_CONVERSION_FOLLOW_UPS_ENABLED", True)
+        ),
+        "chat_product_click_tracking_enabled": bool(
+            getattr(settings, "CHAT_PRODUCT_CLICK_TRACKING_ENABLED", True)
+        ),
         "openai_timeout_seconds": float(getattr(settings, "OPENAI_TIMEOUT_SECONDS", 12.0)),
         "openai_max_retries": int(getattr(settings, "OPENAI_MAX_RETRIES", 1)),
-        "nlu_fast_path_enabled": bool(getattr(settings, "NLU_FAST_PATH_ENABLED", True)),
     }
 
 
@@ -78,7 +95,7 @@ def trim_history_for_llm(history: List[Dict[str, Any]], max_tokens: int) -> List
 def new_latency_spans() -> Dict[str, Any]:
     return {
         "total_ms": 0.0,
-        "intent_routing_ms": 0.0,
+        "workflow_routing_ms": 0.0,
         "detail_mode_triggered": False,
         "detail_query_parser_ms": 0.0,
         "retrieval_gate_ms": 0.0,

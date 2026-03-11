@@ -30,12 +30,14 @@ class KnowledgeRetrievalService:
         query_embedding: List[float],
         limit: int = 5,
         category: Optional[str] = None,
+        store_overview_request: bool = False,
         run_id: Optional[str] = None,
     ) -> List[KnowledgeSource]:
         sources, _best = await self._pipeline.search_knowledge(
             query_text=query_text,
             query_embedding=query_embedding,
             limit=limit,
+            store_overview_request=store_overview_request,
             run_id=run_id,
         )
         if not category:
@@ -53,9 +55,10 @@ class KnowledgeRetrievalService:
         knowledge_embedding: List[float],
         is_complex: bool,
         is_question_like: bool,
-        is_policy_intent: bool,
+        is_policy_like: bool,
         policy_topic_count: int,
         max_sub_questions: int,
+        store_overview_request: bool = False,
         run_id: Optional[str] = None,
     ) -> Any:
         return await self._pipeline.retrieve(
@@ -64,8 +67,9 @@ class KnowledgeRetrievalService:
             knowledge_embedding=knowledge_embedding,
             is_complex=is_complex,
             is_question_like=is_question_like,
-            is_policy_intent=is_policy_intent,
+            is_policy_like=is_policy_like,
             policy_topic_count=policy_topic_count,
             max_sub_questions=max_sub_questions,
+            store_overview_request=store_overview_request,
             run_id=run_id,
         )

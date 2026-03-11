@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.services.catalog.product_search import CatalogProductSearchService
+from app.services.chat import routing_policy
 from app.services.chat.agentic.tool_handlers import (
     ALLOWED_PRODUCT_FILTERS,
     normalize_product_filters,
@@ -291,23 +292,14 @@ class AgentToolRegistry:
     def is_tool_suitable(
         *,
         user_text: str,
-        intent: str,
+        workflow: str,
         sku_token: Optional[str],
     ) -> bool:
-        text = (user_text or "").strip().lower()
-        if not text:
-            return False
-        if sku_token:
-            return True
-        if intent in {"browse_products", "search_specific"}:
-            return True
-        inventory_keywords = ("in stock", "inventory", "availability", "available", "stock")
-        if any(token in text for token in inventory_keywords):
-            return True
-        detail_keywords = ("details", "detail", "spec", "specs", "sku", "product code", "master code")
-        if any(token in text for token in detail_keywords):
-            return True
-        return False
+        return routing_policy.is_agentic_tool_suitable(
+            user_text=user_text,
+            workflow=workflow,
+            sku_token=sku_token,
+        )
 
 
 def agent_system_prompt(reply_language: str) -> str:

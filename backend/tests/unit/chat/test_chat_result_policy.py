@@ -3,7 +3,7 @@ from app.services.chat.result_policy import classify_match_tier, semantic_fallba
 
 def test_result_policy_blocks_semantic_fallback_for_detail_mode() -> None:
     decision = semantic_fallback_decision(
-        intent="browse_products",
+        workflow="catalog",
         attribute_filters={},
         sku_tokens=[],
         detail_mode=True,
@@ -17,7 +17,7 @@ def test_result_policy_blocks_semantic_fallback_for_detail_mode() -> None:
 
 def test_result_policy_allows_semantic_fallback_for_discovery_query() -> None:
     decision = semantic_fallback_decision(
-        intent="recommend_products",
+        workflow="recommendation",
         attribute_filters={},
         sku_tokens=[],
         detail_mode=False,

@@ -6,7 +6,7 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("pydantic_settings")
 
 from app.core.config import settings
-from app.schemas.chat import ChatRequest, ChatResponse
+from app.schemas.chat import ChatRequest, ChatResponse, ChatRouting
 from app.services.chat import persistence
 from app.services.chat.service import ChatService
 from tests.fixtures.chat import (
@@ -33,13 +33,13 @@ async def test_process_chat_component_primary_forwards_conversation_state(monkey
     captured: dict[str, object] = {}
     state_payload = {
         "version": 1,
-        "last_intent": "browse_products",
+        "last_workflow": "catalog",
         "last_refined_query": "cheaper ones",
         "last_attribute_filters": {"material": "titanium"},
         "last_requested_fields": [],
         "last_product_ids": ["p-1"],
         "last_currency": "USD",
-        "last_route": "browse_products",
+        "last_route": "catalog",
         "updated_at": "2026-03-10T00:00:00Z",
     }
 
@@ -53,7 +53,7 @@ async def test_process_chat_component_primary_forwards_conversation_state(monkey
         captured["conversation_state"] = conversation_state
         return response
 
-    async def fake_component_pipeline(self, *, request, conversation_id, run_id):
+    async def fake_component_pipeline(self, *, request, conversation_id, run_id, **kwargs):
         return build_component_pipeline_result(
             request=request,
             conversation_id=conversation_id,
@@ -89,19 +89,19 @@ async def test_finalize_response_persists_conversation_state_when_provided() -> 
         carousel_msg="",
         product_carousel=[],
         follow_up_questions=[],
-        intent="rag_strict",
+        routing=ChatRouting(workflow="fallback", execution_mode="component", needs_clarification=True),
         sources=[],
         debug={},
     )
     state_payload = {
         "version": 1,
-        "last_intent": "browse_products",
+        "last_workflow": "catalog",
         "last_refined_query": "titanium belly rings",
         "last_attribute_filters": {"material": "titanium"},
         "last_requested_fields": [],
         "last_product_ids": [],
         "last_currency": "USD",
-        "last_route": "rag_strict",
+        "last_route": "catalog",
         "updated_at": "2026-03-09T00:00:00Z",
     }
 

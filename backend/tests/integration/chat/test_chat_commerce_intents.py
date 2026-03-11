@@ -10,8 +10,10 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ChatRequest
+from app.services.chat import routing_policy
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.pipeline import ComponentPipeline
+from app.services.chat.components.types import ComponentSource
 
 
 class _RedisStub:
@@ -45,8 +47,25 @@ def _canonical_product(*, sku: str, title: str, material: str) -> CanonicalProdu
     )
 
 
+def _workflow_decision(
+    workflow: str,
+    *,
+    store_overview_request: bool = False,
+) -> routing_policy.WorkflowDecision:
+    return routing_policy.WorkflowDecision(
+        workflow=workflow,
+        source=ComponentSource.SQL,
+        needs_products=workflow in {"catalog", "comparison", "recommendation"},
+        needs_knowledge=workflow == "knowledge",
+        needs_clarification=workflow == "fallback",
+        store_overview_request=store_overview_request,
+        reason="test_override",
+        confidence=1.0,
+    )
+
+
 @pytest.mark.asyncio
-async def test_component_pipeline_compare_intent_returns_compare_component() -> None:
+async def test_component_pipeline_compare_workflow_returns_compare_component() -> None:
     first = _canonical_product(sku="AAA-1", title="Titanium Labret AAA-1", material="titanium")
     second = _canonical_product(sku="BBB-2", title="Steel Labret BBB-2", material="steel")
 
@@ -87,9 +106,10 @@ async def test_component_pipeline_compare_intent_returns_compare_component() -> 
         request=ChatRequest(user_id="guest-1", message="compare AAA-1 and BBB-2", locale="en-US"),
         conversation_id=88,
         run_id="run-compare",
+        route_decision_override=_workflow_decision("comparison"),
     )
 
-    assert result.response.intent == "compare_products"
+    assert result.response.routing.workflow == "comparison"
     assert len(result.response.product_carousel) == 2
     assert any(component.type.value == "compare" for component in result.response.components)
     assert "compare" in result.response.reply_text.lower()
@@ -109,16 +129,17 @@ async def test_component_pipeline_compare_requires_two_products() -> None:
         request=ChatRequest(user_id="guest-1", message="compare AAA-1", locale="en-US"),
         conversation_id=88,
         run_id="run-compare-missing",
+        route_decision_override=_workflow_decision("comparison"),
     )
 
-    assert result.response.intent == "compare_products"
+    assert result.response.routing.workflow == "comparison"
     assert result.response.product_carousel == []
     assert any(component.type.value == "clarify" for component in result.response.components)
     assert "two sku" in result.response.reply_text.lower()
 
 
 @pytest.mark.asyncio
-async def test_component_pipeline_recommend_intent_returns_recommendation_route() -> None:
+async def test_component_pipeline_recommend_workflow_returns_recommendation_route() -> None:
     first = _canonical_product(sku="LAB-1", title="Titanium Labret 1", material="titanium")
     second = _canonical_product(sku="LAB-2", title="Titanium Labret 2", material="titanium")
 
@@ -168,9 +189,10 @@ async def test_component_pipeline_recommend_intent_returns_recommendation_route(
         request=ChatRequest(user_id="guest-1", message="recommend titanium labrets", locale="en-US"),
         conversation_id=88,
         run_id="run-recommend",
+        route_decision_override=_workflow_decision("recommendation"),
     )
 
-    assert result.response.intent == "recommend_products"
+    assert result.response.routing.workflow == "recommendation"
     assert len(result.response.product_carousel) == 2
     assert any(component.type.value == "recommendations" for component in result.response.components)
     assert "recommend" in result.response.reply_text.lower()

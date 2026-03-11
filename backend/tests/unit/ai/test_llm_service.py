@@ -141,3 +141,26 @@ async def test_generate_chat_json_retries_for_max_tokens_then_temperature(
     assert completions.calls[1]["max_completion_tokens"] == 123
     assert completions.calls[1]["temperature"] == 0.2
     assert "temperature" not in completions.calls[2]
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_json_uses_gpt5_compat_request_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completions = _SequenceCompletions([_response_with_content('{"reply":"ok"}')])
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    monkeypatch.setattr(llm_service, "client", fake_client)
+
+    result = await llm_service.generate_chat_json(
+        messages=[{"role": "user", "content": "hello"}],
+        model="gpt-5-mini",
+        temperature=0.0,
+        max_tokens=123,
+        reasoning_effort="minimal",
+    )
+
+    assert result == {"reply": "ok"}
+    assert completions.calls[0]["max_completion_tokens"] == 123
+    assert "max_tokens" not in completions.calls[0]
+    assert "temperature" not in completions.calls[0]
+    assert completions.calls[0]["reasoning_effort"] == "minimal"

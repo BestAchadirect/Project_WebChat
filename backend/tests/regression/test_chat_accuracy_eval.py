@@ -42,7 +42,7 @@ def test_chat_accuracy_suite_can_overlay_external_actual_results() -> None:
             "bucket": "policy_contract",
             "kind": "response_contract",
             "expected": {
-                "intent": "knowledge_query",
+                "workflow": "knowledge",
                 "reply_must_include": ["refund"],
                 "product_count_max": 0,
             },
@@ -50,7 +50,7 @@ def test_chat_accuracy_suite_can_overlay_external_actual_results() -> None:
     ]
     actual_results = {
         "faq_overlay_case": {
-            "intent": "knowledge_query",
+            "routing": {"workflow": "knowledge"},
             "reply_text": "Refund requests are reviewed by the support team.",
             "follow_up_questions": [],
             "sources": [{"title": "Refund Policy"}],
@@ -65,7 +65,7 @@ def test_chat_accuracy_suite_can_overlay_external_actual_results() -> None:
     assert summary["passed"] == 1
 
 
-def test_chat_accuracy_suite_reads_components_only_actual_results() -> None:
+def test_chat_accuracy_suite_reads_explicit_follow_ups_from_actual_results() -> None:
     cases = [
         {
             "id": "component_contract_case",
@@ -74,7 +74,7 @@ def test_chat_accuracy_suite_reads_components_only_actual_results() -> None:
             "bucket": "component_contract",
             "kind": "response_contract",
             "expected": {
-                "intent": "browse_products",
+                "workflow": "catalog",
                 "reply_must_include": ["titanium"],
                 "follow_ups_include": ["See more titanium labrets"],
                 "top_product_skus_include_any": ["SKU-1"],
@@ -83,14 +83,14 @@ def test_chat_accuracy_suite_reads_components_only_actual_results() -> None:
     ]
     actual_results = {
         "component_contract_case": {
-            "intent": "browse_products",
+            "routing": {"workflow": "catalog"},
+            "follow_up_questions": ["See more titanium labrets"],
             "components": [
                 {"type": "assistant_message", "data": {"text": "I found titanium options for you."}},
                 {
                     "type": "product_cards",
                     "data": {"cards": [{"sku": "SKU-1", "title": "Titanium Labret"}]},
                 },
-                {"type": "quick_replies", "data": {"items": ["See more titanium labrets"]}},
             ],
             "sources": [],
             "debug": {},

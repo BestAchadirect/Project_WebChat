@@ -35,7 +35,7 @@ class LatencySpans:
         return cls(
             values={
                 "total_ms": 0.0,
-                "intent_routing_ms": 0.0,
+                "workflow_routing_ms": 0.0,
                 "detail_mode_triggered": False,
                 "detail_query_parser_ms": 0.0,
                 "retrieval_gate_ms": 0.0,

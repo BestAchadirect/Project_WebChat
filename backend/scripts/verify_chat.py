@@ -35,7 +35,10 @@ async def verify_chat(query: str):
             response = await service.process_chat(req)
             print(f"\nResponse Text: {response.reply_text}", flush=True)
             print(f"Carousel Msg: {response.carousel_msg}", flush=True)
-            print(f"Intent (Route): {response.intent}", flush=True)
+            print(
+                f"Workflow: {getattr(getattr(response, 'routing', None), 'workflow', 'unknown')}",
+                flush=True,
+            )
             
             # Check debug info if available
             if response.debug:

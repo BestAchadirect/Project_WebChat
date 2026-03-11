@@ -24,7 +24,7 @@ async def check_logs():
                 " | ".join(
                     [
                         f"ID: {log.id}",
-                        f"Intent: {metrics.get('intent') or 'unknown'}",
+                        f"Workflow: {metrics.get('workflow') or 'unknown'}",
                         f"Route: {metrics.get('route') or 'unknown'}",
                         f"Status: {metrics.get('status') or log.status}",
                         f"Products: {metrics.get('product_count', 0)}",

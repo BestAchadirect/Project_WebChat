@@ -23,13 +23,13 @@ from app.schemas.chat import (
     ProductCard,
 )
 from app.services.catalog.product_search import CatalogProductSearchService
-from app.services.chat.agentic.orchestrator import AgentOrchestrator
+from app.services.chat.agentic.orchestrator import AgentOrchestrator, AgentRunResult
 from app.services.chat.recommendation_service import RecommendationService
-from app.services.chat.agentic.tool_registry import AgentToolRegistry
 from app.services.chat.components import ComponentPipeline, redis_component_cache
 from app.services.chat import (
     follow_up_policy,
     persistence,
+    routing_policy,
     runtime_metrics,
     unified_chat_runtime,
 )
@@ -52,7 +52,7 @@ class ExternalBudgetExceededReason(str, Enum):
 
 
 class ChatService:
-    """Chat orchestration (intent -> retrieval -> response)."""
+    """Chat orchestration (workflow routing -> retrieval -> response)."""
     _last_cache_stats_log_ts: float = 0.0
 
     _FOLLOW_UP_STOPWORDS = {
@@ -203,7 +203,11 @@ class ChatService:
         conversation_state: Optional[Dict[str, Any]] = None,
     ) -> ChatResponse:
         retrieval_meta = debug_meta.get("retrieval_gate") if isinstance(debug_meta, dict) else None
-        route = str(getattr(response, "intent", "") or (debug_meta.get("route") if isinstance(debug_meta, dict) else "") or "")
+        route = str(
+            getattr(getattr(response, "routing", None), "workflow", "")
+            or (debug_meta.get("workflow") if isinstance(debug_meta, dict) else "")
+            or ""
+        )
         raw_follow_ups = list(response.follow_up_questions or [])
         filtered_follow_ups = self._filter_follow_up_questions(
             questions=raw_follow_ups,
@@ -291,7 +295,7 @@ class ChatService:
         has_products: bool,
         use_products: bool,
         use_knowledge: bool,
-        is_policy_intent: bool,
+        is_policy_like: bool,
     ) -> bool:
         return follow_up_policy.is_follow_up_relevant(
             question=question,
@@ -300,7 +304,7 @@ class ChatService:
             has_products=has_products,
             use_products=use_products,
             use_knowledge=use_knowledge,
-            is_policy_intent=is_policy_intent,
+            is_policy_like=is_policy_like,
             stopwords=cls._FOLLOW_UP_STOPWORDS,
             product_terms=cls._FOLLOW_UP_PRODUCT_TERMS,
             policy_terms=cls._FOLLOW_UP_POLICY_TERMS,
@@ -372,24 +376,18 @@ class ChatService:
 
     @staticmethod
     def _is_agentic_channel_enabled(channel: Optional[str]) -> bool:
-        if not bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)):
-            return False
-        allowed_raw = str(getattr(settings, "AGENTIC_ALLOWED_CHANNELS", "") or "")
-        allowed = {part.strip().lower() for part in allowed_raw.split(",") if part.strip()}
-        if not allowed:
-            return True
-        return str(channel or "").strip().lower() in allowed
+        return routing_policy.is_agentic_channel_enabled(channel=channel)
 
     def _is_agentic_tool_suitable(
         self,
         *,
         user_text: str,
-        intent: str,
+        workflow: str,
         sku_token: Optional[str],
     ) -> bool:
-        return AgentToolRegistry.is_tool_suitable(
+        return routing_policy.is_agentic_tool_suitable(
             user_text=user_text,
-            intent=intent,
+            workflow=workflow,
             sku_token=sku_token,
         )
 
@@ -550,6 +548,8 @@ class ChatService:
         request: ChatRequest,
         conversation_id: int,
         run_id: str,
+        route_decision_override: Optional[routing_policy.WorkflowDecision] = None,
+        routing_selection_source: str = "",
     ):
         pipeline = ComponentPipeline(
             db=self.db,
@@ -561,6 +561,25 @@ class ChatService:
             request=request,
             conversation_id=conversation_id,
             run_id=run_id,
+            route_decision_override=route_decision_override,
+            routing_selection_source=routing_selection_source,
+        )
+
+    async def _run_agentic_workflow(
+        self,
+        *,
+        user_text: str,
+        conversation_id: int,
+        run_id: str,
+        channel: str,
+        reply_language: str,
+    ) -> Optional[AgentRunResult]:
+        history = await self.get_history(conversation_id=conversation_id, limit=8)
+        orchestrator = self._new_agent_orchestrator(run_id=run_id, channel=channel)
+        return await orchestrator.run(
+            user_text=user_text,
+            history=history,
+            reply_language=reply_language,
         )
 
 

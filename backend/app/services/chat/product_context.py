@@ -13,7 +13,7 @@ class ProductContextAssembler:
         product_cards: List[ProductCard],
         best_distance: float | None,
         show_products_flag: bool,
-        intent: str,
+        workflow: str,
         default_threshold: float,
         allow_fallback_products: bool = True,
     ) -> Tuple[List[ProductCard], List[KnowledgeSource], bool]:
@@ -23,7 +23,7 @@ class ProductContextAssembler:
 
         product_threshold = float(default_threshold)
         if show_products_flag:
-            if intent == "browse_products":
+            if workflow == "catalog":
                 product_threshold = 0.85
             else:
                 product_threshold = 0.65
