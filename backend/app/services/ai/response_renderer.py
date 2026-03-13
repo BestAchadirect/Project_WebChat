@@ -17,7 +17,6 @@ class ResponseRenderer:
             "browse_products": "catalog",
             "search_specific": "catalog",
             "knowledge_query": "knowledge",
-            "compare_products": "comparison",
             "recommend_products": "recommendation",
             "smalltalk": "smalltalk",
             "fallback_general": "fallback",
@@ -26,7 +25,7 @@ class ResponseRenderer:
         return ChatRouting(
             workflow=workflow,
             execution_mode="component",
-            needs_products=workflow in {"catalog", "comparison", "recommendation"},
+            needs_products=workflow in {"catalog", "recommendation"},
             needs_knowledge=workflow == "knowledge",
             needs_clarification=workflow == "fallback",
             reason="legacy_response_renderer",

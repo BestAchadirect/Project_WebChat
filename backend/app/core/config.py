@@ -137,11 +137,19 @@ class Settings(BaseSettings):
     CHAT_COMPONENT_BUCKETS_REQUIRE_COMPONENTS: bool = False
     CHAT_COMPONENT_BUCKETS_ENABLED_CHANNELS: str = "widget"
     CHAT_CONVERSATION_STATE_ENABLED: bool = True
+    CHAT_CHALLENGE_CONTEXT_ENABLED: bool = False
+    CHAT_CHALLENGE_CONTEXT_CHANNELS: str = "widget,qa_console"
+    CHAT_TONE_HUMANIZER_ENABLED: bool = True
+    CHAT_TONE_ANTI_REPEAT_WINDOW: int = 4
+    CHAT_TONE_MAX_SENTENCES: int = 2
+    CHAT_TONE_MAX_CHARS: int = 220
+    CHAT_TONE_ENABLED_CHANNELS: str = "widget"
     CHAT_REDIS_CACHE_ENABLED: bool = False
     CHAT_REDIS_URL: str = ""
     CHAT_REDIS_KEY_PREFIX: str = "chat:components"
     FACETS_V2_DUAL_WRITE_ENABLED: bool = True
     FACETS_V2_READ_ENABLED: bool = True
+    ALIASES_REFRESH_TIMEOUT_SECONDS: float = 5.0
 
     # Klevu product sync
     KLEVU_API_ENDPOINT: str = "https://eucs30v2.ksearchnet.com/cs/v2/search"

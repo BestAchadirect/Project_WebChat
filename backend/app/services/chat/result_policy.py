@@ -23,14 +23,11 @@ def semantic_fallback_decision(
     attribute_filters: Mapping[str, str],
     sku_tokens: Sequence[str],
     detail_mode: bool,
-    compare_requested: bool,
     store_overview_request: bool,
 ) -> SemanticFallbackDecision:
     workflow_norm = str(workflow or "").strip().lower()
     if store_overview_request:
         return SemanticFallbackDecision(False, "store_overview_request")
-    if compare_requested:
-        return SemanticFallbackDecision(False, "compare_request")
     if detail_mode:
         return SemanticFallbackDecision(False, "detail_mode")
     if sku_tokens:

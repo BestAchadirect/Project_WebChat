@@ -166,6 +166,28 @@ class DetailResponseBuilder:
             out[str(key)] = text
         return out
 
+    @staticmethod
+    def _pick_group_representative(items: List[Any]) -> Any:
+        if not items:
+            return None
+        for card in items:
+            if str(getattr(card, "product_url", "") or "").strip() and str(getattr(card, "image_url", "") or "").strip():
+                return card
+        for card in items:
+            if str(getattr(card, "product_url", "") or "").strip():
+                return card
+        for card in items:
+            if str(getattr(card, "image_url", "") or "").strip():
+                return card
+        return items[0]
+
+    @classmethod
+    def _render_image_master_line(cls, *, index: int, master_code: str, representative: Any) -> str:
+        image_url = str(getattr(representative, "image_url", "") or "").strip()
+        if image_url:
+            return f"{index}. Master code: {master_code}; Image: {image_url}"
+        return f"{index}. Master code: {master_code}; Image: unavailable"
+
     @classmethod
     def _render_product_line(
         cls,
@@ -229,22 +251,43 @@ class DetailResponseBuilder:
             if str(getattr(card, "image_url", "") or "").strip()
         ]
         source_items = image_filtered_matches if wants_image and image_filtered_matches else matches
-        display_items = source_items[: max(1, int(max_matches))]
-        master_groups = cls._group_by_master(display_items)
-        variant_count = len(display_items)
-        master_count = len(master_groups)
+        requested_set = {str(field or "").strip().lower() for field in requested_fields}
+        image_focus_mode = bool(wants_image) and (not requested_set or requested_set.issubset({"image"}))
+
+        if image_focus_mode:
+            grouped_source = cls._group_by_master(source_items)
+            selected_groups = grouped_source[: max(1, int(max_matches))]
+            display_items = [
+                cls._pick_group_representative(list(group.get("items") or []))
+                for group in selected_groups
+            ]
+            display_items = [item for item in display_items if item is not None]
+            master_groups = selected_groups
+            variant_count = sum(len(list(group.get("items") or [])) for group in selected_groups)
+            master_count = len(master_groups)
+        else:
+            display_items = source_items[: max(1, int(max_matches))]
+            master_groups = cls._group_by_master(display_items)
+            variant_count = len(display_items)
+            master_count = len(master_groups)
+
         if master_count == 1 and variant_count > 1:
             master_code = str(master_groups[0]["master_code"] or "").strip()
-            header = f"I found {variant_count} variants for master code {master_code}."
+            if image_focus_mode:
+                header = f"I found image links for {variant_count} variants in master code {master_code}."
+            else:
+                header = f"I found {variant_count} variants for master code {master_code}."
         elif master_count > 1 and variant_count > 1:
-            header = f"I found {master_count} master styles ({variant_count} variants)."
+            if image_focus_mode:
+                header = f"I found image links for {master_count} master codes ({variant_count} variants)."
+            else:
+                header = f"I found {master_count} master styles ({variant_count} variants)."
         else:
             header = (
                 "I found 1 matching product."
                 if variant_count == 1
                 else f"I found {variant_count} matching products."
             )
-        requested_set = {str(field or "").strip().lower() for field in requested_fields}
         attribute_focus_mode = bool(requested_set) and requested_set.issubset({"attributes"})
 
         lines: List[str] = [header]
@@ -266,6 +309,19 @@ class DetailResponseBuilder:
                         "Top master codes: "
                         + ", ".join([f"[MASTER] {code}" for code in top_masters[:4]])
                     )
+        elif image_focus_mode:
+            for idx, group in enumerate(master_groups, start=1):
+                master_code = str(group.get("master_code") or "").strip()
+                representative = cls._pick_group_representative(list(group.get("items") or []))
+                if representative is None:
+                    continue
+                lines.append(
+                    cls._render_image_master_line(
+                        index=idx,
+                        master_code=master_code or str(getattr(representative, "name", "") or "").strip(),
+                        representative=representative,
+                    )
+                )
         else:
             for idx, card in enumerate(display_items, start=1):
                 missing = missing_fields_by_product.get(str(card.id), [])
@@ -280,7 +336,9 @@ class DetailResponseBuilder:
         reply_text = "\n".join(lines)
 
         show_cards = True
-        if len(display_items) > 1:
+        if image_focus_mode:
+            reason = "image_master_grouped"
+        elif len(display_items) > 1:
             reason = "multiple_matches"
         else:
             reason = "single_match_text_only"
@@ -292,12 +350,12 @@ class DetailResponseBuilder:
                 variant_word = "variant" if variant_count == 1 else "variants"
                 carousel_msg = (
                     f"Master code {master_code} has {variant_count} {variant_word}. "
-                    "Expand to view each SKU detail."
+                    "Expand to view variant details."
                 )
             elif master_count > 1:
                 carousel_msg = (
                     f"Showing {master_count} master styles ({variant_count} variants). "
-                    "Expand a style to view SKU details."
+                    "Expand a style to view variant details."
                 )
 
         return DetailResponsePayload(

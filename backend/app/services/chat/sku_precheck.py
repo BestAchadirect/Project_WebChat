@@ -104,8 +104,6 @@ def sku_precheck_bypass_reason(*, user_text: str) -> str:
     normalized = " ".join(str(user_text or "").strip().lower().split())
     if not normalized:
         return "empty_query"
-    if re.search(r"\b(compare|vs)\b", normalized):
-        return "compare_requested"
     if re.search(r"\b(table|grid|spreadsheet)\b", normalized):
         return "table_requested"
     if re.search(r"\b(image|images|picture|photo)\b", normalized):

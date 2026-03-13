@@ -42,6 +42,21 @@ def feature_flags_snapshot() -> Dict[str, Any]:
         "chat_conversation_state_enabled": bool(
             getattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", False)
         ),
+        "chat_challenge_context_enabled": bool(
+            getattr(settings, "CHAT_CHALLENGE_CONTEXT_ENABLED", False)
+        ),
+        "chat_challenge_context_channels": str(
+            getattr(settings, "CHAT_CHALLENGE_CONTEXT_CHANNELS", "widget,qa_console")
+        ),
+        "chat_tone_humanizer_enabled": bool(
+            getattr(settings, "CHAT_TONE_HUMANIZER_ENABLED", True)
+        ),
+        "chat_tone_anti_repeat_window": int(
+            getattr(settings, "CHAT_TONE_ANTI_REPEAT_WINDOW", 4)
+        ),
+        "chat_tone_max_sentences": int(getattr(settings, "CHAT_TONE_MAX_SENTENCES", 2)),
+        "chat_tone_max_chars": int(getattr(settings, "CHAT_TONE_MAX_CHARS", 220)),
+        "chat_tone_enabled_channels": str(getattr(settings, "CHAT_TONE_ENABLED_CHANNELS", "widget")),
         "chat_redis_cache_enabled": bool(getattr(settings, "CHAT_REDIS_CACHE_ENABLED", False)),
         "chat_catalog_version": str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
         "chat_prompt_version": str(getattr(settings, "CHAT_PROMPT_VERSION", "v1")),

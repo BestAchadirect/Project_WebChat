@@ -6,7 +6,8 @@ from typing import Any, Dict, Optional
 from app.core.config import settings
 from app.schemas.chat import ChatComponent, ChatRequest, ChatResponse, ChatResponseMeta, ChatRouting
 from app.services.ai.llm_service import llm_service
-from app.services.chat import routing_policy
+from app.services.chat import alias_cache, challenge_context, routing_policy
+from app.services.chat.components.types import ComponentSource
 from app.services.chat.detail_query_parser import DetailQueryParser
 
 
@@ -120,48 +121,146 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
         conversation = await self.get_or_create_conversation(user, req.conversation_id)
         conversation_id_value = _safe_conversation_id(conversation, conversation_id_value)
 
-        detail = DetailQueryParser.parse(user_text=text, nlu_data={})
+        alias_map = await alias_cache.get_alias_map(self.db)
+        detail = DetailQueryParser.parse(user_text=text, nlu_data={}, alias_map=alias_map)
         sku_tokens = routing_policy.extract_sku_tokens(text)
-        execution_decision = await routing_policy.decide_execution_mode_with_llm(
-            text=text,
-            channel=channel,
-            locale=str(req.locale or ""),
-            detail_has_filters=bool(detail.attribute_filters),
-            detail_request=bool(detail.is_detail_request),
-            sku_tokens=sku_tokens,
+        challenge_decision = challenge_context.ChallengeContextDecision()
+        challenge_payload: Optional[Dict[str, Any]] = None
+        if challenge_context.is_challenge_context_enabled(channel=channel):
+            challenge_intent = challenge_context.detect_challenge_intent(user_text=text)
+            debug_meta["challenge_context_intent_precheck"] = challenge_intent
+            debug_meta["challenge_context_precheck_hit"] = challenge_intent != "none"
+            if challenge_intent != "none":
+                history = await self.get_history(conversation_id=conversation_id_value, limit=8)
+                state_payload = await self.get_conversation_state(conversation_id_value)
+                challenge_decision = challenge_context.resolve_challenge_context(
+                    user_text=text,
+                    channel=channel,
+                    state_raw=state_payload,
+                    history=history,
+                    sku_tokens=sku_tokens,
+                )
+            if challenge_decision.active:
+                challenge_payload = {
+                    "mode": challenge_decision.mode,
+                    "intent": challenge_decision.intent,
+                    "reason": challenge_decision.reason,
+                    "target_sku": challenge_decision.target_sku,
+                    "base_question": challenge_decision.base_question,
+                }
+            debug_meta["challenge_context"] = {
+                "active": challenge_decision.active,
+                "mode": challenge_decision.mode,
+                "intent": challenge_decision.intent,
+                "reason": challenge_decision.reason,
+                "target_sku": challenge_decision.target_sku,
+                "base_question": challenge_decision.base_question,
+            }
+
+        selection_source = "challenge_context"
+        execution_mode = "component"
+        execution_decision: Optional[routing_policy.ExecutionDecision] = None
+        if challenge_decision.mode == "knowledge_reconfirm":
+            route_decision = routing_policy.WorkflowDecision(
+                workflow="knowledge",
+                source=ComponentSource.KNOWLEDGE,
+                needs_products=False,
+                needs_knowledge=True,
+                needs_clarification=False,
+                store_overview_request=False,
+                reason=challenge_decision.reason or "challenge_context",
+                confidence=1.0,
+            )
+        elif challenge_decision.mode == "inventory_reverify":
+            route_decision = routing_policy.WorkflowDecision(
+                workflow="catalog",
+                source=ComponentSource.SQL,
+                needs_products=True,
+                needs_knowledge=False,
+                needs_clarification=False,
+                store_overview_request=False,
+                reason=challenge_decision.reason or "challenge_context",
+                confidence=1.0,
+            )
+        elif challenge_decision.mode == "needs_target_clarification":
+            route_decision = routing_policy.WorkflowDecision(
+                workflow="fallback",
+                source=ComponentSource.ERROR,
+                needs_products=False,
+                needs_knowledge=False,
+                needs_clarification=True,
+                store_overview_request=False,
+                reason=challenge_decision.reason or "challenge_context",
+                confidence=1.0,
+            )
+        else:
+            execution_decision = await routing_policy.decide_execution_mode_with_llm(
+                text=text,
+                channel=channel,
+                locale=str(req.locale or ""),
+                detail_has_filters=bool(detail.attribute_filters),
+                detail_request=bool(detail.is_detail_request),
+                sku_tokens=sku_tokens,
+            )
+            route_decision = execution_decision.route_decision
+            selection_source = execution_decision.selection_source
+            execution_mode = execution_decision.execution_mode
+
+        public_routing = route_decision.to_public_routing(
+            execution_mode=execution_mode,
+            selection_source=selection_source,
         )
-        route_decision = execution_decision.route_decision
-        public_routing = execution_decision.to_public_routing()
         debug_meta["workflow"] = route_decision.workflow
         debug_meta["workflow_source"] = route_decision.source.value
         debug_meta["workflow_needs_products"] = route_decision.needs_products
         debug_meta["workflow_needs_knowledge"] = route_decision.needs_knowledge
         debug_meta["workflow_needs_clarification"] = route_decision.needs_clarification
         debug_meta["workflow_store_overview_request"] = route_decision.store_overview_request
-        debug_meta["execution_mode"] = execution_decision.execution_mode
-        debug_meta["routing_selection_source"] = execution_decision.selection_source
-        debug_meta["routing_confidence_gate_applied"] = execution_decision.confidence_gate_applied
-        debug_meta["routing_shadow_mode"] = execution_decision.shadow_mode
+        debug_meta["execution_mode"] = execution_mode
+        debug_meta["routing_selection_source"] = selection_source
         debug_meta["routing"] = public_routing.model_dump(mode="json")
-        debug_meta["agentic"] = {
-            "selected": execution_decision.execution_mode == "agentic",
-            "selection_reason": execution_decision.reason,
-            "selection_source": execution_decision.selection_source,
-            "feature_enabled": execution_decision.feature_enabled,
-            "channel_allowed": execution_decision.channel_allowed,
-            "tool_suitable": execution_decision.tool_suitable,
-            "llm_reason": execution_decision.llm_reason,
-            "llm_confidence": execution_decision.llm_confidence,
-            "llm_workflow": execution_decision.llm_workflow,
-            "llm_execution_mode": execution_decision.llm_execution_mode,
-            "confidence_gate_applied": execution_decision.confidence_gate_applied,
-            "shadow_mode": execution_decision.shadow_mode,
-            "used_tools": False,
-            "trace": [],
-            "fallback_to_component": False,
-        }
+        if execution_decision is not None:
+            debug_meta["routing_confidence_gate_applied"] = execution_decision.confidence_gate_applied
+            debug_meta["routing_shadow_mode"] = execution_decision.shadow_mode
+            debug_meta["agentic"] = {
+                "selected": execution_decision.execution_mode == "agentic",
+                "selection_reason": execution_decision.reason,
+                "selection_source": execution_decision.selection_source,
+                "feature_enabled": execution_decision.feature_enabled,
+                "channel_allowed": execution_decision.channel_allowed,
+                "tool_suitable": execution_decision.tool_suitable,
+                "llm_reason": execution_decision.llm_reason,
+                "llm_confidence": execution_decision.llm_confidence,
+                "llm_workflow": execution_decision.llm_workflow,
+                "llm_execution_mode": execution_decision.llm_execution_mode,
+                "confidence_gate_applied": execution_decision.confidence_gate_applied,
+                "shadow_mode": execution_decision.shadow_mode,
+                "used_tools": False,
+                "trace": [],
+                "fallback_to_component": False,
+            }
+        else:
+            debug_meta["routing_confidence_gate_applied"] = False
+            debug_meta["routing_shadow_mode"] = False
+            debug_meta["agentic"] = {
+                "selected": False,
+                "selection_reason": str(route_decision.reason or "challenge_context"),
+                "selection_source": selection_source,
+                "feature_enabled": bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)),
+                "channel_allowed": routing_policy.is_agentic_channel_enabled(channel=channel),
+                "tool_suitable": False,
+                "llm_reason": "",
+                "llm_confidence": 0.0,
+                "llm_workflow": "",
+                "llm_execution_mode": "",
+                "confidence_gate_applied": False,
+                "shadow_mode": False,
+                "used_tools": False,
+                "trace": [],
+                "fallback_to_component": False,
+            }
 
-        if execution_decision.execution_mode == "agentic":
+        if execution_mode == "agentic" and execution_decision is not None:
             agentic_started = time.perf_counter()
             agentic_result = None
             agentic_error: Optional[Exception] = None
@@ -224,7 +323,9 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
             conversation_id=conversation_id_value,
             run_id=run_id,
             route_decision_override=route_decision,
-            routing_selection_source=execution_decision.selection_source,
+            routing_selection_source=selection_source,
+            channel=channel,
+            challenge_context=challenge_payload,
         )
         self._add_latency_span(
             spans,

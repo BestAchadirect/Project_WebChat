@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.schemas.chat import ChatComponent
+from app.services.chat import reply_tone
 from app.services.chat.components.base import BaseComponent
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.types import ComponentType
@@ -10,62 +11,22 @@ class ClarifyComponent(BaseComponent):
     component_type = ComponentType.CLARIFY
 
     async def build(self, context: ComponentContext) -> ChatComponent:
-        reason = str(context.ambiguity_reason or "missing details")
-        message = "Please share more detail so I can match products accurately."
+        reason = str(context.ambiguity_reason or "missing_details")
         debug_meta = dict(context.debug or {})
-        debug_message = str(debug_meta.get("clarify_message") or "").strip()
-        if debug_message:
-            message = debug_message
-        if not debug_message and reason == "compare_requires_two_skus":
-            message = "Please provide two SKU codes to compare, for example: `Compare SKU123 and SKU124`."
-        elif not debug_message and reason == "compare_not_supported":
-            message = "Compare view is currently unavailable. Share one SKU or product filters and I will show matching items."
-        elif not debug_message and reason == "compare_missing_sku":
-            missing = list((context.debug or {}).get("compare_missing_skus") or [])
-            if missing:
-                message = (
-                    "I could not find these SKU(s): "
-                    + ", ".join([str(item) for item in missing[:5]])
-                    + ". Please check the codes and try again."
-                )
-            else:
-                message = "I could not find one or more SKU codes to compare. Please verify the SKUs and try again."
-        elif not debug_message and reason == "image_only_no_results":
-            message = "No matching products currently have images. Ask for SKU/price/stock."
-        elif not debug_message and reason == "image_request_missing_context":
-            message = (
-                "Sure, which product are you looking for? "
-                "Share SKU or details like type, material, and gauge, and I can show images."
+        debug_reason = str(debug_meta.get("clarify_reason") or "").strip()
+        if debug_reason:
+            reason = debug_reason
+        message = str(debug_meta.get("clarify_message") or "").strip()
+        if not message:
+            message = reply_tone.pick_variant(
+                user_text=context.user_text,
+                key="clarify:missing_details:fallback",
+                variants=[
+                    "Could you share one more detail so I can help accurately?",
+                    "I can help right away. Tell me one more detail to continue.",
+                    "Share one more detail and I will continue from there.",
+                ],
             )
-        elif not debug_message and reason == "attribute_list_no_results":
-            message = "I could not find matching attribute options for that filter. Try a broader product filter."
-        elif not debug_message and reason == "structured_no_match":
-            message = "I couldn't find products matching those exact details. Try broader filters or remove one attribute."
-        elif not debug_message and reason == "detail_no_match":
-            message = "I couldn't find a product matching those exact details. Try a broader product request or share a SKU."
-        elif not debug_message and reason == "detail_request_needs_specific_product":
-            requested_fields = {
-                str(item or "").strip().lower()
-                for item in list(debug_meta.get("detail_requested_fields") or [])
-                if str(item or "").strip()
-            }
-            jewelry_type = str((context.attribute_filters or {}).get("jewelry_type") or "").strip().lower()
-            subject = jewelry_type or "product"
-            action = "look that up"
-            if "price" in requested_fields and "stock" in requested_fields:
-                action = "check the price and stock"
-            elif "price" in requested_fields:
-                action = "check the price"
-            elif "stock" in requested_fields:
-                action = "check the stock"
-            message = (
-                f"I'm not sure which {subject} you mean. "
-                f"Share a SKU or add details like material, gauge, size, or color, and I can {action}."
-            )
-        elif not debug_message and reason == "knowledge_needs_clarification":
-            message = "I want to give you the right policy details, but I need a little more context first."
-        elif not debug_message and reason == "knowledge_unavailable":
-            message = "I may be missing the latest policy details right now. Tell me which topic you need and I will narrow it down."
         return ChatComponent(
             type=self.component_type,
             data={

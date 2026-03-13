@@ -115,13 +115,21 @@ _KNOWN_COLORS = {
 
 _COLOR_SYNONYMS = {
     "opal color": "opal",
+    "rose-gold": "rose gold",
+    "rosegold": "rose gold",
 }
 
 _JEWELRY_TYPE_PATTERNS = {
     "barbell": "barbell",
     "circular barbell": "circular barbell",
+    "horseshoe": "circular barbell",
     "labret": "labret",
+    "labret stud": "labret",
+    "flatback": "labret",
     "ring": "ring",
+    "hoop": "ring",
+    "captive bead ring": "ring",
+    "cbr": "ring",
     "plug": "plug",
     "tunnel": "tunnel",
     "stud": "stud",
@@ -131,28 +139,106 @@ _MATERIAL_PATTERNS = {
     "titanium g23": "titanium g23",
     "implant grade": "titanium g23",
     "implant-grade": "titanium g23",
+    "implant grade titanium": "titanium g23",
+    "implant-grade titanium": "titanium g23",
+    "g23 titanium": "titanium g23",
+    "titanium g-23": "titanium g23",
     "g23": "titanium g23",
     "titanium": "titanium",
     "surgical steel": "steel",
     "stainless steel": "steel",
+    "stainless-steel": "steel",
+    "stainless": "steel",
     "316l": "steel",
+    "316l surgical steel": "steel",
     "steel": "steel",
     "gold": "gold",
     "silver": "silver",
+    "sterling silver": "silver",
+    "925 silver": "silver",
+    "925 sterling silver": "silver",
     "niobium": "niobium",
     "acrylic": "acrylic",
+    "bioflex": "bioflex / ptfe",
+    "ptfe": "bioflex / ptfe",
+    "bioflex / ptfe": "bioflex / ptfe",
 }
 
 _THREADING_PATTERNS = {
+    "internally threaded": "internal",
     "internal": "internal",
+    "internally-threaded": "internal",
     "externally threaded": "external",
     "external": "external",
+    "externally-threaded": "external",
     "threadless": "threadless",
 }
 
 _CATEGORY_PATTERNS = {
     "sterilized": "sterilized",
     "sterilised": "sterilized",
+    "sterilization": "sterilized",
+    "sterilisation": "sterilized",
+    "sterile": "sterilized",
+    "presterilized": "sterilized",
+    "presterilised": "sterilized",
+    "pre-sterilized": "sterilized",
+    "pre sterilized": "sterilized",
+    "pre-sterilised": "sterilized",
+    "pre sterilised": "sterilized",
+    "pre-sterilisation": "sterilized",
+    "pre sterilisation": "sterilized",
+}
+
+_ATTRIBUTE_VALUE_SYNONYMS: Dict[str, Dict[str, str]] = {
+    "color": {
+        "rose-gold": "rose gold",
+        "rosegold": "rose gold",
+    },
+    "material": {
+        "stainless": "steel",
+        "stainless-steel": "steel",
+        "stainless steel": "steel",
+        "surgical steel": "steel",
+        "316l": "steel",
+        "316l surgical steel": "steel",
+        "sterling silver": "silver",
+        "925 silver": "silver",
+        "925 sterling silver": "silver",
+        "implant grade titanium": "titanium g23",
+        "implant-grade titanium": "titanium g23",
+        "g23 titanium": "titanium g23",
+        "titanium g-23": "titanium g23",
+        "bioflex": "bioflex / ptfe",
+        "ptfe": "bioflex / ptfe",
+    },
+    "jewelry_type": {
+        "horseshoe": "circular barbell",
+        "labret stud": "labret",
+        "flatback": "labret",
+        "hoop": "ring",
+        "captive bead ring": "ring",
+        "cbr": "ring",
+    },
+    "threading": {
+        "internally threaded": "internal",
+        "internally-threaded": "internal",
+        "externally threaded": "external",
+        "externally-threaded": "external",
+    },
+    "category": {
+        "sterilisation": "sterilized",
+        "sterilization": "sterilized",
+        "sterile": "sterilized",
+        "presterilized": "sterilized",
+        "presterilised": "sterilized",
+        "pre-sterilized": "sterilized",
+        "pre sterilized": "sterilized",
+        "pre-sterilised": "sterilized",
+        "pre sterilised": "sterilized",
+        "pre-sterilisation": "sterilized",
+        "pre sterilisation": "sterilized",
+    },
 }
 
 _DESIGN_PATTERNS = {
@@ -215,6 +301,7 @@ _ATTRIBUTE_VALUE_PATTERNS: Dict[str, Sequence[str]] = {
         r"\brack(?: is|=| number| no\.?)?\s+(?P<value>[a-z0-9\-]{1,20})\b",
     ),
     "opal_color": (
+        r"\b(?P<value>opal)\b",
         r"\bopal color(?: is|=| of)?\s+(?P<value>[a-z ]{2,20})\b",
         r"\b(?P<value>[a-z ]{2,20})\s+opal\b",
     ),
@@ -253,6 +340,17 @@ class DetailQuery:
 
 class DetailQueryParser:
     @staticmethod
+    def _alias_override(
+        attribute: str,
+        value: str,
+        alias_map: Optional[Dict[str, Dict[str, str]]],
+    ) -> str:
+        if not attribute or not value:
+            return value
+        alias_map = alias_map or {}
+        return alias_map.get(attribute.lower(), {}).get(value.lower(), value)
+
+    @staticmethod
     def _normalize_text(value: str) -> str:
         lowered = (value or "").strip().lower()
         lowered = re.sub(r"\s+", " ", lowered)
@@ -289,11 +387,22 @@ class DetailQueryParser:
         return text
 
     @classmethod
-    def normalize_attribute_value(cls, *, key: str, value: Any) -> str:
+    def normalize_attribute_value(
+        cls,
+        *,
+        key: str,
+        value: Any,
+        alias_map: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> str:
         clean_key = str(key or "").strip().lower()
         text = cls._normalize_text(str(value or ""))
         if not clean_key or not text:
             return ""
+        alias_map = alias_map or _ATTRIBUTE_VALUE_SYNONYMS
+        if alias_map:
+            mapped = alias_map.get(clean_key, {}).get(text)
+            if mapped:
+                text = mapped
         if clean_key == "gauge":
             return cls.normalize_gauge_token(text) or text
         if clean_key in _MEASUREMENT_KEYS:
@@ -336,18 +445,36 @@ class DetailQueryParser:
         return DetailQueryParser.clean_attribute_filters(raw_filters)
 
     @classmethod
-    def _extract_pattern_value(cls, *, text: str, key: str, patterns: Sequence[str]) -> str:
+    def _extract_pattern_value(
+        cls,
+        *,
+        text: str,
+        key: str,
+        patterns: Sequence[str],
+        alias_map: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> str:
         for pattern in patterns:
             match = re.search(pattern, text)
             if not match:
                 continue
-            value = cls.normalize_attribute_value(key=key, value=match.group("value"))
+            value = cls.normalize_attribute_value(
+                key=key,
+                value=match.group("value"),
+                alias_map=alias_map,
+            )
             if value:
                 return value
         return ""
 
     @classmethod
-    def parse(cls, *, user_text: str, nlu_data: Dict[str, Any]) -> DetailQuery:
+    def parse(
+        cls,
+        *,
+        user_text: str,
+        nlu_data: Dict[str, Any],
+        alias_map: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> DetailQuery:
+        alias_map = alias_map or {}
         text = cls._normalize_text(user_text or "")
         requested_fields = cls._clean_nlu_fields((nlu_data or {}).get("requested_fields"))
         attribute_filters = cls._clean_nlu_filters((nlu_data or {}).get("attribute_filters"))
@@ -377,19 +504,31 @@ class DetailQueryParser:
 
         for jewelry_type, normalized in _JEWELRY_TYPE_PATTERNS.items():
             if re.search(rf"\b{re.escape(jewelry_type)}s?\b", text):
-                attribute_filters.setdefault("jewelry_type", normalized)
+                attribute_filters.setdefault(
+                    "jewelry_type",
+                    cls._alias_override("jewelry_type", normalized, alias_map),
+                )
 
         for material, normalized in _MATERIAL_PATTERNS.items():
             if re.search(rf"\b{re.escape(material)}\b", text):
-                attribute_filters.setdefault("material", normalized)
+                attribute_filters.setdefault(
+                    "material",
+                    cls._alias_override("material", normalized, alias_map),
+                )
 
         for threading, normalized in _THREADING_PATTERNS.items():
             if re.search(rf"\b{re.escape(threading)}\b", text):
-                attribute_filters.setdefault("threading", normalized)
+                attribute_filters.setdefault(
+                    "threading",
+                    cls._alias_override("threading", normalized, alias_map),
+                )
 
         for color in sorted(_KNOWN_COLORS, key=lambda value: -len(value)):
             if re.search(rf"\b{re.escape(color)}\b", text):
-                attribute_filters.setdefault("color", color)
+                attribute_filters.setdefault(
+                    "color",
+                    cls._alias_override("color", color, alias_map),
+                )
                 break
         for phrase, normalized in _COLOR_SYNONYMS.items():
             if re.search(rf"\b{re.escape(phrase)}\b", text):
@@ -398,7 +537,10 @@ class DetailQueryParser:
 
         for category_token, normalized in _CATEGORY_PATTERNS.items():
             if re.search(rf"\b{re.escape(category_token)}\b", text):
-                attribute_filters.setdefault("category", normalized)
+                attribute_filters.setdefault(
+                    "category",
+                    cls._alias_override("category", normalized, alias_map),
+                )
                 break
 
         for design_token, normalized in _DESIGN_PATTERNS.items():
@@ -406,15 +548,26 @@ class DetailQueryParser:
                 rf"\b{re.escape(design_token)}(?:\s+shape|\s+design|-shaped|\s+top|\s+tops)?\b",
                 text,
             ):
-                attribute_filters.setdefault("design", normalized)
+                attribute_filters.setdefault(
+                    "design",
+                    cls._alias_override("design", normalized, alias_map),
+                )
                 break
 
         for key, patterns in _ATTRIBUTE_VALUE_PATTERNS.items():
             if key in attribute_filters:
                 continue
-            extracted = cls._extract_pattern_value(text=text, key=key, patterns=patterns)
+            extracted = cls._extract_pattern_value(
+                text=text,
+                key=key,
+                patterns=patterns,
+                alias_map=alias_map,
+            )
             if extracted:
                 attribute_filters[key] = extracted
+
+        if attribute_filters.get("opal_color") and attribute_filters.get("color") == "opal":
+            attribute_filters.pop("color", None)
 
         if "ring_size" in attribute_filters and attribute_filters.get("size") == attribute_filters["ring_size"]:
             attribute_filters.pop("size", None)

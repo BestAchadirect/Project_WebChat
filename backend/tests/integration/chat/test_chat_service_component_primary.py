@@ -22,9 +22,9 @@ async def test_chat_service_component_mode_returns_component_pipeline_response(
         assert str(getattr(route_override, "workflow", "")) in {
             "catalog",
             "knowledge",
-            "comparison",
             "recommendation",
             "smalltalk",
+            "off_topic",
             "fallback",
         }
         return build_component_pipeline_result(
@@ -230,3 +230,186 @@ async def test_process_chat_falls_back_to_component_when_agentic_returns_none(
     assert response.reply_text == "component fallback response"
     assert response.debug.get("component_mode") == "primary"
     assert bool((response.debug.get("agentic") or {}).get("fallback_to_component")) is True
+
+
+@pytest.mark.asyncio
+async def test_process_chat_challenge_context_overrides_to_knowledge_reconfirm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_component_pipeline(self, *, request, conversation_id, run_id, **kwargs):
+        challenge = dict(kwargs.get("challenge_context") or {})
+        route_override = kwargs.get("route_decision_override")
+        assert challenge.get("mode") == "knowledge_reconfirm"
+        assert challenge.get("base_question") == "What is your company?"
+        assert str(getattr(route_override, "workflow", "")) == "knowledge"
+        return build_component_pipeline_result(
+            request=request,
+            conversation_id=conversation_id,
+            reply_text="knowledge reconfirmed",
+            response_workflow="knowledge",
+        )
+
+    async def fake_state(self, conversation_id: int):
+        return {
+            "last_workflow": "knowledge",
+            "last_user_query": "What is your company?",
+        }
+
+    async def fake_history(self, conversation_id: int, limit: int = 5):
+        return [
+            {"role": "user", "content": "What is your company?"},
+            {"role": "assistant", "content": "Acha Co., Ltd"},
+        ]
+
+    patch_chat_service_lifecycle(monkeypatch)
+    monkeypatch.setattr(settings, "CHAT_CHALLENGE_CONTEXT_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_CHALLENGE_CONTEXT_CHANNELS", "widget,qa_console")
+    monkeypatch.setattr(ChatService, "get_conversation_state", fake_state)
+    monkeypatch.setattr(ChatService, "get_history", fake_history)
+    monkeypatch.setattr(ChatService, "_run_component_pipeline", fake_component_pipeline)
+
+    service = ChatService(db=object())
+    response = await service.process_chat(
+        ChatRequest(user_id="guest-challenge-1", message="Are you sure about that?", locale="en-US"),
+        channel="widget",
+    )
+
+    assert response.reply_text == "knowledge reconfirmed"
+    assert response.routing.workflow == "knowledge"
+    assert response.debug.get("routing_selection_source") == "challenge_context"
+    assert bool((response.debug.get("challenge_context") or {}).get("active")) is True
+
+
+@pytest.mark.asyncio
+async def test_process_chat_challenge_context_requests_target_clarification_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_component_pipeline(self, *, request, conversation_id, run_id, **kwargs):
+        challenge = dict(kwargs.get("challenge_context") or {})
+        route_override = kwargs.get("route_decision_override")
+        assert challenge.get("mode") == "needs_target_clarification"
+        assert str(getattr(route_override, "workflow", "")) == "fallback"
+        return build_component_pipeline_result(
+            request=request,
+            conversation_id=conversation_id,
+            reply_text="Please share SKU",
+            response_workflow="fallback",
+        )
+
+    async def fake_state(self, conversation_id: int):
+        return {"last_workflow": ""}
+
+    async def fake_history(self, conversation_id: int, limit: int = 5):
+        return []
+
+    patch_chat_service_lifecycle(monkeypatch)
+    monkeypatch.setattr(settings, "CHAT_CHALLENGE_CONTEXT_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_CHALLENGE_CONTEXT_CHANNELS", "widget,qa_console")
+    monkeypatch.setattr(ChatService, "get_conversation_state", fake_state)
+    monkeypatch.setattr(ChatService, "get_history", fake_history)
+    monkeypatch.setattr(ChatService, "_run_component_pipeline", fake_component_pipeline)
+
+    service = ChatService(db=object())
+    response = await service.process_chat(
+        ChatRequest(
+            user_id="guest-challenge-2",
+            message="Inventory is wrong and this is not ok.",
+            locale="en-US",
+        ),
+        channel="qa_console",
+    )
+
+    assert response.reply_text == "Please share SKU"
+    assert response.routing.workflow == "fallback"
+    assert response.debug.get("routing_selection_source") == "challenge_context"
+    assert (response.debug.get("challenge_context") or {}).get("mode") == "needs_target_clarification"
+
+
+@pytest.mark.asyncio
+async def test_process_chat_challenge_context_routes_stock_dispute_to_inventory_reverify(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_component_pipeline(self, *, request, conversation_id, run_id, **kwargs):
+        challenge = dict(kwargs.get("challenge_context") or {})
+        route_override = kwargs.get("route_decision_override")
+        assert challenge.get("mode") == "inventory_reverify"
+        assert challenge.get("target_sku") == "ABC-1"
+        assert str(getattr(route_override, "workflow", "")) == "catalog"
+        return build_component_pipeline_result(
+            request=request,
+            conversation_id=conversation_id,
+            reply_text="inventory checked",
+            response_workflow="catalog",
+        )
+
+    async def fake_state(self, conversation_id: int):
+        return {"last_workflow": "catalog"}
+
+    async def fake_history(self, conversation_id: int, limit: int = 5):
+        return []
+
+    patch_chat_service_lifecycle(monkeypatch)
+    monkeypatch.setattr(settings, "CHAT_CHALLENGE_CONTEXT_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_CHALLENGE_CONTEXT_CHANNELS", "widget,qa_console")
+    monkeypatch.setattr(ChatService, "get_conversation_state", fake_state)
+    monkeypatch.setattr(ChatService, "get_history", fake_history)
+    monkeypatch.setattr(ChatService, "_run_component_pipeline", fake_component_pipeline)
+
+    service = ChatService(db=object())
+    response = await service.process_chat(
+        ChatRequest(
+            user_id="guest-challenge-3",
+            message="You are giving wrong info, SKU ABC-1 is out of stock.",
+            locale="en-US",
+        ),
+        channel="widget",
+    )
+
+    assert response.reply_text == "inventory checked"
+    assert response.routing.workflow == "catalog"
+    assert response.debug.get("routing_selection_source") == "challenge_context"
+
+
+@pytest.mark.asyncio
+async def test_process_chat_challenge_context_uses_state_target_when_sku_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_component_pipeline(self, *, request, conversation_id, run_id, **kwargs):
+        challenge = dict(kwargs.get("challenge_context") or {})
+        assert challenge.get("mode") == "inventory_reverify"
+        assert challenge.get("target_sku") == "STATE-9"
+        return build_component_pipeline_result(
+            request=request,
+            conversation_id=conversation_id,
+            reply_text="inventory checked from state",
+            response_workflow="catalog",
+        )
+
+    async def fake_state(self, conversation_id: int):
+        return {
+            "last_workflow": "catalog",
+            "last_inventory_claim": {"sku": "STATE-9"},
+        }
+
+    async def fake_history(self, conversation_id: int, limit: int = 5):
+        return []
+
+    patch_chat_service_lifecycle(monkeypatch)
+    monkeypatch.setattr(settings, "CHAT_CHALLENGE_CONTEXT_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_CHALLENGE_CONTEXT_CHANNELS", "widget,qa_console")
+    monkeypatch.setattr(ChatService, "get_conversation_state", fake_state)
+    monkeypatch.setattr(ChatService, "get_history", fake_history)
+    monkeypatch.setattr(ChatService, "_run_component_pipeline", fake_component_pipeline)
+
+    service = ChatService(db=object())
+    response = await service.process_chat(
+        ChatRequest(
+            user_id="guest-challenge-4",
+            message="Inventory is wrong and this is not ok.",
+            locale="en-US",
+        ),
+        channel="widget",
+    )
+
+    assert response.reply_text == "inventory checked from state"
+    assert response.routing.workflow == "catalog"

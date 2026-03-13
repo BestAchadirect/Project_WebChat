@@ -56,16 +56,11 @@ interface ChatResponse {
 
 type ChatComponentType =
     | 'query_summary'
-    | 'result_count'
     | 'product_cards'
-    | 'product_table'
-    | 'product_bullets'
     | 'product_detail'
-    | 'compare'
     | 'recommendations'
     | 'clarify'
     | 'knowledge_answer'
-    | 'action_result'
     | 'error'
     | 'assistant_message';
 
@@ -691,15 +686,6 @@ const ChatComponentsRenderer: React.FC<{
                     return null;
                 }
 
-                if (type === 'result_count') {
-                    const count = asNumber(data.count, 0);
-                    return (
-                        <div key={`${type}-${index}`} className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-gray-100 text-gray-700 border border-gray-200">
-                            {count} result{count === 1 ? '' : 's'}
-                        </div>
-                    );
-                }
-
                 if (type === 'product_cards') {
                     const cards = asRecordArray(data.cards).map(componentProductToCard);
                     if (cards.length === 0) return null;
@@ -735,83 +721,6 @@ const ChatComponentsRenderer: React.FC<{
                             onQuickReply={onQuickReply}
                             onProductClick={onProductClick}
                         />
-                    );
-                }
-
-                if (type === 'product_table') {
-                    const columns = Array.isArray(data.columns) ? data.columns.map((item) => asString(item)) : [];
-                    const rows = asRecordArray(data.rows);
-                    if (columns.length === 0 || rows.length === 0) return null;
-                    return (
-                        <div key={`${type}-${index}`} className="w-full overflow-x-auto rounded-xl border border-gray-200 bg-white">
-                            <table className="min-w-full text-xs">
-                                <thead className="bg-gray-50">
-                                    <tr>
-                                        {columns.map((column) => (
-                                            <th key={column} className="text-left px-3 py-2 font-black uppercase tracking-wide text-gray-500">
-                                                {column.replace(/_/g, ' ')}
-                                            </th>
-                                        ))}
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {rows.map((row, rowIndex) => (
-                                        <tr key={`${type}-row-${rowIndex}`} className="border-t border-gray-100">
-                                            {columns.map((column) => (
-                                                <td key={`${rowIndex}-${column}`} className="px-3 py-2 text-gray-700">
-                                                    {asString(row[column])}
-                                                </td>
-                                            ))}
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    );
-                }
-
-                if (type === 'product_bullets') {
-                    const items = Array.isArray(data.items) ? data.items.map((item) => asString(item).trim()).filter(Boolean) : [];
-                    if (items.length === 0) return null;
-                    return (
-                        <ul key={`${type}-${index}`} className="list-disc pl-5 text-sm text-gray-700 space-y-1">
-                            {items.map((item, itemIndex) => (
-                                <li key={`${type}-item-${itemIndex}`}>
-                                    <span className="whitespace-pre-wrap">{item}</span>
-                                </li>
-                            ))}
-                        </ul>
-                    );
-                }
-
-                if (type === 'compare') {
-                    const items = asRecordArray(data.items);
-                    if (items.length === 0) return null;
-                    return (
-                        <div key={`${type}-${index}`} className="w-full overflow-x-auto rounded-xl border border-gray-200 bg-white">
-                            <table className="min-w-full text-xs">
-                                <thead className="bg-gray-50">
-                                    <tr>
-                                        <th className="text-left px-3 py-2 font-black uppercase tracking-wide text-gray-500">SKU</th>
-                                        <th className="text-left px-3 py-2 font-black uppercase tracking-wide text-gray-500">Title</th>
-                                        <th className="text-left px-3 py-2 font-black uppercase tracking-wide text-gray-500">Price</th>
-                                        <th className="text-left px-3 py-2 font-black uppercase tracking-wide text-gray-500">Stock</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {items.map((item, itemIndex) => (
-                                        <tr key={`${type}-item-${itemIndex}`} className="border-t border-gray-100">
-                                            <td className="px-3 py-2 font-semibold text-gray-800">{asString(item.sku)}</td>
-                                            <td className="px-3 py-2 text-gray-700">{asString(item.title)}</td>
-                                            <td className="px-3 py-2 text-gray-700">
-                                                {asNumber(item.price, 0).toFixed(2)} {asString(item.currency, 'USD')}
-                                            </td>
-                                            <td className="px-3 py-2 text-gray-700">{asBoolean(item.in_stock) ? 'In stock' : 'Out of stock'}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
                     );
                 }
 
@@ -858,19 +767,6 @@ const ChatComponentsRenderer: React.FC<{
                     return (
                         <div key={`${type}-${index}`} className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800">
                             <span className="whitespace-pre-wrap">{answer}</span>
-                        </div>
-                    );
-                }
-
-                if (type === 'action_result') {
-                    const messageText = asString(data.message).trim();
-                    if (!messageText || messageText === message.content.trim()) return null;
-                    return (
-                        <div
-                            key={`${type}-${index}`}
-                            className="rounded-xl px-3 py-2 text-sm border border-emerald-200 bg-emerald-50 text-emerald-700"
-                        >
-                            <span className="whitespace-pre-wrap">{messageText}</span>
                         </div>
                     );
                 }

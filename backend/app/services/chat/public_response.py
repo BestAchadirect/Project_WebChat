@@ -26,7 +26,18 @@ def compact_debug_payload(debug: Dict[str, Any] | None) -> Dict[str, Any]:
     agentic = raw.get("agentic") if isinstance(raw.get("agentic"), dict) else {}
     compact: Dict[str, Any] = {}
 
-    for key in ("run_id", "workflow", "workflow_path", "execution_mode", "component_mode", "clarify_reason"):
+    for key in (
+        "run_id",
+        "workflow",
+        "workflow_path",
+        "execution_mode",
+        "component_mode",
+        "clarify_reason",
+        "tone_style",
+        "tone_key",
+        "tone_variant_id",
+        "tone_anti_repeat_applied",
+    ):
         value = raw.get(key)
         if isinstance(value, str):
             value = value.strip()

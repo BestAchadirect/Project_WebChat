@@ -5,7 +5,6 @@ from typing import Dict, List, Set, Type
 from app.schemas.chat import ChatComponent
 from app.services.chat.components.base import BaseComponent
 from app.services.chat.components.builders import (
-    CompareComponent,
     ClarifyComponent,
     ErrorComponent,
     KnowledgeAnswerComponent,
@@ -23,7 +22,6 @@ class ComponentRegistry:
         ComponentType.QUERY_SUMMARY: QuerySummaryComponent,
         ComponentType.PRODUCT_CARDS: ProductCardsComponent,
         ComponentType.PRODUCT_DETAIL: ProductDetailComponent,
-        ComponentType.COMPARE: CompareComponent,
         ComponentType.RECOMMENDATIONS: RecommendationsComponent,
         ComponentType.CLARIFY: ClarifyComponent,
         ComponentType.KNOWLEDGE_ANSWER: KnowledgeAnswerComponent,

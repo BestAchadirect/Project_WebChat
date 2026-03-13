@@ -146,7 +146,7 @@ def test_detail_response_builder_reports_missing_image() -> None:
     assert "Image: unavailable" in payload.reply_text
     assert payload.card_policy_reason == "single_match_text_only"
     assert len(payload.product_carousel) == 1
-    assert payload.carousel_msg == "Master code Example Product has 1 variant. Expand to view each SKU detail."
+    assert payload.carousel_msg == "Master code Example Product has 1 variant. Expand to view variant details."
     assert payload.follow_up_questions == []
 
 
@@ -172,7 +172,7 @@ def test_detail_response_builder_multi_match_followups_use_context() -> None:
         max_matches=3,
     )
     assert payload.card_policy_reason == "multiple_matches"
-    assert payload.carousel_msg == "Master code BLK466 has 2 variants. Expand to view each SKU detail."
+    assert payload.carousel_msg == "Master code BLK466 has 2 variants. Expand to view variant details."
     assert payload.product_carousel
     assert "Key details:" in payload.reply_text
     assert "[JEWELRY TYPE] Barbell" in payload.reply_text
@@ -205,4 +205,33 @@ def test_detail_response_builder_attribute_focus_highlights_filters() -> None:
     assert "[COLOR] Gold" in payload.reply_text
     assert "Top master code: [MASTER] BLK466" in payload.reply_text
     assert "Attributes:" not in payload.reply_text
-    assert payload.carousel_msg == "Master code BLK466 has 2 variants. Expand to view each SKU detail."
+    assert payload.carousel_msg == "Master code BLK466 has 2 variants. Expand to view variant details."
+
+
+def test_detail_response_builder_image_focus_groups_master_without_sku_lines() -> None:
+    first = _card(
+        sku="BLK466-F02A12",
+        name="BLK466",
+        image_url="https://example.com/blk466-a.jpg",
+        attributes={"master_code": "BLK466", "material": "Titanium G23"},
+    )
+    second = _card(
+        sku="BLK466-F04A12",
+        name="BLK466",
+        image_url="https://example.com/blk466-b.jpg",
+        attributes={"master_code": "BLK466", "material": "Titanium G23"},
+    )
+    payload = DetailResponseBuilder.build_detail_reply(
+        matches=[first, second],
+        requested_fields=["image"],
+        attribute_filters={"material": "titanium g23"},
+        missing_fields_by_product={},
+        wants_image=True,
+        max_matches=3,
+    )
+
+    assert "master code BLK466" in payload.reply_text
+    assert "Image: https://example.com/blk466-a.jpg" in payload.reply_text
+    assert "SKU:" not in payload.reply_text
+    assert payload.card_policy_reason == "image_master_grouped"
+    assert len(payload.product_carousel) == 1

@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Sequence, Tuple
 
+from app.services.chat import reply_tone
+
 PRODUCT_DISPLAY_LIMIT = 10
 ATTRIBUTE_DISPLAY_ORDER = (
     "category",
@@ -126,54 +128,60 @@ def build_attribute_match_phrase(attribute_filters: Dict[str, str]) -> str:
     return " ".join(parts).strip()
 
 
-def build_product_match_reply(*, attribute_filters: Dict[str, str]) -> str:
+def build_product_match_reply(*, attribute_filters: Dict[str, str], user_text: str = "") -> str:
     phrase = build_attribute_match_phrase(attribute_filters)
+    if not user_text:
+        if phrase:
+            return f"I found products that match what you're looking for {phrase}."
+        return "I found products that match what you're looking for."
     if phrase:
-        return f"I found products that match what you're looking for {phrase}."
-    return "I found products that match what you're looking for."
+        return reply_tone.pick_variant(
+            user_text=user_text,
+            key=f"product_match:{phrase}",
+            variants=[
+                f"I found products that match your request {phrase}.",
+                f"Good choice. I found matching options {phrase}.",
+                f"Nice, these products match your request {phrase}.",
+            ],
+        )
+    return reply_tone.pick_variant(
+        user_text=user_text,
+        key="product_match:generic",
+        variants=[
+            "I found products that match what you're looking for.",
+            "I found matching products for you.",
+            "I found a few options that fit your request.",
+        ],
+    )
 
 
-def build_recommendation_match_reply(*, attribute_filters: Dict[str, str]) -> str:
+def build_recommendation_match_reply(*, attribute_filters: Dict[str, str], user_text: str = "") -> str:
     phrase = build_attribute_match_phrase(attribute_filters)
+    if not user_text:
+        if phrase:
+            return f"I found some recommended options {phrase}."
+        return "I found some recommended options that match what you're looking for."
     if phrase:
-        return f"I found some recommended options {phrase}."
-    return "I found some recommended options that match what you're looking for."
+        return reply_tone.pick_variant(
+            user_text=user_text,
+            key=f"recommendation_match:{phrase}",
+            variants=[
+                f"I found recommendations that match your request {phrase}.",
+                f"Great, here are recommendations {phrase}.",
+                f"These recommendations should fit what you asked for {phrase}.",
+            ],
+        )
+    return reply_tone.pick_variant(
+        user_text=user_text,
+        key="recommendation_match:generic",
+        variants=[
+            "I found some recommended options that match what you're looking for.",
+            "Here are recommendations based on what you asked for.",
+            "I found a few recommendations you might like.",
+        ],
+    )
 
 
 def build_see_more_follow_up(*, attribute_filters: Dict[str, str], user_text: str) -> str:
-    filters = dict(attribute_filters or {})
-    category = _display_text(filters.get("category"))
-    jewelry_type = _display_text(filters.get("jewelry_type"))
-    design = _display_text(filters.get("design"))
-    color = _display_text(filters.get("color"))
-    material = _display_text(filters.get("material"))
-    size = _display_text(filters.get("size"))
-    outer_diameter = _display_text(filters.get("outer_diameter"))
-
-    if category and jewelry_type:
-        return f"See more {category} {jewelry_type}"
-    if design and jewelry_type:
-        return f"See more {design} {jewelry_type}"
-    if material and jewelry_type:
-        return f"See more {material} {jewelry_type}"
-    if color and jewelry_type:
-        return f"See more {color} {jewelry_type}"
-    if size and jewelry_type:
-        return f"See more size {size} {jewelry_type}"
-    if outer_diameter and jewelry_type:
-        return f"See more {outer_diameter} {jewelry_type}"
-    if jewelry_type:
-        return f"See more {jewelry_type}"
-    if design:
-        return f"See more {design} design"
-    if category:
-        return f"See more in {category}"
-    if color:
-        return f"See more in {color} color"
-    if material:
-        return f"See more in {material}"
-
-    normalized = re.sub(r"\s+", " ", str(user_text or "")).strip()
-    if normalized:
-        return f"See more {normalized[:50].strip()}"
-    return "See more products"
+    # Quick-reply UX is currently disabled, so we intentionally suppress this CTA.
+    return ""

@@ -27,6 +27,7 @@ from app.services.chat.agentic.orchestrator import AgentOrchestrator, AgentRunRe
 from app.services.chat.recommendation_service import RecommendationService
 from app.services.chat.components import ComponentPipeline, redis_component_cache
 from app.services.chat import (
+    conversation_state,
     follow_up_policy,
     persistence,
     routing_policy,
@@ -542,6 +543,14 @@ class ChatService:
         return await persistence.submit_feedback(db=self.db, qa_log_id=qa_log_id, feedback=feedback)
     async def get_history(self, conversation_id: int, limit: int = 5) -> List[Dict[str, Any]]:
         return await persistence.get_history(db=self.db, conversation_id=conversation_id, limit=limit)
+    async def get_conversation_state(self, conversation_id: int) -> Dict[str, Any]:
+        if not conversation_id:
+            return conversation_state.load_state(None)
+        stmt = select(Conversation.state).where(Conversation.id == int(conversation_id)).limit(1)
+        result = await self.db.execute(stmt)
+        row = result.first()
+        raw_state = row[0] if row else None
+        return conversation_state.load_state(raw_state)
     async def _run_component_pipeline(
         self,
         *,
@@ -550,6 +559,8 @@ class ChatService:
         run_id: str,
         route_decision_override: Optional[routing_policy.WorkflowDecision] = None,
         routing_selection_source: str = "",
+        channel: str = "widget",
+        challenge_context: Optional[Dict[str, Any]] = None,
     ):
         pipeline = ComponentPipeline(
             db=self.db,
@@ -563,6 +574,8 @@ class ChatService:
             run_id=run_id,
             route_decision_override=route_decision_override,
             routing_selection_source=routing_selection_source,
+            channel=channel,
+            challenge_context=challenge_context,
         )
 
     async def _run_agentic_workflow(

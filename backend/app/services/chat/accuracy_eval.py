@@ -220,7 +220,6 @@ def _reply_text_from_components(components: List[Dict[str, Any]]) -> str:
         "knowledge_answer",
         "clarify",
         "error",
-        "action_result",
     )
     for component_type in preferred_types:
         for component in components:
@@ -270,7 +269,7 @@ def _product_carousel_from_components(components: List[Dict[str, Any]]) -> List[
     for component in components:
         component_type = _component_type_value(component)
         data = dict(component.get("data") or {})
-        if component_type in {"compare", "recommendations"}:
+        if component_type in {"recommendations"}:
             items = [dict(item or {}) for item in list(data.get("items") or []) if isinstance(item, dict)]
             if items:
                 return items

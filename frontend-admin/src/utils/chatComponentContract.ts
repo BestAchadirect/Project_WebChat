@@ -45,7 +45,6 @@ export const getAssistantMessageText = (components: ChatComponentLike[]): string
         'knowledge_answer',
         'clarify',
         'error',
-        'action_result',
     ];
     for (const type of preferredTypes) {
         const component = components.find((item) => item.type === type);

@@ -21,6 +21,7 @@ interface RailItem {
 interface SubItem {
     label: string;
     path: string;
+    badge?: string | number;
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -40,6 +41,7 @@ const railItems: RailItem[] = [
             { label: 'Upload Documents', path: '/dashboard/knowledge/upload-documents' },
             { label: 'Product Tuning', path: '/dashboard/knowledge/products-tuning' },
             { label: 'Document Control', path: '/dashboard/knowledge/documents-control' },
+            { label: 'Synonyms', path: '/dashboard/knowledge/synonyms', badge: '3' },
         ],
     },
     {
@@ -287,7 +289,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ onMobileClose }) => {
                                     }
                                 >
                                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${childActive ? 'bg-primary-400' : 'bg-gray-600'}`} />
-                                    {child.label}
+                                    <span className="flex-1">{child.label}</span>
+                                    {child.badge && (
+                                        <span className="bg-primary-600 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">
+                                            {child.badge}
+                                        </span>
+                                    )}
                                 </NavLink>
                             );
                         })}
@@ -383,7 +390,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ onMobileClose }) => {
                                         }
                                     >
                                         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${childActive ? 'bg-primary-500' : 'bg-gray-300'}`} />
-                                        {child.label}
+                                        <span className="flex-1">{child.label}</span>
+                                        {child.badge && (
+                                            <span className="bg-primary-600 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">
+                                                {child.badge}
+                                            </span>
+                                        )}
                                     </NavLink>
                                 );
                             })}

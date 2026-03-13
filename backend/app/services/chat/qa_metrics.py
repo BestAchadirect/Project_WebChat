@@ -66,6 +66,8 @@ def build_chat_qa_metrics(
         "is_policy_like": bool(retrieval_gate.get("is_policy_like", False)),
         "agentic_used_tools": bool(agentic.get("used_tools", False)),
         "conversation_state_written": bool(debug.get("conversation_state_written", False)),
+        "tone_repeat_hit": int(debug.get("tone_repeat_hit", 0) or 0),
+        "tone_filler_stripped": int(debug.get("tone_filler_stripped", 0) or 0),
         "external_call_count": int(debug.get("external_call_count", 0) or 0),
         "llm_call_count": int(debug.get("llm_call_count", 0) or 0),
         "latency_total_ms": float(latency.get("total_ms", 0.0) or 0.0),
@@ -95,6 +97,8 @@ def summarize_chat_metrics(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     totals_by_workflow: Dict[str, int] = {}
     totals_by_action: Dict[str, int] = {}
     action_completed = 0
+    tone_repeat_hits = 0
+    tone_filler_stripped = 0
     total_rows = 0
 
     for row in rows:
@@ -109,6 +113,8 @@ def summarize_chat_metrics(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             totals_by_action[action_kind] = totals_by_action.get(action_kind, 0) + 1
         if bool(metrics.get("action_completed", False)):
             action_completed += 1
+        tone_repeat_hits += int(metrics.get("tone_repeat_hit", 0) or 0)
+        tone_filler_stripped += int(metrics.get("tone_filler_stripped", 0) or 0)
 
     return {
         "total_rows": total_rows,
@@ -116,4 +122,6 @@ def summarize_chat_metrics(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "by_workflow": dict(sorted(totals_by_workflow.items())),
         "by_action_kind": dict(sorted(totals_by_action.items())),
         "action_completed": action_completed,
+        "tone_repeat_hit": tone_repeat_hits,
+        "tone_filler_stripped": tone_filler_stripped,
     }

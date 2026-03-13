@@ -372,6 +372,46 @@ export const productsApi = {
     },
 };
 
+export interface SynonymEntry {
+    id: number;
+    attribute: string;
+    raw_value: string;
+    canonical_value: string;
+    is_active: boolean;
+}
+
+export interface SynonymAttribute {
+    name: string;
+    display_name: string;
+}
+
+export const aliasesApi = {
+    async listAliases(): Promise<SynonymEntry[]> {
+        const response = await apiClient.get('/aliases');
+        return response.data;
+    },
+
+    async createAlias(data: { attribute: string; raw_value: string; canonical_value: string }): Promise<SynonymEntry> {
+        const response = await apiClient.post('/aliases', data);
+        return response.data;
+    },
+
+    async updateAlias(id: number, data: { raw_value?: string; canonical_value?: string; is_active?: boolean }): Promise<SynonymEntry> {
+        const response = await apiClient.put(`/aliases/${id}`, data);
+        return response.data;
+    },
+
+    async deleteAlias(id: number): Promise<{ status: string }> {
+        const response = await apiClient.delete(`/aliases/${id}`);
+        return response.data;
+    },
+
+    async listAttributes(): Promise<SynonymAttribute[]> {
+        const response = await apiClient.get('/aliases/attributes');
+        return response.data;
+    },
+};
+
 export const documentsApi = {
     async listDocuments(page = 1, pageSize = 20): Promise<PaginatedResponse<Document>> {
         const response = await apiClient.get(`/import/knowledge/uploads?page=${page}&pageSize=${pageSize}`);

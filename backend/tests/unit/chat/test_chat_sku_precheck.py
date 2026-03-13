@@ -37,15 +37,15 @@ def test_sku_precheck_allows_simple_single_sku_lookup() -> None:
     assert candidates == ["blk466-f02a12"]
 
 
-def test_sku_precheck_bypasses_compare_requests() -> None:
+def test_sku_precheck_bypasses_multi_sku_compare_text_as_multi_token_query() -> None:
     should_run, reason, candidates = sku_precheck.should_run_sku_precheck(
         user_text="compare BLK466-F02A12 vs BLK466-F04A12",
         channel="widget",
     )
 
     assert should_run is False
-    assert reason == "compare_requested"
-    assert candidates == []
+    assert reason == "requires_single_sku_token"
+    assert len(candidates) == 2
 
 
 def test_sku_precheck_bypasses_image_requests() -> None:

@@ -6,7 +6,6 @@ from uuid import uuid4
 import pytest
 
 from app.schemas.chat import KnowledgeSource
-from app.services.chat.components.builders.compare import CompareComponent
 from app.services.chat.components.builders.clarify import ClarifyComponent
 from app.services.chat.components.builders.error import ErrorComponent
 from app.services.chat.components.builders.knowledge_answer import KnowledgeAnswerComponent
@@ -55,10 +54,10 @@ def _sample_products() -> list[CanonicalProduct]:
 def _sample_context() -> ComponentContext:
     products = _sample_products()
     return ComponentContext(
-        user_text="compare SKU-1 and SKU-2",
+        user_text="show ring products",
         locale="en-US",
         workflow="catalog",
-        query_summary="compare products",
+        query_summary="show products",
         source=ComponentSource.SQL,
         selected_components=[ComponentType.QUERY_SUMMARY],
         canonical_products=products,
@@ -85,7 +84,6 @@ def _sample_context() -> ComponentContext:
         (QuerySummaryComponent, ComponentType.QUERY_SUMMARY, "text"),
         (ProductCardsComponent, ComponentType.PRODUCT_CARDS, "cards"),
         (ProductDetailComponent, ComponentType.PRODUCT_DETAIL, "product"),
-        (CompareComponent, ComponentType.COMPARE, "items"),
         (RecommendationsComponent, ComponentType.RECOMMENDATIONS, "items"),
         (ClarifyComponent, ComponentType.CLARIFY, "message"),
         (KnowledgeAnswerComponent, ComponentType.KNOWLEDGE_ANSWER, "answer"),

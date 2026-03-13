@@ -79,7 +79,7 @@ def test_chat_service_filter_follow_up_questions_wrapper_compatible() -> None:
     assert "Show labret options" in kept
 
 
-def test_build_product_follow_up_questions_adds_see_more_when_overflow_exists() -> None:
+def test_build_product_follow_up_questions_skips_see_more_when_quick_reply_disabled() -> None:
     products = [
         _card(sku="A-1", attrs={"material": "Gold", "color": "Gold"}),
     ]
@@ -93,4 +93,5 @@ def test_build_product_follow_up_questions_adds_see_more_when_overflow_exists() 
         limit=4,
     )
 
-    assert questions[0] == "See more in Gold color"
+    assert questions
+    assert not any(str(item).lower().startswith("see more") for item in questions)

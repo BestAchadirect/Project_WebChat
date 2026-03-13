@@ -55,87 +55,13 @@ def _workflow_decision(
     return routing_policy.WorkflowDecision(
         workflow=workflow,
         source=ComponentSource.SQL,
-        needs_products=workflow in {"catalog", "comparison", "recommendation"},
+        needs_products=workflow in {"catalog", "recommendation"},
         needs_knowledge=workflow == "knowledge",
         needs_clarification=workflow == "fallback",
         store_overview_request=store_overview_request,
         reason="test_override",
         confidence=1.0,
     )
-
-
-@pytest.mark.asyncio
-async def test_component_pipeline_compare_workflow_returns_compare_component() -> None:
-    first = _canonical_product(sku="AAA-1", title="Titanium Labret AAA-1", material="titanium")
-    second = _canonical_product(sku="BBB-2", title="Steel Labret BBB-2", material="steel")
-
-    class _CatalogStub:
-        async def structured_search(self, **kwargs):
-            sku_token = str(kwargs.get("sku_token") or "").lower()
-            if sku_token == "aaa-1":
-                return SimpleNamespace(product_ids=[str(first.product_id)]), {"structured_read_mode": "eav"}
-            if sku_token == "bbb-2":
-                return SimpleNamespace(product_ids=[str(second.product_id)]), {"structured_read_mode": "eav"}
-            return SimpleNamespace(product_ids=[]), {"structured_read_mode": "eav"}
-
-        async def structured_count(self, **kwargs):
-            return 0
-
-        async def smart_search(self, **kwargs):
-            raise AssertionError("compare flow should not use semantic fallback")
-
-    pipeline = ComponentPipeline(
-        db=object(),
-        catalog_search=_CatalogStub(),
-        knowledge_retrieval=_KnowledgeStub(),
-        redis_cache=_RedisStub(),
-    )
-
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
-        ordered = []
-        for product_id in product_ids:
-            if str(product_id) == str(first.product_id):
-                ordered.append(first)
-            elif str(product_id) == str(second.product_id):
-                ordered.append(second)
-        return ordered, {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
-
-    pipeline._field_resolver.resolve = fake_resolve  # type: ignore[method-assign]
-
-    result = await pipeline.run(
-        request=ChatRequest(user_id="guest-1", message="compare AAA-1 and BBB-2", locale="en-US"),
-        conversation_id=88,
-        run_id="run-compare",
-        route_decision_override=_workflow_decision("comparison"),
-    )
-
-    assert result.response.routing.workflow == "comparison"
-    assert len(result.response.product_carousel) == 2
-    assert any(component.type.value == "compare" for component in result.response.components)
-    assert "compare" in result.response.reply_text.lower()
-    assert result.debug.get("compare_mode") == "sku_first"
-
-
-@pytest.mark.asyncio
-async def test_component_pipeline_compare_requires_two_products() -> None:
-    pipeline = ComponentPipeline(
-        db=object(),
-        catalog_search=SimpleNamespace(),
-        knowledge_retrieval=_KnowledgeStub(),
-        redis_cache=_RedisStub(),
-    )
-
-    result = await pipeline.run(
-        request=ChatRequest(user_id="guest-1", message="compare AAA-1", locale="en-US"),
-        conversation_id=88,
-        run_id="run-compare-missing",
-        route_decision_override=_workflow_decision("comparison"),
-    )
-
-    assert result.response.routing.workflow == "comparison"
-    assert result.response.product_carousel == []
-    assert any(component.type.value == "clarify" for component in result.response.components)
-    assert "two sku" in result.response.reply_text.lower()
 
 
 @pytest.mark.asyncio

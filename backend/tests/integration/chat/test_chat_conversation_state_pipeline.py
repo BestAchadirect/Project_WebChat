@@ -176,3 +176,65 @@ async def test_component_pipeline_does_not_merge_filters_when_state_disabled(mon
     assert result.debug.get("conversation_state_enabled") is False
     assert result.debug.get("conversation_state_filter_merge_applied") is False
     assert result.conversation_state is None
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_tone_anti_repeat_persists_across_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_TONE_HUMANIZER_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_TONE_ANTI_REPEAT_WINDOW", 4)
+    monkeypatch.setattr(settings, "CHAT_TONE_ENABLED_CHANNELS", "widget")
+
+    class _StateResult:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def first(self):
+            return (self._payload,)
+
+    class _MutableConversationDB:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+
+        async def execute(self, *args, **kwargs):
+            return _StateResult(self.payload)
+
+    fallback_decision = routing_policy.WorkflowDecision(
+        workflow="fallback",
+        source=ComponentSource.ERROR,
+        needs_products=False,
+        needs_knowledge=False,
+        needs_clarification=True,
+        store_overview_request=False,
+        reason="test_fallback",
+        confidence=1.0,
+    )
+
+    db = _MutableConversationDB({"version": 1})
+    pipeline = ComponentPipeline(
+        db=db,
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=KnowledgeStub(),
+        redis_cache=RedisStub(),
+    )
+
+    first = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="help", locale="en-US"),
+        conversation_id=77,
+        run_id="run-tone-first",
+        route_decision_override=fallback_decision,
+    )
+    assert first.conversation_state is not None
+    assert list(first.conversation_state.get("tone_recent") or [])
+
+    db.payload = dict(first.conversation_state)
+    second = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="help", locale="en-US"),
+        conversation_id=77,
+        run_id="run-tone-second",
+        route_decision_override=fallback_decision,
+    )
+
+    assert second.response.reply_text != first.response.reply_text
+    assert second.debug.get("tone_anti_repeat_applied") is True
+    assert int(second.debug.get("tone_repeat_hit", 0) or 0) >= 1

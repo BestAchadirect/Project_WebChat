@@ -767,39 +767,19 @@ class CatalogProductSearchService:
             first_key = "material" if "material" in clean_filters else sorted(clean_filters.keys())[0]
             first_def = definitions[first_key]
             first_value_norm = self._normalize_filter_value(clean_filters[first_key])
-            candidate_stmt = (
-                select(ProductAttributeValue.product_id)
-                .where(
-                    self._eav_filter_condition(
-                        attribute_id=int(first_def.id),
-                        key=first_key,
-                        expected_norm=first_value_norm,
-                    )
-                )
-            )
-            candidate_ids = [row[0] for row in (await self.db.execute(candidate_stmt)).all()]
             material_fallback_used = False
-            if first_key == "material" and not candidate_ids and first_value_norm:
-                material_fallback_stmt = (
-                    select(Product.id)
-                    .where(Product.is_active.is_(True))
-                    .where(func.lower(func.coalesce(Product.search_text, "")).like(f"%{first_value_norm}%"))
+            if first_key == "material" and first_value_norm:
+                first_condition = self._eav_filter_condition(
+                    attribute_id=int(first_def.id),
+                    key=first_key,
+                    expected_norm=first_value_norm,
                 )
-                candidate_ids = [row[0] for row in (await self.db.execute(material_fallback_stmt)).all()]
-                material_fallback_used = bool(candidate_ids)
-            if not candidate_ids:
-                return 0
-
-            if len(clean_filters) == 1:
-                stmt = (
-                    select(func.count(Product.id))
-                    .where(Product.id.in_(candidate_ids))
-                    .where(Product.is_active.is_(True))
+                material_exists_stmt = (
+                    select(ProductAttributeValue.product_id)
+                    .where(first_condition)
+                    .limit(1)
                 )
-                if material_fallback_used and first_value_norm:
-                    stmt = stmt.where(func.lower(func.coalesce(Product.search_text, "")).like(f"%{first_value_norm}%"))
-                result = await self.db.execute(stmt)
-                return int(result.scalar() or 0)
+                material_fallback_used = (await self.db.execute(material_exists_stmt)).first() is None
 
             conditions = []
             filtered_count = 0
@@ -820,11 +800,18 @@ class CatalogProductSearchService:
                 filtered_count += 1
 
             if not conditions:
+                if material_fallback_used and first_value_norm:
+                    stmt = (
+                        select(func.count(Product.id))
+                        .where(Product.is_active.is_(True))
+                        .where(func.lower(func.coalesce(Product.search_text, "")).like(f"%{first_value_norm}%"))
+                    )
+                    result = await self.db.execute(stmt)
+                    return int(result.scalar() or 0)
                 return 0
 
             refined_subq = (
                 select(ProductAttributeValue.product_id)
-                .where(ProductAttributeValue.product_id.in_(candidate_ids))
                 .where(or_(*conditions))
                 .group_by(ProductAttributeValue.product_id)
                 .having(func.count(func.distinct(ProductAttributeValue.attribute_id)) == filtered_count)

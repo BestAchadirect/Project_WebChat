@@ -133,7 +133,7 @@ def build_component_pipeline_result(
             routing=ChatRouting(
                 workflow=response_workflow,
                 execution_mode="component",
-                needs_products=response_workflow in {"catalog", "comparison", "recommendation"},
+                needs_products=response_workflow in {"catalog", "recommendation"},
                 needs_knowledge=response_workflow == "knowledge",
                 needs_clarification=response_workflow == "fallback",
                 reason="fixture",

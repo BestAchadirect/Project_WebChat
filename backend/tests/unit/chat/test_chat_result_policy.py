@@ -7,7 +7,6 @@ def test_result_policy_blocks_semantic_fallback_for_detail_mode() -> None:
         attribute_filters={},
         sku_tokens=[],
         detail_mode=True,
-        compare_requested=False,
         store_overview_request=False,
     )
 
@@ -21,7 +20,6 @@ def test_result_policy_allows_semantic_fallback_for_discovery_query() -> None:
         attribute_filters={},
         sku_tokens=[],
         detail_mode=False,
-        compare_requested=False,
         store_overview_request=False,
     )
 

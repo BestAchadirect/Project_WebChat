@@ -71,6 +71,43 @@ async def test_llm_routing_returns_catalog_workflow_when_valid(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
+async def test_llm_routing_returns_off_topic_workflow_when_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        return {
+            "workflow": "off_topic",
+            "execution_mode": "component",
+            "needs_products": False,
+            "needs_knowledge": False,
+            "needs_clarification": False,
+            "store_overview_request": False,
+            "reason": "unrelated non-store request",
+            "confidence": 0.94,
+        }
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_SHADOW_MODE", False)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="Can you write Python code for me?",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "off_topic"
+    assert decision.route_decision.needs_products is False
+    assert decision.route_decision.needs_knowledge is False
+    assert decision.route_decision.needs_clarification is False
+    assert decision.execution_mode == "component"
+    assert decision.selection_source == "llm"
+    assert decision.llm_workflow == "off_topic"
+
+
+@pytest.mark.asyncio
 async def test_llm_routing_confidence_gate_forces_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_generate_chat_json(**kwargs):
         return {
@@ -243,3 +280,4 @@ async def test_llm_routing_prompt_includes_company_and_recommendation_examples(
     system_prompt = captured["system"]
     assert 'User: "what is your company?"' in system_prompt
     assert 'User: "Do you have any product suggest?"' in system_prompt
+    assert 'User: "Can you do coding. and who are you? are you an ai?"' in system_prompt

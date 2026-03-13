@@ -47,7 +47,7 @@ def _workflow_decision(
     return routing_policy.WorkflowDecision(
         workflow=workflow,
         source=source,
-        needs_products=workflow in {"catalog", "comparison", "recommendation"},
+        needs_products=workflow in {"catalog", "recommendation"},
         needs_knowledge=workflow == "knowledge",
         needs_clarification=workflow == "fallback",
         store_overview_request=store_overview_request,
@@ -79,7 +79,7 @@ def test_product_presentation_builds_filter_based_copy() -> None:
     )
 
     assert reply == "I found products that match what you're looking for in Gold color with Gold material."
-    assert follow_up == "See more in Gold color"
+    assert follow_up == ""
 
 
 def test_product_presentation_builds_extended_filter_copy() -> None:
@@ -92,7 +92,7 @@ def test_product_presentation_builds_extended_filter_copy() -> None:
     )
 
     assert reply == "I found products that match what you're looking for in Sterilized for Ring with Heart design."
-    assert follow_up == "See more Sterilized Ring"
+    assert follow_up == ""
 
 
 def test_component_pipeline_derive_legacy_uses_attribute_copy_and_see_more() -> None:
@@ -114,9 +114,11 @@ def test_component_pipeline_derive_legacy_uses_attribute_copy_and_see_more() -> 
 
     payload = ComponentPipeline._derive_legacy(context=context, components=components)
 
-    assert payload["reply_text"] == "I found products that match what you're looking for in Gold color with Gold material."
-    assert payload["follow_up_questions"][0] == "See more in Gold color"
-    assert "Compare A-1 and B-1" in payload["follow_up_questions"]
+    reply_text = str(payload["reply_text"]).lower()
+    assert "gold" in reply_text
+    assert ("match" in reply_text) or ("option" in reply_text)
+    assert not any(str(item).lower().startswith("see more") for item in payload["follow_up_questions"])
+    assert not any("compare" in str(item).lower() for item in payload["follow_up_questions"])
     assert len(payload["product_carousel"]) == 2
 
 
@@ -341,5 +343,57 @@ async def test_component_pipeline_knowledge_answer_falls_back_when_llm_reply_emp
     )
 
     assert from_cache is False
-    assert answer.startswith("Here is what I found:")
-    assert "Returns Policy" in answer
+    assert not answer.lower().startswith("here is what i found:")
+    assert "return" in answer.lower()
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_store_overview_knowledge_answer_prefers_structured_contact_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _RedisStub:
+        async def get_json(self, key):
+            return None
+
+        async def set_json(self, key, value, ttl_seconds=0):
+            return None
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_generate_chat_json(*args, **kwargs):
+        return {"reply": "Here is what I found: generic summary"}
+
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    answer, from_cache = await pipeline._knowledge_answer_once(
+        question="Where is your company? I want to buy in person.",
+        sources=[
+            KnowledgeSource(
+                source_id="src-contact",
+                chunk_id="chunk-contact",
+                title="How can I contact Acha?",
+                content_snippet=(
+                    "Address: Acha Co., Ltd. 247-249 Tanao Road, Bavornives, Pranakorn, Bangkok 10200, Thailand. "
+                    "Email: sales@achadirect.com. Tel: +66 (0)2-629-5858."
+                ),
+                category="Contact",
+                relevance=0.35,
+                url="https://www.achadirect.com/faq",
+                distance=0.65,
+            )
+        ],
+        locale="en-US",
+        store_overview_request=True,
+        llm_cache_key="test-store-overview-key",
+    )
+
+    assert from_cache is False
+    assert "showroom" in answer.lower()
+    assert "bangkok" in answer.lower()
+    assert ("address" in answer.lower()) or ("contact" in answer.lower())
+    assert not answer.lower().startswith("here is what i found:")

@@ -13,9 +13,9 @@ from app.services.chat.components.types import ComponentSource
 SUPPORTED_WORKFLOWS = {
     "catalog",
     "knowledge",
-    "comparison",
     "recommendation",
     "smalltalk",
+    "off_topic",
     "fallback",
 }
 SUPPORTED_EXECUTION_MODES = {"component", "agentic"}
@@ -145,6 +145,8 @@ def _workflow_source(workflow: str) -> ComponentSource:
         return ComponentSource.KNOWLEDGE
     if workflow == "smalltalk":
         return ComponentSource.TOOL
+    if workflow == "off_topic":
+        return ComponentSource.ERROR
     if workflow == "fallback":
         return ComponentSource.ERROR
     return ComponentSource.SQL
@@ -175,10 +177,12 @@ def _coerce_bool(value: Any, *, default: bool = False) -> bool:
 
 
 def _default_flags_for_workflow(workflow: str) -> tuple[bool, bool, bool]:
-    if workflow in {"catalog", "comparison", "recommendation"}:
+    if workflow in {"catalog", "recommendation"}:
         return True, False, False
     if workflow == "knowledge":
         return False, True, False
+    if workflow == "off_topic":
+        return False, False, False
     if workflow == "fallback":
         return False, False, True
     return False, False, False
@@ -212,10 +216,7 @@ def _coerce_llm_routing_payload(payload: Dict[str, Any]) -> tuple[WorkflowDecisi
         confidence = 0.0
     confidence = max(0.0, min(1.0, confidence))
 
-    if workflow == "comparison":
-        needs_products = True
-        needs_knowledge = False
-    elif workflow == "recommendation":
+    if workflow == "recommendation":
         needs_products = True
         needs_knowledge = False
     elif workflow == "knowledge":
@@ -225,6 +226,10 @@ def _coerce_llm_routing_payload(payload: Dict[str, Any]) -> tuple[WorkflowDecisi
     elif workflow == "smalltalk":
         needs_products = False
         needs_knowledge = False
+    elif workflow == "off_topic":
+        needs_products = False
+        needs_knowledge = False
+        needs_clarification = False
     elif workflow == "fallback":
         needs_clarification = True
 
@@ -282,7 +287,7 @@ async def _llm_decide_routing(
     system = (
         "Return ONLY strict JSON with keys: workflow, execution_mode, needs_products, needs_knowledge, "
         "needs_clarification, store_overview_request, reason, confidence.\n"
-        "workflow must be one of: catalog, knowledge, comparison, recommendation, smalltalk, fallback.\n"
+        "workflow must be one of: catalog, knowledge, recommendation, smalltalk, off_topic, fallback.\n"
         "execution_mode must be one of: component, agentic.\n"
         "Routing rules:\n"
         "- Use knowledge for company info, about us, store overview, contact details, sales contact, support, "
@@ -291,8 +296,9 @@ async def _llm_decide_routing(
         "shopping requests.\n"
         "- Use recommendation when the user asks for suggestions, ideas, or recommendations, even if the request "
         "is broad.\n"
-        "- Use comparison when the user wants to compare products or SKUs.\n"
         "- Use smalltalk only for greetings, thanks, or casual non-business chat.\n"
+        "- Use off_topic for requests unrelated to shopping, product support, or store policies (e.g., coding help, "
+        "general AI tasks, unrelated trivia, non-store personal tasks).\n"
         "- Use fallback only when the request is too unclear to answer safely.\n"
         "Additional rules:\n"
         "- If the request asks about buying in person, company/store location, sales team, or contact channels, "
@@ -306,6 +312,8 @@ async def _llm_decide_routing(
         "checks, or chained product detail lookups.\n"
         "- If uncertain, prefer the closest business workflow over smalltalk.\n"
         "- Do not classify company/store/contact/location questions as smalltalk.\n"
+        "- If user asks for coding/programming or asks what you are as a general AI assistant outside store context, "
+        "prefer off_topic.\n"
         "Confidence rules:\n"
         "- Use high confidence (0.8-1.0) when the request is clear.\n"
         "- Use medium confidence (0.5-0.79) when the request is understandable but broad.\n"
@@ -337,10 +345,6 @@ async def _llm_decide_routing(
         'Output: {"workflow":"catalog","execution_mode":"component","needs_products":true,'
         '"needs_knowledge":true,"needs_clarification":false,"store_overview_request":false,'
         '"reason":"Primary request is product browsing with a secondary contact need.","confidence":0.9}\n'
-        'User: "Compare ABC-1 and XYZ-2"\n'
-        'Output: {"workflow":"comparison","execution_mode":"component","needs_products":true,'
-        '"needs_knowledge":false,"needs_clarification":false,"store_overview_request":false,'
-        '"reason":"User explicitly wants to compare products.","confidence":0.97}\n'
         'User: "Do you have ABC-1 in stock?"\n'
         'Output: {"workflow":"catalog","execution_mode":"agentic","needs_products":true,'
         '"needs_knowledge":false,"needs_clarification":false,"store_overview_request":false,'
@@ -348,7 +352,12 @@ async def _llm_decide_routing(
         'User: "hi"\n'
         'Output: {"workflow":"smalltalk","execution_mode":"component","needs_products":false,'
         '"needs_knowledge":false,"needs_clarification":false,"store_overview_request":false,'
-        '"reason":"Greeting only.","confidence":0.98}'
+        '"reason":"Greeting only.","confidence":0.98}\n'
+        'User: "Can you do coding. and who are you? are you an ai?"\n'
+        'Output: {"workflow":"off_topic","execution_mode":"component","needs_products":false,'
+        '"needs_knowledge":false,"needs_clarification":false,"store_overview_request":false,'
+        '"reason":"The request is unrelated to store shopping/support and asks for general AI/coding capability.",'
+        '"confidence":0.92}'
     )
     user = (
         f"message={text}\n"

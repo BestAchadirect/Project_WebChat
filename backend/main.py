@@ -21,6 +21,7 @@ from app.api.routes.products import router as products_router
 from app.api.routes.analytics import router as analytics_router
 from app.api.routes.banner import router as banner_router
 from app.api.routes.tickets import router as tickets_router
+from app.api.routes.aliases import router as aliases_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: ensure required extensions exist
@@ -80,6 +81,7 @@ app.include_router(tickets_router, prefix=f"{settings.API_V1_STR}/tickets", tags
 app.include_router(knowledge_router, prefix=f"{settings.API_V1_STR}/dashboard/knowledge", tags=["Knowledge"])
 app.include_router(qa_router, prefix=f"{settings.API_V1_STR}/dashboard/qa", tags=["QA"])
 app.include_router(products_router, prefix=f"{settings.API_V1_STR}/products", tags=["Products"])
+app.include_router(aliases_router, prefix=f"{settings.API_V1_STR}/aliases", tags=["Aliases"])
 app.include_router(analytics_router, prefix=f"{settings.API_V1_STR}/analytics", tags=["Analytics"])
 app.include_router(banner_router, prefix=f"{settings.API_V1_STR}/banners", tags=["Banners"])
 

@@ -78,7 +78,7 @@ class ChatContext(BaseModel):
 
 
 class ChatRouting(BaseModel):
-    workflow: Literal["catalog", "knowledge", "comparison", "recommendation", "smalltalk", "fallback"] = (
+    workflow: Literal["catalog", "knowledge", "recommendation", "smalltalk", "off_topic", "fallback"] = (
         "fallback"
     )
     execution_mode: Literal["component", "agentic"] = "component"
@@ -93,16 +93,11 @@ class ChatRouting(BaseModel):
 
 class ChatComponentType(str, Enum):
     QUERY_SUMMARY = "query_summary"
-    RESULT_COUNT = "result_count"
     PRODUCT_CARDS = "product_cards"
-    PRODUCT_TABLE = "product_table"
-    PRODUCT_BULLETS = "product_bullets"
     PRODUCT_DETAIL = "product_detail"
-    COMPARE = "compare"
     RECOMMENDATIONS = "recommendations"
     CLARIFY = "clarify"
     KNOWLEDGE_ANSWER = "knowledge_answer"
-    ACTION_RESULT = "action_result"
     ERROR = "error"
     ASSISTANT_MESSAGE = "assistant_message"
     QUICK_REPLIES = "quick_replies"
@@ -157,10 +152,7 @@ def _augment_chat_components(
     product_types = {
         ChatComponentType.PRODUCT_CARDS.value,
         ChatComponentType.PRODUCT_DETAIL.value,
-        ChatComponentType.COMPARE.value,
         ChatComponentType.RECOMMENDATIONS.value,
-        ChatComponentType.PRODUCT_TABLE.value,
-        ChatComponentType.PRODUCT_BULLETS.value,
     }
     cards = list(product_carousel or [])
     if cards and not seen.intersection(product_types):

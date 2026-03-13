@@ -71,12 +71,12 @@ def _workflow_decision(
     store_overview_request: bool = False,
 ) -> routing_policy.WorkflowDecision:
     source = ComponentSource.KNOWLEDGE if workflow == "knowledge" else ComponentSource.SQL
-    if workflow == "fallback":
+    if workflow in {"fallback", "off_topic"}:
         source = ComponentSource.ERROR
     return routing_policy.WorkflowDecision(
         workflow=workflow,
         source=source,
-        needs_products=workflow in {"catalog", "comparison", "recommendation"},
+        needs_products=workflow in {"catalog", "recommendation"},
         needs_knowledge=workflow == "knowledge",
         needs_clarification=workflow == "fallback",
         store_overview_request=store_overview_request,
@@ -107,7 +107,6 @@ def test_semantic_fallback_decision_blocks_structured_filters() -> None:
         attribute_filters={"material": "titanium"},
         sku_tokens=[],
         detail_mode=False,
-        compare_requested=False,
         store_overview_request=False,
     )
     assert decision.allow is False
@@ -121,7 +120,6 @@ def test_semantic_fallback_decision_allows_discovery_queries() -> None:
         attribute_filters={},
         sku_tokens=[],
         detail_mode=False,
-        compare_requested=False,
         store_overview_request=False,
     )
     assert decision.allow is True
@@ -172,10 +170,65 @@ async def test_component_pipeline_structured_no_match_returns_clarify_without_ve
 
     assert result.response.routing.workflow == "catalog"
     assert any(component.type.value == "clarify" for component in result.response.components)
-    assert "couldn't find products matching those exact details" in result.response.reply_text.lower()
+    assert "share" in result.response.reply_text.lower() or "narrow" in result.response.reply_text.lower()
     assert result.debug.get("semantic_fallback_allowed") is False
     assert result.debug.get("semantic_fallback_reason") == "structured_filters_present"
     assert result.debug.get("match_tier") == "no_match"
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_design_discovery_uses_humanized_clarify_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CatalogStub:
+        async def structured_search(self, **kwargs):
+            return SimpleNamespace(product_ids=[]), {"structured_read_mode": "eav", "projection_hit": False}
+
+        async def structured_count(self, **kwargs):
+            return 0
+
+        async def smart_search(self, **kwargs):
+            return SimpleNamespace(product_ids=[], cards=[], distance_by_id={})
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    def fake_parse(*, user_text: str, nlu_data):
+        return DetailQuery(
+            requested_fields=[],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=False,
+        )
+
+    async def fake_generate_embedding(text: str):
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        fake_parse,
+    )
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
+
+    result = await pipeline.run(
+        request=ChatRequest(
+            user_id="guest-1",
+            message="What design do you have for your store?",
+            locale="en-US",
+        ),
+        conversation_id=77,
+        run_id="run-design-discovery",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    assert result.response.routing.workflow == "catalog"
+    assert any(component.type.value == "clarify" for component in result.response.components)
+    assert "style" in result.response.reply_text.lower() or "design" in result.response.reply_text.lower()
+    assert result.debug.get("clarify_reason") == "structured_no_match"
 
 
 @pytest.mark.asyncio
@@ -299,7 +352,7 @@ async def test_component_pipeline_product_browse_reply_is_deterministic_without_
     assert result.debug.get("component_source") == "sql"
     assert result.debug.get("match_tier") == "exact_match"
     assert "steel material" in result.response.reply_text.lower()
-    assert result.response.follow_up_questions
+    assert result.response.follow_up_questions == []
 
 
 @pytest.mark.asyncio
@@ -375,7 +428,11 @@ async def test_component_pipeline_high_risk_knowledge_with_weak_sources_returns_
     assert any(component.type.value == "clarify" for component in result.response.components)
     assert result.debug.get("component_knowledge_needs_clarification") is True
     assert result.debug.get("clarify_reason") == "knowledge_needs_clarification"
-    assert result.response.follow_up_questions
+    assert result.debug.get("knowledge_clarify_focus") == "contact"
+    assert "email" in result.response.reply_text.lower() or "phone" in result.response.reply_text.lower()
+    follow_ups = [item.lower() for item in list(result.response.follow_up_questions or [])]
+    assert any("sales email" in item for item in follow_ups)
+    assert any("phone number" in item for item in follow_ups)
 
 
 @pytest.mark.asyncio
@@ -425,3 +482,93 @@ async def test_component_pipeline_store_overview_knowledge_passes_retrieval_prof
     assert result.response.routing.workflow == "knowledge"
     assert captured["store_overview_request"] is True
     assert captured["answer_store_overview_request"] is True
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_off_topic_uses_tone_composed_reply_without_retrieval() -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Can you write Python code for me?", locale="en-US"),
+        conversation_id=77,
+        run_id="run-off-topic",
+        route_decision_override=_workflow_decision("off_topic"),
+    )
+
+    reply = str(result.response.reply_text or "")
+    intro_candidates = [
+        "I can only help with this store's body jewelry shopping and support.",
+        "I'm focused on body jewelry products, recommendations, and store support here.",
+        "I can help with body jewelry products, stock, and store policies in this chat.",
+    ]
+    redirect_candidates = [
+        "If you want, tell me what jewelry type or material you're looking for.",
+        "If you want, ask me about products, stock, or store policies.",
+        "If you want, share your preferred style and I can suggest products.",
+    ]
+
+    assert result.response.routing.workflow == "off_topic"
+    assert result.debug.get("component_source") == "error"
+    assert result.embedding_calls == 0
+    assert result.llm_calls == 0
+    assert any(candidate in reply for candidate in intro_candidates)
+    assert any(candidate in reply for candidate in redirect_candidates)
+    assert str(result.debug.get("tone_key") or "").startswith("off_topic:")
+    assert result.debug.get("tone_style") in {"casual", "neutral", "direct"}
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_fallback_too_broad_uses_specific_clarify_message() -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="help", locale="en-US"),
+        conversation_id=77,
+        run_id="run-routing-fallback",
+        route_decision_override=_workflow_decision("fallback"),
+    )
+
+    fallback_variants = {
+        "I can help quickly. Share one detail like piercing type, material, or SKU and I'll narrow it.",
+        "Happy to help. Tell me one preference such as type, material, or gauge and I'll refine the options.",
+        "Let's narrow this in one step. Give me piercing type, material, or SKU and I'll show the best matches.",
+    }
+
+    assert result.response.routing.workflow == "fallback"
+    assert any(component.type.value == "clarify" for component in result.response.components)
+    assert result.response.reply_text in fallback_variants
+    assert result.debug.get("clarify_reason") == "fallback_too_broad"
+    assert result.debug.get("tone_key") == "clarify:fallback_too_broad"
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_fallback_gibberish_asks_rephrase() -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="asdfafafdas", locale="en-US"),
+        conversation_id=77,
+        run_id="run-fallback-gibberish",
+        route_decision_override=_workflow_decision("fallback"),
+    )
+
+    assert result.response.routing.workflow == "fallback"
+    assert any(component.type.value == "clarify" for component in result.response.components)
+    assert "rephrase" in result.response.reply_text.lower() or "type it again" in result.response.reply_text.lower()
+    assert result.debug.get("clarify_reason") == "fallback_gibberish"
+    assert result.debug.get("tone_key") == "clarify:fallback_gibberish"
