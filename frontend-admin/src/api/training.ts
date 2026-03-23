@@ -380,13 +380,26 @@ export interface SynonymEntry {
     is_active: boolean;
 }
 
+export interface SynonymAlias {
+    id: number;
+    raw_value: string;
+    is_active: boolean;
+}
+
+export interface SynonymGroup {
+    attribute: string;
+    attribute_display_name: string;
+    canonical_value: string;
+    synonyms: SynonymAlias[];
+}
+
 export interface SynonymAttribute {
     name: string;
     display_name: string;
 }
 
 export const aliasesApi = {
-    async listAliases(): Promise<SynonymEntry[]> {
+    async listAliases(): Promise<SynonymGroup[]> {
         const response = await apiClient.get('/aliases');
         return response.data;
     },

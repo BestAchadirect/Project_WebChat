@@ -134,6 +134,7 @@ def _augment_chat_components(
     components: List[ChatComponent],
     reply_text: str = "",
     product_carousel: Optional[List[ProductCard]] = None,
+    follow_up_questions: Optional[List[str]] = None,
 ) -> List[ChatComponent]:
     augmented = list(components or [])
     seen = {_component_type_value(component) for component in augmented}
@@ -163,6 +164,16 @@ def _augment_chat_components(
             )
         )
         seen.add(ChatComponentType.PRODUCT_CARDS.value)
+
+    follow_ups = [str(item or "").strip() for item in list(follow_up_questions or []) if str(item or "").strip()]
+    if follow_ups and ChatComponentType.QUICK_REPLIES.value not in seen:
+        augmented.append(
+            ChatComponent(
+                type=ChatComponentType.QUICK_REPLIES,
+                data={"items": follow_ups},
+            )
+        )
+        seen.add(ChatComponentType.QUICK_REPLIES.value)
 
     return augmented
 
@@ -197,6 +208,7 @@ class ChatResponse(BaseModel):
             components=list(self.components or []),
             reply_text=self.reply_text,
             product_carousel=list(self.product_carousel or []),
+            follow_up_questions=list(self.follow_up_questions or []),
         )
         return self
 

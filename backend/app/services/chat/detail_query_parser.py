@@ -2,323 +2,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
+
+from app.services.chat.parser_rule_types import ParserRuleSet, empty_rule_set
 
 ALLOWED_DETAIL_FIELDS = ("price", "stock", "image", "attributes", "name", "sku")
+ALLOWED_DETAIL_FIELD_SET = set(ALLOWED_DETAIL_FIELDS)
 FIELD_ORDER = {name: idx for idx, name in enumerate(ALLOWED_DETAIL_FIELDS)}
-ALLOWED_ATTRIBUTE_FILTERS = (
-    "category",
-    "color",
-    "crystal_color",
-    "cz_color",
-    "design",
-    "gauge",
-    "height",
-    "jewelry_type",
-    "length",
-    "material",
-    "opal_color",
-    "outer_diameter",
-    "packing_option",
-    "pearl_color",
-    "pincher_size",
-    "quantity_in_bulk",
-    "rack",
-    "ring_size",
-    "size",
-    "size_in_pack",
-    "threading",
-)
-ATTRIBUTE_FILTER_ORDER = (
-    "category",
-    "jewelry_type",
-    "design",
-    "color",
-    "material",
-    "opal_color",
-    "pearl_color",
-    "crystal_color",
-    "cz_color",
-    "gauge",
-    "length",
-    "size",
-    "outer_diameter",
-    "ring_size",
-    "height",
-    "threading",
-    "packing_option",
-    "size_in_pack",
-    "quantity_in_bulk",
-    "pincher_size",
-    "rack",
-)
-
-_PRICE_PATTERNS = (
-    r"\bprice\b",
-    r"\bcost\b",
-    r"\bhow much\b",
-)
-_STOCK_PATTERNS = (
-    r"\bstock\b",
-    r"\bavailability\b",
-    r"\bin stock\b",
-    r"\bout of stock\b",
-    r"\bavailable\b",
-)
-_IMAGE_PATTERNS = (
-    r"\bimage\b",
-    r"\bpicture\b",
-    r"\bphoto\b",
-    r"\bpic\b",
-)
-_ATTRIBUTE_PATTERNS = (
-    r"\battribute\b",
-    r"\battributes\b",
-    r"\bspec\b",
-    r"\bspecs\b",
-    r"\bdetails\b",
-    r"\bmaterial\b",
-    r"\bcolor\b",
-    r"\bgauge\b",
-    r"\bthreading\b",
-    r"\bcategory\b",
-    r"\bdesign\b",
-    r"\bshape\b",
-    r"\blength\b",
-    r"\bsize\b",
-    r"\bouter diameter\b",
-    r"\bdiameter\b",
-    r"\bopal color\b",
-    r"\bpearl color\b",
-    r"\bcrystal color\b",
-    r"\bcz color\b",
-    r"\bring size\b",
-    r"\brack\b",
-)
-
-_KNOWN_COLORS = {
-    "black",
-    "white",
-    "clear",
-    "blue",
-    "red",
-    "green",
-    "purple",
-    "pink",
-    "yellow",
-    "orange",
-    "silver",
-    "gold",
-    "rose gold",
-    "opal",
-}
-
-_COLOR_SYNONYMS = {
-    "opal color": "opal",
-    "rose-gold": "rose gold",
-    "rosegold": "rose gold",
-}
-
-_JEWELRY_TYPE_PATTERNS = {
-    "barbell": "barbell",
-    "circular barbell": "circular barbell",
-    "horseshoe": "circular barbell",
-    "labret": "labret",
-    "labret stud": "labret",
-    "flatback": "labret",
-    "ring": "ring",
-    "hoop": "ring",
-    "captive bead ring": "ring",
-    "cbr": "ring",
-    "plug": "plug",
-    "tunnel": "tunnel",
-    "stud": "stud",
-}
-
-_MATERIAL_PATTERNS = {
-    "titanium g23": "titanium g23",
-    "implant grade": "titanium g23",
-    "implant-grade": "titanium g23",
-    "implant grade titanium": "titanium g23",
-    "implant-grade titanium": "titanium g23",
-    "g23 titanium": "titanium g23",
-    "titanium g-23": "titanium g23",
-    "g23": "titanium g23",
-    "titanium": "titanium",
-    "surgical steel": "steel",
-    "stainless steel": "steel",
-    "stainless-steel": "steel",
-    "stainless": "steel",
-    "316l": "steel",
-    "316l surgical steel": "steel",
-    "steel": "steel",
-    "gold": "gold",
-    "silver": "silver",
-    "sterling silver": "silver",
-    "925 silver": "silver",
-    "925 sterling silver": "silver",
-    "niobium": "niobium",
-    "acrylic": "acrylic",
-    "bioflex": "bioflex / ptfe",
-    "ptfe": "bioflex / ptfe",
-    "bioflex / ptfe": "bioflex / ptfe",
-}
-
-_THREADING_PATTERNS = {
-    "internally threaded": "internal",
-    "internal": "internal",
-    "internally-threaded": "internal",
-    "externally threaded": "external",
-    "external": "external",
-    "externally-threaded": "external",
-    "threadless": "threadless",
-}
-
-_CATEGORY_PATTERNS = {
-    "sterilized": "sterilized",
-    "sterilised": "sterilized",
-    "sterilization": "sterilized",
-    "sterilisation": "sterilized",
-    "sterile": "sterilized",
-    "presterilized": "sterilized",
-    "presterilised": "sterilized",
-    "pre-sterilized": "sterilized",
-    "pre sterilized": "sterilized",
-    "pre-sterilised": "sterilized",
-    "pre sterilised": "sterilized",
-    "pre-sterilisation": "sterilized",
-    "pre sterilisation": "sterilized",
-}
-
-_ATTRIBUTE_VALUE_SYNONYMS: Dict[str, Dict[str, str]] = {
-    "color": {
-        "rose-gold": "rose gold",
-        "rosegold": "rose gold",
-    },
-    "material": {
-        "stainless": "steel",
-        "stainless-steel": "steel",
-        "stainless steel": "steel",
-        "surgical steel": "steel",
-        "316l": "steel",
-        "316l surgical steel": "steel",
-        "sterling silver": "silver",
-        "925 silver": "silver",
-        "925 sterling silver": "silver",
-        "implant grade titanium": "titanium g23",
-        "implant-grade titanium": "titanium g23",
-        "g23 titanium": "titanium g23",
-        "titanium g-23": "titanium g23",
-        "bioflex": "bioflex / ptfe",
-        "ptfe": "bioflex / ptfe",
-    },
-    "jewelry_type": {
-        "horseshoe": "circular barbell",
-        "labret stud": "labret",
-        "flatback": "labret",
-        "hoop": "ring",
-        "captive bead ring": "ring",
-        "cbr": "ring",
-    },
-    "threading": {
-        "internally threaded": "internal",
-        "internally-threaded": "internal",
-        "externally threaded": "external",
-        "externally-threaded": "external",
-    },
-    "category": {
-        "sterilisation": "sterilized",
-        "sterilization": "sterilized",
-        "sterile": "sterilized",
-        "presterilized": "sterilized",
-        "presterilised": "sterilized",
-        "pre-sterilized": "sterilized",
-        "pre sterilized": "sterilized",
-        "pre-sterilised": "sterilized",
-        "pre sterilised": "sterilized",
-        "pre-sterilisation": "sterilized",
-        "pre sterilisation": "sterilized",
-    },
-}
-
-_DESIGN_PATTERNS = {
-    "heart": "heart",
-    "star": "star",
-    "butterfly": "butterfly",
-    "disc": "disc",
-    "round": "round",
-    "square": "square",
-    "flower": "flower",
-    "moon": "moon",
-    "cross": "cross",
-}
-
-_ATTRIBUTE_VALUE_PATTERNS: Dict[str, Sequence[str]] = {
-    "category": (
-        r"\bcategory(?: is|=| of| for| in)?\s+(?P<value>[a-z0-9][a-z0-9&/;,\- ]{1,60})\b",
-    ),
-    "design": (
-        r"\bdesign(?: is|=| of| with)?\s+(?P<value>[a-z0-9][a-z0-9&/\- ]{1,40})\b",
-        r"\bwith\s+(?P<value>[a-z0-9][a-z0-9&/\- ]{1,30})\s+design\b",
-        r"\b(?P<value>[a-z0-9][a-z0-9&/\- ]{1,20})\s+shape\b",
-        r"\b(?P<value>[a-z0-9][a-z0-9&/\- ]{1,20})-shaped\b",
-    ),
-    "length": (
-        r"\blength(?: is|=| of)?\s+(?P<value>\d{1,3}(?:\.\d+)?\s*(?:mm|cm|in|inch|inches)?)\b",
-        r"\b(?P<value>\d{1,3}(?:\.\d+)?\s*(?:mm|cm|in|inch|inches))\s+length\b",
-    ),
-    "size": (
-        r"\bsize(?: is|=| of)?\s+(?P<value>[a-z0-9.]+(?:\s*(?:mm|cm|in|inch|inches))?)\b",
-    ),
-    "outer_diameter": (
-        r"\bouter diameter(?: is|=| of)?\s+(?P<value>\d{1,3}(?:\.\d+)?\s*(?:mm|cm|in|inch|inches))\b",
-        r"\b(?P<value>\d{1,3}(?:\.\d+)?\s*(?:mm|cm|in|inch|inches))\s+outer diameter\b",
-        r"\bdiameter(?: is|=| of)?\s+(?P<value>\d{1,3}(?:\.\d+)?\s*(?:mm|cm|in|inch|inches))\b",
-    ),
-    "ring_size": (
-        r"\bring size(?: is|=| of)?\s+(?P<value>[a-z0-9.]+)\b",
-    ),
-    "pincher_size": (
-        r"\bpincher size(?: is|=| of)?\s+(?P<value>[a-z0-9.]+(?:\s*(?:mm|cm))?)\b",
-    ),
-    "height": (
-        r"\bheight(?: is|=| of)?\s+(?P<value>\d{1,3}(?:\.\d+)?\s*(?:mm|cm|in|inch|inches))\b",
-    ),
-    "packing_option": (
-        r"\bpacking option(?: is|=| of)?\s+(?P<value>[a-z0-9][a-z0-9/\- ]{1,30})\b",
-        r"\bpack(?:ing)?(?: option)?\s+(?P<value>[a-z0-9][a-z0-9/\- ]{1,30})\b",
-    ),
-    "size_in_pack": (
-        r"\bsize in pack(?: is|=| of)?\s+(?P<value>[a-z0-9.]+)\b",
-        r"\bpack size(?: is|=| of)?\s+(?P<value>[a-z0-9.]+)\b",
-    ),
-    "quantity_in_bulk": (
-        r"\bquantity in bulk(?: is|=| of)?\s+(?P<value>\d{1,5})\b",
-        r"\bbulk qty(?: is|=| of)?\s+(?P<value>\d{1,5})\b",
-        r"\bbulk quantity(?: is|=| of)?\s+(?P<value>\d{1,5})\b",
-    ),
-    "rack": (
-        r"\brack(?: is|=| number| no\.?)?\s+(?P<value>[a-z0-9\-]{1,20})\b",
-    ),
-    "opal_color": (
-        r"\b(?P<value>opal)\b",
-        r"\bopal color(?: is|=| of)?\s+(?P<value>[a-z ]{2,20})\b",
-        r"\b(?P<value>[a-z ]{2,20})\s+opal\b",
-    ),
-    "pearl_color": (
-        r"\bpearl color(?: is|=| of)?\s+(?P<value>[a-z ]{2,20})\b",
-        r"\b(?P<value>[a-z ]{2,20})\s+pearl\b",
-    ),
-    "crystal_color": (
-        r"\bcrystal color(?: is|=| of)?\s+(?P<value>[a-z ]{2,20})\b",
-        r"\b(?P<value>[a-z ]{2,20})\s+crystal\b",
-    ),
-    "cz_color": (
-        r"\bcz color(?: is|=| of)?\s+(?P<value>[a-z ]{2,20})\b",
-        r"\b(?P<value>[a-z ]{2,20})\s+cz\b",
-        r"\bcubic zirconia color(?: is|=| of)?\s+(?P<value>[a-z ]{2,20})\b",
-    ),
-}
 
 _MEASUREMENT_KEYS = {
     "gauge",
@@ -330,6 +20,25 @@ _MEASUREMENT_KEYS = {
 }
 
 
+def _normalize_lexical_alias_map(
+    raw_map: Dict[str, Dict[str, str]],
+) -> Dict[str, Dict[str, str]]:
+    normalized: Dict[str, Dict[str, str]] = {}
+    for raw_attr, raw_values in dict(raw_map or {}).items():
+        attr = str(raw_attr or "").strip().lower()
+        if not attr:
+            continue
+        bucket = normalized.setdefault(attr, {})
+        for raw_value, canonical_value in dict(raw_values or {}).items():
+            raw_norm = str(raw_value or "").strip().lower()
+            canonical_norm = str(canonical_value or "").strip().lower()
+            if not raw_norm or not canonical_norm:
+                continue
+            bucket[raw_norm] = canonical_norm
+            bucket.setdefault(canonical_norm, canonical_norm)
+    return normalized
+
+
 @dataclass(frozen=True)
 class DetailQuery:
     requested_fields: List[str]
@@ -339,16 +48,8 @@ class DetailQuery:
 
 
 class DetailQueryParser:
-    @staticmethod
-    def _alias_override(
-        attribute: str,
-        value: str,
-        alias_map: Optional[Dict[str, Dict[str, str]]],
-    ) -> str:
-        if not attribute or not value:
-            return value
-        alias_map = alias_map or {}
-        return alias_map.get(attribute.lower(), {}).get(value.lower(), value)
+    _EMPTY_RULE_SET = empty_rule_set()
+    _OPAL_FALLBACK_ATTRIBUTES = ("stone", "opal_color", "color")
 
     @staticmethod
     def _normalize_text(value: str) -> str:
@@ -398,11 +99,11 @@ class DetailQueryParser:
         text = cls._normalize_text(str(value or ""))
         if not clean_key or not text:
             return ""
-        alias_map = alias_map or _ATTRIBUTE_VALUE_SYNONYMS
+        mapped = None
         if alias_map:
             mapped = alias_map.get(clean_key, {}).get(text)
-            if mapped:
-                text = mapped
+        if mapped:
+            text = cls._normalize_text(str(mapped))
         if clean_key == "gauge":
             return cls.normalize_gauge_token(text) or text
         if clean_key in _MEASUREMENT_KEYS:
@@ -416,15 +117,30 @@ class DetailQueryParser:
         return text
 
     @classmethod
-    def clean_attribute_filters(cls, raw_filters: Any) -> Dict[str, str]:
+    def clean_attribute_filters(
+        cls,
+        raw_filters: Any,
+        *,
+        alias_map: Optional[Dict[str, Dict[str, str]]] = None,
+        allowed_attribute_filters: Optional[Sequence[str]] = None,
+    ) -> Dict[str, str]:
         if not isinstance(raw_filters, dict):
             return {}
+        allowed = {
+            str(item or "").strip().lower()
+            for item in list(allowed_attribute_filters or [])
+            if str(item or "").strip()
+        }
         out: Dict[str, str] = {}
         for key, value in raw_filters.items():
             clean_key = str(key or "").strip().lower()
-            if clean_key not in ALLOWED_ATTRIBUTE_FILTERS:
+            if allowed and clean_key not in allowed:
                 continue
-            clean_value = cls.normalize_attribute_value(key=clean_key, value=value)
+            clean_value = cls.normalize_attribute_value(
+                key=clean_key,
+                value=value,
+                alias_map=alias_map,
+            )
             if clean_value:
                 out[clean_key] = clean_value
         return out
@@ -436,13 +152,51 @@ class DetailQueryParser:
         clean: List[str] = []
         for item in raw_fields:
             field = str(item or "").strip().lower()
-            if field in ALLOWED_DETAIL_FIELDS and field not in clean:
+            if field in ALLOWED_DETAIL_FIELD_SET and field not in clean:
                 clean.append(field)
         return clean
 
     @staticmethod
-    def _clean_nlu_filters(raw_filters: Any) -> Dict[str, str]:
-        return DetailQueryParser.clean_attribute_filters(raw_filters)
+    def _clean_nlu_filters(
+        raw_filters: Any,
+        *,
+        alias_map: Optional[Dict[str, Dict[str, str]]] = None,
+        allowed_attribute_filters: Optional[Sequence[str]] = None,
+    ) -> Dict[str, str]:
+        return DetailQueryParser.clean_attribute_filters(
+            raw_filters,
+            alias_map=alias_map,
+            allowed_attribute_filters=allowed_attribute_filters,
+        )
+
+    @classmethod
+    def _build_detection_alias_map(
+        cls,
+        alias_map: Optional[Dict[str, Dict[str, str]]],
+    ) -> Dict[str, Dict[str, str]]:
+        return _normalize_lexical_alias_map(dict(alias_map or {}))
+
+    @classmethod
+    def _extract_alias_match(
+        cls,
+        *,
+        text: str,
+        attribute: str,
+        alias_map: Dict[str, Dict[str, str]],
+    ) -> str:
+        bucket = dict(alias_map.get(attribute, {}) or {})
+        if not bucket:
+            return ""
+        terms = sorted(bucket.keys(), key=lambda value: (-len(value), value))
+        for term in terms:
+            normalized_term = cls._normalize_text(term)
+            if not normalized_term or len(normalized_term) < 2:
+                continue
+            if re.search(rf"\b{re.escape(normalized_term)}\b", text):
+                canonical = str(bucket.get(term) or "").strip().lower()
+                if canonical:
+                    return canonical
+        return ""
 
     @classmethod
     def _extract_pattern_value(
@@ -467,104 +221,184 @@ class DetailQueryParser:
         return ""
 
     @classmethod
+    def _maybe_infer_opal_filter(
+        cls,
+        *,
+        text: str,
+        attribute_filters: Dict[str, str],
+        alias_map: Dict[str, Dict[str, str]],
+        allowed_attribute_filters: Sequence[str],
+    ) -> None:
+        if any(key in attribute_filters for key in cls._OPAL_FALLBACK_ATTRIBUTES):
+            return
+        if not re.search(r"\bopal\b", text):
+            return
+
+        allowed = {
+            str(item or "").strip().lower()
+            for item in list(allowed_attribute_filters or [])
+            if str(item or "").strip()
+        }
+
+        for attribute in cls._OPAL_FALLBACK_ATTRIBUTES:
+            if allowed and attribute not in allowed:
+                continue
+            bucket = dict(alias_map.get(attribute, {}) or {})
+            if not bucket:
+                continue
+            canonical = str(bucket.get("opal") or "").strip().lower()
+            if not canonical:
+                for _, candidate in bucket.items():
+                    candidate_norm = str(candidate or "").strip().lower()
+                    if candidate_norm == "opal":
+                        canonical = candidate_norm
+                        break
+            if canonical:
+                normalized = cls.normalize_attribute_value(key=attribute, value=canonical, alias_map=alias_map) or canonical
+                attribute_filters[attribute] = normalized
+                return
+
+        # Safe fallback when opal exists in text but alias coverage is incomplete.
+        for attribute in ("opal_color", "color"):
+            if allowed and attribute not in allowed:
+                continue
+            normalized = cls.normalize_attribute_value(key=attribute, value="opal", alias_map=alias_map) or "opal"
+            attribute_filters[attribute] = normalized
+            return
+
+    @classmethod
+    def _maybe_infer_sterilization_filter(
+        cls,
+        *,
+        text: str,
+        attribute_filters: Dict[str, str],
+        alias_map: Dict[str, Dict[str, str]],
+        allowed_attribute_filters: Sequence[str],
+    ) -> None:
+        if "finish" in attribute_filters:
+            existing = cls._normalize_text(str(attribute_filters.get("finish") or ""))
+            if existing in {"sterilized", "sterilised", "sterilization", "sterilisation", "sterile"}:
+                attribute_filters["finish"] = "sterilized"
+            return
+
+        allowed = {
+            str(item or "").strip().lower()
+            for item in list(allowed_attribute_filters or [])
+            if str(item or "").strip()
+        }
+        if allowed and "finish" not in allowed:
+            return
+
+        if not re.search(
+            r"\b(?:steriliz(?:ed|ation|e)|sterilis(?:ed|ation|e)|pre[- ]?steriliz(?:ed|ation|e)|sterile)\b",
+            text,
+        ):
+            return
+
+        normalized = cls.normalize_attribute_value(key="finish", value="sterilized", alias_map=alias_map) or "sterilized"
+        attribute_filters["finish"] = normalized
+
+    @staticmethod
+    def _append_requested_field_if_matched(
+        *,
+        text: str,
+        patterns: Sequence[str],
+        field: str,
+        requested_fields: List[str],
+    ) -> None:
+        for pattern in patterns:
+            if re.search(pattern, text):
+                requested_fields.append(field)
+                break
+
+    @classmethod
     def parse(
         cls,
         *,
         user_text: str,
         nlu_data: Dict[str, Any],
         alias_map: Optional[Dict[str, Dict[str, str]]] = None,
+        parser_rules: Optional[ParserRuleSet] = None,
     ) -> DetailQuery:
-        alias_map = alias_map or {}
+        active_rules = parser_rules or cls._EMPTY_RULE_SET
+        detection_alias_map = cls._build_detection_alias_map(alias_map)
         text = cls._normalize_text(user_text or "")
         requested_fields = cls._clean_nlu_fields((nlu_data or {}).get("requested_fields"))
-        attribute_filters = cls._clean_nlu_filters((nlu_data or {}).get("attribute_filters"))
+        attribute_filters = cls._clean_nlu_filters(
+            (nlu_data or {}).get("attribute_filters"),
+            alias_map=detection_alias_map,
+            allowed_attribute_filters=list(active_rules.allowed_attribute_filters),
+        )
         wants_image = bool((nlu_data or {}).get("wants_image", False))
 
-        for pattern in _PRICE_PATTERNS:
-            if re.search(pattern, text):
-                requested_fields.append("price")
-                break
-        for pattern in _STOCK_PATTERNS:
-            if re.search(pattern, text):
-                requested_fields.append("stock")
-                break
-        for pattern in _IMAGE_PATTERNS:
-            if re.search(pattern, text):
-                requested_fields.append("image")
-                wants_image = True
-                break
-        for pattern in _ATTRIBUTE_PATTERNS:
-            if re.search(pattern, text):
-                requested_fields.append("attributes")
-                break
+        requested_patterns = dict(active_rules.requested_field_patterns or {})
+        cls._append_requested_field_if_matched(
+            text=text,
+            patterns=list(requested_patterns.get("price", [])),
+            field="price",
+            requested_fields=requested_fields,
+        )
+        cls._append_requested_field_if_matched(
+            text=text,
+            patterns=list(requested_patterns.get("stock", [])),
+            field="stock",
+            requested_fields=requested_fields,
+        )
+        before_image_count = len(requested_fields)
+        cls._append_requested_field_if_matched(
+            text=text,
+            patterns=list(requested_patterns.get("image", [])),
+            field="image",
+            requested_fields=requested_fields,
+        )
+        if len(requested_fields) > before_image_count:
+            wants_image = True
+        cls._append_requested_field_if_matched(
+            text=text,
+            patterns=list(requested_patterns.get("attributes", [])),
+            field="attributes",
+            requested_fields=requested_fields,
+        )
 
         gauge = cls.normalize_gauge_token(text)
         if gauge and (gauge.endswith("g") or gauge.endswith("mm")):
             attribute_filters.setdefault("gauge", gauge)
 
-        for jewelry_type, normalized in _JEWELRY_TYPE_PATTERNS.items():
-            if re.search(rf"\b{re.escape(jewelry_type)}s?\b", text):
-                attribute_filters.setdefault(
-                    "jewelry_type",
-                    cls._alias_override("jewelry_type", normalized, alias_map),
-                )
+        for attribute in list(active_rules.detection_attribute_order or []):
+            if attribute in attribute_filters:
+                continue
+            matched = cls._extract_alias_match(
+                text=text,
+                attribute=attribute,
+                alias_map=detection_alias_map,
+            )
+            if matched:
+                attribute_filters.setdefault(attribute, matched)
 
-        for material, normalized in _MATERIAL_PATTERNS.items():
-            if re.search(rf"\b{re.escape(material)}\b", text):
-                attribute_filters.setdefault(
-                    "material",
-                    cls._alias_override("material", normalized, alias_map),
-                )
-
-        for threading, normalized in _THREADING_PATTERNS.items():
-            if re.search(rf"\b{re.escape(threading)}\b", text):
-                attribute_filters.setdefault(
-                    "threading",
-                    cls._alias_override("threading", normalized, alias_map),
-                )
-
-        for color in sorted(_KNOWN_COLORS, key=lambda value: -len(value)):
-            if re.search(rf"\b{re.escape(color)}\b", text):
-                attribute_filters.setdefault(
-                    "color",
-                    cls._alias_override("color", color, alias_map),
-                )
-                break
-        for phrase, normalized in _COLOR_SYNONYMS.items():
-            if re.search(rf"\b{re.escape(phrase)}\b", text):
-                attribute_filters.setdefault("color", normalized)
-                break
-
-        for category_token, normalized in _CATEGORY_PATTERNS.items():
-            if re.search(rf"\b{re.escape(category_token)}\b", text):
-                attribute_filters.setdefault(
-                    "category",
-                    cls._alias_override("category", normalized, alias_map),
-                )
-                break
-
-        for design_token, normalized in _DESIGN_PATTERNS.items():
-            if re.search(
-                rf"\b{re.escape(design_token)}(?:\s+shape|\s+design|-shaped|\s+top|\s+tops)?\b",
-                text,
-            ):
-                attribute_filters.setdefault(
-                    "design",
-                    cls._alias_override("design", normalized, alias_map),
-                )
-                break
-
-        for key, patterns in _ATTRIBUTE_VALUE_PATTERNS.items():
+        for key, patterns in dict(active_rules.value_extract_patterns or {}).items():
             if key in attribute_filters:
                 continue
             extracted = cls._extract_pattern_value(
                 text=text,
                 key=key,
-                patterns=patterns,
-                alias_map=alias_map,
+                patterns=list(patterns or []),
+                alias_map=detection_alias_map,
             )
             if extracted:
                 attribute_filters[key] = extracted
+
+        cls._maybe_infer_opal_filter(
+            text=text,
+            attribute_filters=attribute_filters,
+            alias_map=detection_alias_map,
+            allowed_attribute_filters=list(active_rules.allowed_attribute_filters),
+        )
+        cls._maybe_infer_sterilization_filter(
+            text=text,
+            attribute_filters=attribute_filters,
+            alias_map=detection_alias_map,
+            allowed_attribute_filters=list(active_rules.allowed_attribute_filters),
+        )
 
         if attribute_filters.get("opal_color") and attribute_filters.get("color") == "opal":
             attribute_filters.pop("color", None)

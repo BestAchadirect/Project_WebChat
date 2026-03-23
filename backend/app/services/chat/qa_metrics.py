@@ -1,10 +1,11 @@
 from typing import Any, Dict, Iterable, List, Optional
 
 from app.schemas.chat import ChatResponse
+from app.services.chat import component_contract
 
 
 def derive_response_status(*, response: ChatResponse) -> str:
-    reply_text = str(getattr(response, "reply_text", "") or "").strip().lower()
+    reply_text = component_contract.assistant_text_from_response(response).strip().lower()
     if not reply_text:
         return "no_answer"
     workflow = str(getattr(getattr(response, "routing", None), "workflow", "") or "").strip().lower()
@@ -34,6 +35,8 @@ def build_chat_qa_metrics(
     normalized_status = derive_response_status(response=response)
     action_kind = ""
     action_completed = bool(agentic.get("used_tools", False))
+    response_products = component_contract.product_cards_from_response(response)
+    response_follow_ups = component_contract.follow_up_questions_from_response(response)
 
     if action_completed:
         action_kind = "agentic_tools"
@@ -56,11 +59,11 @@ def build_chat_qa_metrics(
         "recommendation_mode": str(debug.get("recommendation_mode") or "").strip() or None,
         "action_kind": action_kind or None,
         "action_completed": bool(action_completed),
-        "has_products": bool(response.product_carousel),
-        "product_count": len(list(response.product_carousel or [])),
+        "has_products": bool(response_products),
+        "product_count": len(list(response_products or [])),
         "has_sources": bool(response.sources),
         "source_count": len(list(response.sources or [])),
-        "follow_up_count": len(list(response.follow_up_questions or [])),
+        "follow_up_count": len(list(response_follow_ups or [])),
         "use_products": bool(retrieval_gate.get("use_products", False)),
         "use_knowledge": bool(retrieval_gate.get("use_knowledge", False)),
         "is_policy_like": bool(retrieval_gate.get("is_policy_like", False)),

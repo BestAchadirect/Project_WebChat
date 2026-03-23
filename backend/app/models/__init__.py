@@ -19,3 +19,4 @@ from .ticket import Ticket
 from .product_search_projection import ProductSearchProjection
 from .klevu_sync import KlevuSyncRun, KlevuSyncRunStatus, KlevuSyncFailure
 from .category import Category, ProductCategory
+from .chat_parser_rule import ChatParserRule

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from app.services.chat.detail_query_parser import DetailQueryParser
+from app.services.chat.parser_rule_types import build_rule_set
 from app.services.chat.detail_response_builder import DetailResponseBuilder
 from app.services.chat.product_detail_resolver import ProductDetailResolver
 
@@ -45,10 +46,70 @@ def _card(
     )
 
 
+def _db_rules():
+    return build_rule_set(
+        requested_field_patterns={
+            "price": [r"\bprice\b", r"\bcost\b", r"\bhow much\b"],
+            "stock": [r"\bstock\b", r"\bavailability\b", r"\bin stock\b", r"\bout of stock\b", r"\bavailable\b"],
+            "image": [r"\bimage\b", r"\bpicture\b", r"\bphoto\b", r"\bpic\b"],
+            "attributes": [r"\battribute\b", r"\battributes\b", r"\bspec\b", r"\bspecs\b", r"\bdetails\b"],
+        },
+        value_extract_patterns={
+            "outer_diameter": [
+                r"\bouter diameter(?: is|=| of)?\s+(?P<value>\d{1,3}(?:\.\d+)?\s*(?:mm|cm|in|inch|inches))\b",
+                r"\b(?P<value>\d{1,3}(?:\.\d+)?\s*(?:mm|cm|in|inch|inches))\s+outer diameter\b",
+                r"\bdiameter(?: is|=| of)?\s+(?P<value>\d{1,3}(?:\.\d+)?\s*(?:mm|cm|in|inch|inches))\b",
+            ],
+            "ring_size": [r"\bring size(?: is|=| of)?\s+(?P<value>[a-z0-9.]+)\b"],
+            "opal_color": [
+                r"\b(?P<value>black|white|clear|blue|red|green|purple|pink|yellow|orange|silver|gold|rose gold)\s+opal color\b"
+            ],
+        },
+        detection_attribute_order=["jewelry_type", "material", "threading", "finish", "design", "color"],
+        allowed_attribute_filters=["jewelry_type", "material", "threading", "finish", "design", "color", "gauge", "outer_diameter", "ring_size", "opal_color"],
+    )
+
+
+def _db_alias_map() -> dict[str, dict[str, str]]:
+    return {
+        "jewelry_type": {
+            "barbell": "barbell",
+            "labret": "labret",
+            "ring": "ring",
+            "hoop": "ring",
+        },
+        "material": {
+            "titanium": "titanium",
+            "implant grade titanium": "titanium g23",
+            "steel": "steel",
+        },
+        "finish": {
+            "sterilized": "sterilized",
+            "sterilised": "sterilized",
+            "sterilization": "sterilized",
+            "sterilisation": "sterilized",
+        },
+        "design": {
+            "heart": "heart",
+        },
+        "color": {
+            "black": "black",
+            "blue": "blue",
+            "opal": "opal",
+            "opal color": "opal",
+        },
+        "stone": {
+            "opal": "opal",
+        },
+    }
+
+
 def test_detail_query_parser_extracts_fields_and_filters() -> None:
     parsed = DetailQueryParser.parse(
         user_text="price and stock for barbell black 25mm gauge with image",
         nlu_data={},
+        alias_map=_db_alias_map(),
+        parser_rules=_db_rules(),
     )
     assert parsed.is_detail_request is True
     assert "price" in parsed.requested_fields
@@ -63,16 +124,54 @@ def test_detail_query_parser_supports_opal_and_material_synonyms() -> None:
     parsed = DetailQueryParser.parse(
         user_text="Need opal color with implant grade titanium barbell",
         nlu_data={},
+        alias_map=_db_alias_map(),
+        parser_rules=_db_rules(),
     )
     assert parsed.attribute_filters.get("color") == "opal"
     assert parsed.attribute_filters.get("material") == "titanium g23"
     assert parsed.attribute_filters.get("jewelry_type") == "barbell"
 
 
+def test_detail_query_parser_infers_plain_opal_from_alias_map_even_without_detection_order() -> None:
+    rules = build_rule_set(
+        requested_field_patterns=_db_rules().requested_field_patterns,
+        value_extract_patterns=_db_rules().value_extract_patterns,
+        detection_attribute_order=["jewelry_type", "material", "threading", "finish", "design"],
+        allowed_attribute_filters=["stone", "color", "opal_color", "finish", "material"],
+    )
+    parsed = DetailQueryParser.parse(
+        user_text="Do you have sterilization with opal?",
+        nlu_data={},
+        alias_map=_db_alias_map(),
+        parser_rules=rules,
+    )
+    assert parsed.attribute_filters.get("finish") == "sterilized"
+    assert parsed.attribute_filters.get("stone") == "opal"
+
+
+def test_detail_query_parser_infers_sterilization_without_finish_alias_map() -> None:
+    alias_map = _db_alias_map()
+    alias_map.pop("finish", None)
+    parsed = DetailQueryParser.parse(
+        user_text="Do you have sterilization with opal?",
+        nlu_data={},
+        alias_map=alias_map,
+        parser_rules=_db_rules(),
+    )
+
+    assert parsed.attribute_filters.get("finish") == "sterilized"
+    assert any(
+        parsed.attribute_filters.get(key) == "opal"
+        for key in ("stone", "color", "opal_color")
+    )
+
+
 def test_detail_query_parser_filter_only_query_is_not_detail_mode() -> None:
     parsed = DetailQueryParser.parse(
         user_text="Give me a Labret with 14g with steel",
         nlu_data={},
+        alias_map=_db_alias_map(),
+        parser_rules=_db_rules(),
     )
     assert parsed.is_detail_request is False
     assert parsed.attribute_filters.get("jewelry_type") == "labret"
@@ -84,9 +183,11 @@ def test_detail_query_parser_extracts_extended_attribute_filters() -> None:
     parsed = DetailQueryParser.parse(
         user_text="Show sterilized heart ring with 8mm outer diameter and ring size 7 in blue opal color",
         nlu_data={},
+        alias_map=_db_alias_map(),
+        parser_rules=_db_rules(),
     )
 
-    assert parsed.attribute_filters.get("category") == "sterilized"
+    assert parsed.attribute_filters.get("finish") == "sterilized"
     assert parsed.attribute_filters.get("design") == "heart"
     assert parsed.attribute_filters.get("jewelry_type") == "ring"
     assert parsed.attribute_filters.get("outer_diameter") == "8mm"

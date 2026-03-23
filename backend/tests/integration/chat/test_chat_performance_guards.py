@@ -11,6 +11,7 @@ pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ChatRequest, KnowledgeSource, ProductCard
 from app.services.ai.llm_service import llm_service
+from app.services.chat import alias_cache, parser_rule_cache
 from app.services.chat import routing_policy
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.pipeline import ComponentPipeline
@@ -31,6 +32,18 @@ class _RedisStub:
 class _KnowledgeStub:
     async def search(self, *args, **kwargs):
         return []
+
+
+@pytest.fixture(autouse=True)
+def _stub_chat_alias_and_parser_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _empty_alias_map(db):
+        return {}
+
+    async def _empty_parser_rules(db):
+        return []
+
+    monkeypatch.setattr(alias_cache, "get_alias_map", _empty_alias_map)
+    monkeypatch.setattr(parser_rule_cache, "get_parser_rules", _empty_parser_rules)
 
 
 def _product_card(*, sku: str, material: str) -> ProductCard:
@@ -132,14 +145,14 @@ async def test_component_pipeline_structured_no_match_returns_clarify_without_ve
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _CatalogStub:
-        async def structured_search(self, **kwargs):
-            return SimpleNamespace(product_ids=[]), {"structured_read_mode": "eav", "projection_hit": False}
-
         async def structured_count(self, **kwargs):
             return 0
 
-        async def smart_search(self, **kwargs):
-            raise AssertionError("semantic fallback should be blocked for exact structured filters")
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(cards=[], distances=[], best_distance=None, distance_by_id={}, product_ids=[])
+
+        async def structured_search(self, **kwargs):
+            raise AssertionError("structured search should not run before semantic search")
 
     pipeline = ComponentPipeline(
         db=object(),
@@ -148,7 +161,7 @@ async def test_component_pipeline_structured_no_match_returns_clarify_without_ve
         redis_cache=_RedisStub(),
     )
 
-    def fake_parse(*, user_text: str, nlu_data):
+    def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=[],
             attribute_filters={"material": "titanium"},
@@ -160,6 +173,7 @@ async def test_component_pipeline_structured_no_match_returns_clarify_without_ve
         "app.services.chat.components.pipeline.DetailQueryParser.parse",
         fake_parse,
     )
+    monkeypatch.setattr(llm_service, "generate_embedding", lambda text: [0.1, 0.2, 0.3])
 
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="show titanium labrets", locale="en-US"),
@@ -171,8 +185,9 @@ async def test_component_pipeline_structured_no_match_returns_clarify_without_ve
     assert result.response.routing.workflow == "catalog"
     assert any(component.type.value == "clarify" for component in result.response.components)
     assert "share" in result.response.reply_text.lower() or "narrow" in result.response.reply_text.lower()
-    assert result.debug.get("semantic_fallback_allowed") is False
-    assert result.debug.get("semantic_fallback_reason") == "structured_filters_present"
+    assert result.debug.get("semantic_first_used") is True
+    assert result.debug.get("semantic_search_mode") == "vector_first"
+    assert result.debug.get("component_source") == "vector"
     assert result.debug.get("match_tier") == "no_match"
 
 
@@ -181,14 +196,14 @@ async def test_component_pipeline_design_discovery_uses_humanized_clarify_prompt
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _CatalogStub:
-        async def structured_search(self, **kwargs):
-            return SimpleNamespace(product_ids=[]), {"structured_read_mode": "eav", "projection_hit": False}
-
         async def structured_count(self, **kwargs):
             return 0
 
-        async def smart_search(self, **kwargs):
-            return SimpleNamespace(product_ids=[], cards=[], distance_by_id={})
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(cards=[], distances=[], best_distance=None, distance_by_id={}, product_ids=[])
+
+        async def structured_search(self, **kwargs):
+            raise AssertionError("structured search should not run before semantic search")
 
     pipeline = ComponentPipeline(
         db=object(),
@@ -197,7 +212,7 @@ async def test_component_pipeline_design_discovery_uses_humanized_clarify_prompt
         redis_cache=_RedisStub(),
     )
 
-    def fake_parse(*, user_text: str, nlu_data):
+    def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=[],
             attribute_filters={},
@@ -229,6 +244,7 @@ async def test_component_pipeline_design_discovery_uses_humanized_clarify_prompt
     assert any(component.type.value == "clarify" for component in result.response.components)
     assert "style" in result.response.reply_text.lower() or "design" in result.response.reply_text.lower()
     assert result.debug.get("clarify_reason") == "structured_no_match"
+    assert result.debug.get("semantic_first_used") is True
 
 
 @pytest.mark.asyncio
@@ -242,18 +258,19 @@ async def test_component_pipeline_discovery_query_returns_semantic_suggestion(
     )
 
     class _CatalogStub:
-        async def structured_search(self, **kwargs):
-            return SimpleNamespace(product_ids=[]), {"structured_read_mode": "eav", "projection_hit": False}
-
         async def structured_count(self, **kwargs):
             return 0
 
-        async def smart_search(self, **kwargs):
+        async def vector_search(self, **kwargs):
             return SimpleNamespace(
                 product_ids=[str(product.product_id)],
                 cards=[],
                 distance_by_id={str(product.product_id): 0.08},
+                best_distance=0.08,
             )
+
+        async def structured_search(self, **kwargs):
+            raise AssertionError("structured search should not run before semantic search")
 
     pipeline = ComponentPipeline(
         db=object(),
@@ -265,7 +282,7 @@ async def test_component_pipeline_discovery_query_returns_semantic_suggestion(
     async def fake_resolve(*, product_ids, component_types, redis_cache):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
-    def fake_parse(*, user_text: str, nlu_data):
+    def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=[],
             attribute_filters={},
@@ -294,6 +311,7 @@ async def test_component_pipeline_discovery_query_returns_semantic_suggestion(
     assert len(result.response.product_carousel) == 1
     assert result.debug.get("component_source") == "vector"
     assert result.debug.get("match_tier") == "semantic_suggestion"
+    assert result.debug.get("semantic_first_used") is True
 
 
 @pytest.mark.asyncio
@@ -305,16 +323,35 @@ async def test_component_pipeline_product_browse_reply_is_deterministic_without_
         title="Labret 14g Steel",
         attributes={"master_code": "LAB-14-STEEL-1", "jewelry_type": "labret", "gauge": "14g", "material": "steel"},
     )
+    search_card = ProductCard(
+        id=product.product_id,
+        object_id=product.sku,
+        sku=product.sku,
+        name=product.title,
+        price=float(product.price),
+        currency=product.currency,
+        stock_status="in_stock" if product.in_stock else "out_of_stock",
+        attributes={
+            "jewelry_type": "labret",
+            "gauge": "14g",
+            "material": "steel",
+        },
+    )
 
     class _CatalogStub:
-        async def structured_search(self, **kwargs):
-            return SimpleNamespace(product_ids=[str(product.product_id)]), {"structured_read_mode": "eav", "projection_hit": False}
-
         async def structured_count(self, **kwargs):
             return 1
 
-        async def smart_search(self, **kwargs):
-            raise AssertionError("embedding should be skipped when structured SQL has results")
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(
+                product_ids=[str(search_card.id)],
+                cards=[search_card],
+                distance_by_id={str(search_card.id): 0.08},
+                best_distance=0.08,
+            )
+
+        async def structured_search(self, **kwargs):
+            raise AssertionError("structured search should not run before semantic search")
 
     pipeline = ComponentPipeline(
         db=object(),
@@ -326,7 +363,7 @@ async def test_component_pipeline_product_browse_reply_is_deterministic_without_
     async def fake_resolve(*, product_ids, component_types, redis_cache):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
-    def fake_parse(*, user_text: str, nlu_data):
+    def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=[],
             attribute_filters={"jewelry_type": "labret", "gauge": "14g", "material": "steel"},
@@ -340,6 +377,11 @@ async def test_component_pipeline_product_browse_reply_is_deterministic_without_
         fake_parse,
     )
 
+    async def fake_generate_embedding(text: str):
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
+
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="Give me a Labret with 14g with steel", locale="en-US"),
         conversation_id=77,
@@ -349,8 +391,8 @@ async def test_component_pipeline_product_browse_reply_is_deterministic_without_
 
     assert result.response.routing.workflow == "catalog"
     assert result.llm_calls == 0
-    assert result.debug.get("component_source") == "sql"
-    assert result.debug.get("match_tier") == "exact_match"
+    assert result.debug.get("component_source") == "vector"
+    assert result.debug.get("match_tier") == "semantic_suggestion"
     assert "steel material" in result.response.reply_text.lower()
     assert result.response.follow_up_questions == []
 

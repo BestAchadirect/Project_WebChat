@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -189,7 +190,7 @@ async def test_llm_routing_timeout_falls_back_to_safe_workflow(monkeypatch: pyte
     monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
 
     decision = await routing_policy.decide_execution_mode_with_llm(
-        text="Show me something",
+        text="asdfafafdas",
         channel="widget",
         locale="en-US",
         detail_has_filters=False,
@@ -202,6 +203,77 @@ async def test_llm_routing_timeout_falls_back_to_safe_workflow(monkeypatch: pyte
     assert decision.execution_mode == "component"
     assert decision.selection_source == "llm_fallback"
     assert decision.llm_reason == "error:TimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_llm_routing_timeout_uses_catalog_guardrail_for_product_like_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="Do you have sterilization with opal?",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=True,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "catalog"
+    assert decision.route_decision.needs_products is True
+    assert decision.execution_mode == "component"
+    assert decision.selection_source == "llm_timeout_guardrail"
+    assert decision.reason == "routing_timeout_guardrail"
+    assert decision.llm_reason == "error:TimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_llm_routing_timeout_retries_with_compact_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, Any] = {"count": 0, "system_prompts": []}
+
+    async def fake_generate_chat_json(**kwargs):
+        calls["count"] += 1
+        messages = list(kwargs.get("messages") or [])
+        calls["system_prompts"].append(str(messages[0]["content"] if messages else ""))
+        if calls["count"] == 1:
+            raise asyncio.TimeoutError()
+        return {
+            "workflow": "knowledge",
+            "execution_mode": "component",
+            "needs_products": False,
+            "needs_knowledge": True,
+            "needs_clarification": False,
+            "store_overview_request": True,
+            "reason": "contact request",
+            "confidence": 0.92,
+        }
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_TIMEOUT_RETRY_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_TIMEOUT_RETRY_MS", 1800)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="How can I contact your sales team?",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert calls["count"] == 2
+    assert "Examples:" in calls["system_prompts"][0]
+    assert "Examples:" not in calls["system_prompts"][1]
+    assert decision.route_decision.workflow == "knowledge"
+    assert decision.execution_mode == "component"
+    assert decision.selection_source == "llm_retry"
+    assert decision.timeout_retry_used is True
 
 
 @pytest.mark.asyncio

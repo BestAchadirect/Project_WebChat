@@ -5,7 +5,6 @@ from typing import List, Optional, Tuple
 
 from app.core.config import settings
 from app.schemas.chat import ProductCard
-from app.services.chat.detail_query_parser import DetailQueryParser
 
 
 def is_probable_sku_token(token: str) -> bool:
@@ -120,9 +119,6 @@ def should_run_sku_precheck(*, user_text: str, channel: str) -> Tuple[bool, str,
     bypass_reason = sku_precheck_bypass_reason(user_text=text)
     if bypass_reason:
         return False, bypass_reason, []
-    detail_guess = DetailQueryParser.parse(user_text=text, nlu_data={})
-    if bool(detail_guess.is_detail_request):
-        return False, "detail_request", []
     candidates = collect_sku_precheck_candidates(user_text=text)
     if len(candidates) != 1:
         return False, "requires_single_sku_token", candidates

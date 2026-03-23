@@ -42,6 +42,7 @@ def test_chat_response_serializes_as_component_first_contract() -> None:
     assert [component["type"] for component in payload["components"]] == [
         "assistant_message",
         "product_cards",
+        "quick_replies",
     ]
 
 

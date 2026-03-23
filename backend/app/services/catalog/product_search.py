@@ -66,6 +66,7 @@ class CatalogProductSearchService:
         "crystal_color",
         "cz_color",
         "design",
+        "finish",
         "jewelry_type",
         "material",
         "opal_color",

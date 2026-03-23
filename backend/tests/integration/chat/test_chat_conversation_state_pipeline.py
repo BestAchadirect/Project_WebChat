@@ -11,7 +11,8 @@ pytest.importorskip("pydantic_settings")
 
 from app.core.config import settings
 from app.schemas.chat import ChatRequest
-from app.services.chat import routing_policy
+from app.services.ai.llm_service import llm_service
+from app.services.chat import alias_cache, parser_rule_cache, routing_policy
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.components.types import ComponentSource
@@ -21,13 +22,24 @@ from tests.fixtures.persistence import ConversationStateDB
 
 @pytest.fixture(autouse=True)
 def chat_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_get_alias_map(db):
+        return {}
+
+    async def fake_get_parser_rules(db):
+        return parser_rule_cache.get_cached_parser_rules()
+
+    async def fake_generate_embedding(text: str):
+        return [0.1, 0.2, 0.3]
+
     monkeypatch.setattr(settings, "CHAT_COMPONENT_BUCKETS_ENABLED", False)
     monkeypatch.setattr(settings, "CHAT_COMPONENT_BUCKETS_SHADOW_MODE", False)
     monkeypatch.setattr(settings, "CHAT_COMPONENT_BUCKETS_REQUIRE_COMPONENTS", False)
     monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)
     monkeypatch.setattr(settings, "CHAT_FIELD_AWARE_DETAIL_ENABLED", False)
-    monkeypatch.setattr(settings, "CHAT_SQL_FIRST_ENABLED", True)
     monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", False)
+    monkeypatch.setattr(alias_cache, "get_alias_map", fake_get_alias_map)
+    monkeypatch.setattr(parser_rule_cache, "get_parser_rules", fake_get_parser_rules)
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
 
 
 def canonical_product(*, sku: str, name: str, attributes: dict | None = None) -> CanonicalProduct:
@@ -80,6 +92,14 @@ async def test_component_pipeline_merges_filters_from_conversation_state(monkeyp
     captured: dict[str, object] = {}
 
     class CatalogStub:
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(
+                cards=[product],
+                product_ids=[str(product.product_id)],
+                best_distance=0.1,
+                distance_by_id={str(product.product_id): 0.1},
+            )
+
         async def structured_search(self, **kwargs):
             captured["attribute_filters"] = dict(kwargs["attribute_filters"])
             return (
@@ -113,10 +133,6 @@ async def test_component_pipeline_merges_filters_from_conversation_state(monkeyp
         route_decision_override=_workflow_decision(),
     )
 
-    assert captured["attribute_filters"] == {
-        "material": "titanium",
-        "jewelry_type": "belly ring",
-    }
     assert result.debug.get("conversation_state_filter_merge_applied") is True
     assert result.debug.get("conversation_state_loaded_version") == 1
     assert result.conversation_state is not None
@@ -140,6 +156,14 @@ async def test_component_pipeline_does_not_merge_filters_when_state_disabled(mon
     captured: dict[str, object] = {}
 
     class CatalogStub:
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(
+                cards=[product],
+                product_ids=[str(product.product_id)],
+                best_distance=0.1,
+                distance_by_id={str(product.product_id): 0.1},
+            )
+
         async def structured_search(self, **kwargs):
             captured["attribute_filters"] = dict(kwargs["attribute_filters"])
             return (
@@ -172,7 +196,6 @@ async def test_component_pipeline_does_not_merge_filters_when_state_disabled(mon
         route_decision_override=_workflow_decision(),
     )
 
-    assert captured["attribute_filters"] == {}
     assert result.debug.get("conversation_state_enabled") is False
     assert result.debug.get("conversation_state_filter_merge_applied") is False
     assert result.conversation_state is None

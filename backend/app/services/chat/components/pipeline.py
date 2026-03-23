@@ -14,6 +14,8 @@ from app.models.chat import Conversation, Message
 from app.models.product import Product, StockStatus
 from app.models.product_search_projection import ProductSearchProjection
 from app.schemas.chat import (
+    ChatComponent,
+    ChatComponentType,
     ChatRequest,
     ChatResponse,
     ChatResponseMeta,
@@ -22,7 +24,16 @@ from app.schemas.chat import (
 )
 from app.services.ai.llm_service import llm_service
 from app.services.catalog.product_search import CatalogProductSearchService
-from app.services.chat import conversation_state, product_presentation, reply_tone, result_policy, routing_policy
+from app.services.chat import (
+    alias_cache,
+    component_contract,
+    conversation_state,
+    parser_rule_cache,
+    product_presentation,
+    reply_tone,
+    result_policy,
+    routing_policy,
+)
 from app.services.chat.components.cache import RedisComponentCache, stable_cache_key
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.field_resolver import FieldDependencyResolver
@@ -127,6 +138,21 @@ class ComponentPipeline:
         "If you want, ask me about products, stock, or store policies.",
         "If you want, share your preferred style and I can suggest products.",
     )
+    _HARD_FILTER_KEYS = {
+        "gauge",
+        "threading",
+        "size",
+        "length",
+        "outer_diameter",
+        "height",
+        "ring_size",
+        "pincher_size",
+        "size_in_pack",
+        "quantity_in_bulk",
+        "rack",
+        "source_id",
+        "source_raw_sku",
+    }
 
     def __init__(
         self,
@@ -168,6 +194,110 @@ class ComponentPipeline:
     def _contains_any_term(cls, *, text: str, terms: Sequence[str]) -> bool:
         normalized = cls._normalize_text(text)
         return bool(normalized and any(term in normalized for term in terms))
+
+    @classmethod
+    def _split_hard_and_soft_filters(
+        cls,
+        *,
+        attribute_filters: Dict[str, str],
+    ) -> tuple[Dict[str, str], Dict[str, str]]:
+        hard_filters: Dict[str, str] = {}
+        soft_filters: Dict[str, str] = {}
+        for key, value in dict(attribute_filters or {}).items():
+            clean_key = str(key or "").strip().lower()
+            clean_value = str(value or "").strip()
+            if not clean_key or not clean_value:
+                continue
+            if clean_key in cls._HARD_FILTER_KEYS:
+                hard_filters[clean_key] = clean_value
+            else:
+                soft_filters[clean_key] = clean_value
+        return hard_filters, soft_filters
+
+    @staticmethod
+    def _semantic_acceptance_score(best_distance: Optional[float]) -> float:
+        if best_distance is None:
+            return 0.0
+        score = 1.0 - float(best_distance)
+        return max(0.0, min(1.0, score))
+
+    @classmethod
+    def _apply_hard_constraint_gate(
+        cls,
+        *,
+        cards: Sequence[Any],
+        hard_filters: Dict[str, str],
+    ) -> tuple[List[Any], Dict[str, Any]]:
+        clean_hard_filters = {
+            str(key).strip().lower(): str(value).strip()
+            for key, value in dict(hard_filters or {}).items()
+            if str(key).strip() and str(value).strip()
+        }
+        if not clean_hard_filters:
+            return list(cards or []), {
+                "semantic_hard_constraint_keys": [],
+                "semantic_hard_constraint_count": 0,
+                "semantic_hard_constraint_match_count": len(list(cards or [])),
+                "semantic_hard_constraint_rejection_reason": "",
+            }
+
+        matched_cards: List[Any] = []
+        for card in list(cards or []):
+            matched = True
+            for key, expected in clean_hard_filters.items():
+                if not ProductDetailResolver._match_filter(card, key=key, expected=expected):
+                    matched = False
+                    break
+            if matched:
+                matched_cards.append(card)
+
+        rejection_reason = ""
+        if not matched_cards:
+            rejection_reason = "hard_constraint_no_match"
+        return matched_cards, {
+            "semantic_hard_constraint_keys": list(clean_hard_filters.keys()),
+            "semantic_hard_constraint_count": len(clean_hard_filters),
+            "semantic_hard_constraint_match_count": len(matched_cards),
+            "semantic_hard_constraint_rejection_reason": rejection_reason,
+        }
+
+    @classmethod
+    def _apply_soft_hint_gate(
+        cls,
+        *,
+        cards: Sequence[Any],
+        soft_filters: Dict[str, str],
+    ) -> tuple[List[Any], Dict[str, Any]]:
+        clean_soft_filters = {
+            str(key).strip().lower(): str(value).strip()
+            for key, value in dict(soft_filters or {}).items()
+            if str(key).strip() and str(value).strip()
+        }
+        if not clean_soft_filters:
+            return list(cards or []), {
+                "semantic_soft_constraint_keys": [],
+                "semantic_soft_constraint_count": 0,
+                "semantic_soft_constraint_match_count": len(list(cards or [])),
+                "semantic_soft_constraint_rejection_reason": "",
+            }
+
+        matched_cards: List[Any] = []
+        for card in list(cards or []):
+            if all(
+                ProductDetailResolver._match_filter(card, key=key, expected=expected)
+                for key, expected in clean_soft_filters.items()
+            ):
+                matched_cards.append(card)
+
+        rejection_reason = ""
+        if not matched_cards:
+            rejection_reason = "soft_constraint_no_match"
+        return matched_cards, {
+            "semantic_soft_constraint_keys": list(clean_soft_filters.keys()),
+            "semantic_soft_constraint_count": len(clean_soft_filters),
+            "semantic_soft_constraint_match_count": len(matched_cards),
+            "semantic_soft_constraint_rejection_reason": rejection_reason,
+        }
 
     @classmethod
     def _is_high_risk_knowledge_request(cls, *, text: str) -> bool:
@@ -384,6 +514,31 @@ class ComponentPipeline:
                         "I can quickly narrow this down. Share one detail like material or style and I'll show the closest options.",
                     ],
                 )
+        elif reason_norm == "soft_constraint_mismatch":
+            finish_value = str((attribute_filters or {}).get("finish") or "").strip().lower()
+            opal_value = str((attribute_filters or {}).get("opal_color") or (attribute_filters or {}).get("color") or "").strip().lower()
+            focus_terms: List[str] = []
+            if finish_value:
+                focus_terms.append(f"{finish_value} finish")
+            if opal_value:
+                focus_terms.append("opal color" if opal_value == "opal" else f"{opal_value} color")
+            focus_text = " and ".join(focus_terms) if focus_terms else "those filters"
+            message = tone_pick(
+                "clarify:soft_constraint_mismatch",
+                [
+                    f"I couldn't find products that match {focus_text}. Do you want me to search with fewer filters?",
+                    f"I couldn't find an exact match for {focus_text}. Tell me which filter to keep and I'll narrow it down.",
+                    f"No products matched {focus_text}. Should I search just one of those details instead?",
+                ],
+            )
+            questions = [
+                "Should I keep both filters or relax one of them?",
+            ]
+            suggestions = [
+                "Show opal jewelry",
+                "Show sterilized jewelry",
+                "Show titanium jewelry",
+            ]
         elif reason_norm == "detail_no_match":
             message = tone_pick(
                 "clarify:detail_no_match",
@@ -613,6 +768,11 @@ class ComponentPipeline:
             key = str(getattr(raw_type, "value", raw_type) or "").strip().lower()
             out[key] = dict(getattr(component, "data", {}) or {})
         return out
+
+    @staticmethod
+    def _component_type_name(component: Any) -> str:
+        raw_type = getattr(component, "type", "")
+        return str(getattr(raw_type, "value", raw_type) or "").strip().lower()
 
     @staticmethod
     def _display_attribute_value(value: str) -> str:
@@ -1212,14 +1372,15 @@ class ComponentPipeline:
         return []
 
     @classmethod
-    def _derive_legacy(
+    def _build_component_contract(
         cls,
         *,
         context: ComponentContext,
         components,
         pick_text: Optional[Callable[[str, Sequence[str]], str]] = None,
     ) -> Dict[str, Any]:
-        mapped = cls._components_to_map(components)
+        component_list: List[ChatComponent] = [item for item in list(components or []) if isinstance(item, ChatComponent)]
+        mapped = cls._components_to_map(component_list)
         query_summary = str(mapped.get("query_summary", {}).get("text") or context.query_summary or "").strip()
         user_text = str(context.user_text or "").strip()
         choose = pick_text or (
@@ -1229,22 +1390,22 @@ class ComponentPipeline:
                 variants=variants,
             )
         )
-        reply_text = ""
+        assistant_text = ""
         carousel_msg = ""
-        product_carousel: List[ProductCard] = []
+        display_products: List[Any] = []
         follow_ups: List[str] = []
 
         if "error" in mapped:
-            reply_text = str(mapped["error"].get("message") or "I could not process this request.")
+            assistant_text = str(mapped["error"].get("message") or "I could not process this request.")
         elif "clarify" in mapped:
-            reply_text = str(mapped["clarify"].get("message") or "Please share more details.")
+            assistant_text = str(mapped["clarify"].get("message") or "Please share more details.")
             follow_ups.extend(list(context.debug.get("clarify_suggestions") or []))
         elif "knowledge_answer" in mapped:
-            reply_text = str(mapped["knowledge_answer"].get("answer") or query_summary)
+            assistant_text = str(mapped["knowledge_answer"].get("answer") or query_summary)
         elif "product_detail" in mapped:
             detail_products = list(context.canonical_products or [])
-            product_carousel = [cls._to_product_card(item) for item in detail_products]
-            reply_text = str(context.debug.get("detail_reply_text") or "").strip() or query_summary
+            display_products = list(detail_products)
+            assistant_text = str(context.debug.get("detail_reply_text") or "").strip() or query_summary
             carousel_msg = str(context.debug.get("detail_carousel_msg") or "").strip()
             follow_ups.extend(list(context.debug.get("detail_follow_ups") or []))
         elif "product_cards" in mapped:
@@ -1256,25 +1417,24 @@ class ComponentPipeline:
                     limit=product_presentation.PRODUCT_DISPLAY_LIMIT,
                 )
             if bool(context.debug.get("store_overview_request")):
-                reply_text = str(context.debug.get("store_overview_reply") or "").strip()
-                if not reply_text:
-                    reply_text = cls._build_store_overview_reply(products=display_products)
+                assistant_text = str(context.debug.get("store_overview_reply") or "").strip()
+                if not assistant_text:
+                    assistant_text = cls._build_store_overview_reply(products=display_products)
                 follow_ups.extend(list(context.debug.get("store_overview_follow_ups") or []))
             elif bool(context.debug.get("detail_reply_text")):
-                reply_text = str(context.debug.get("detail_reply_text") or "").strip()
+                assistant_text = str(context.debug.get("detail_reply_text") or "").strip()
                 carousel_msg = str(context.debug.get("detail_carousel_msg") or "").strip()
                 follow_ups.extend(list(context.debug.get("detail_follow_ups") or []))
             elif "recommendations" in mapped or bool(context.debug.get("recommendation_ranked_count")):
-                reply_text = product_presentation.build_recommendation_match_reply(
+                assistant_text = product_presentation.build_recommendation_match_reply(
                     attribute_filters=context.attribute_filters,
                     user_text=user_text,
                 )
             else:
-                reply_text = product_presentation.build_product_match_reply(
+                assistant_text = product_presentation.build_product_match_reply(
                     attribute_filters=context.attribute_filters,
                     user_text=user_text,
                 )
-            product_carousel = [cls._to_product_card(item) for item in display_products]
             if not carousel_msg:
                 carousel_msg = choose(
                     f"{context.workflow}:carousel",
@@ -1305,11 +1465,11 @@ class ComponentPipeline:
                         "Show more recommendations",
                         "Recommend more like this",
                     ],
+                    )
                 )
-            )
 
-        if not reply_text:
-            reply_text = choose(
+        if not assistant_text:
+            assistant_text = choose(
                 f"{context.workflow}:default_reply",
                 [
                     "I got it. Here's what I can do next.",
@@ -1318,11 +1478,47 @@ class ComponentPipeline:
                 ],
             )
 
+        deduped_follow_ups = cls._dedupe_follow_up_questions(follow_ups, limit=5)
+        rebuilt_components: List[ChatComponent] = []
+        for component in component_list:
+            kind = cls._component_type_name(component)
+            if kind in {"assistant_message", "quick_replies"}:
+                continue
+            if kind == "clarify":
+                clarify_data = dict(getattr(component, "data", {}) or {})
+                if deduped_follow_ups:
+                    clarify_data["suggestions"] = list(deduped_follow_ups)
+                rebuilt_components.append(
+                    ChatComponent(type=ChatComponentType.CLARIFY, data=clarify_data)
+                )
+                continue
+            rebuilt_components.append(component)
+        if assistant_text:
+            rebuilt_components.insert(
+                0,
+                ChatComponent(
+                    type=ChatComponentType.ASSISTANT_MESSAGE,
+                    data={"text": str(assistant_text)},
+                ),
+            )
+        if deduped_follow_ups:
+            rebuilt_components.append(
+                ChatComponent(
+                    type=ChatComponentType.QUICK_REPLIES,
+                    data={"items": list(deduped_follow_ups)},
+                )
+            )
+
+        product_carousel = component_contract.product_cards_from_components(rebuilt_components)
+        if not product_carousel and list(display_products or []):
+            product_carousel = [cls._to_product_card(item) for item in list(display_products or [])]
+
         return {
-            "reply_text": reply_text,
+            "components": rebuilt_components,
+            "assistant_text": str(assistant_text or ""),
             "carousel_msg": carousel_msg,
             "product_carousel": product_carousel,
-            "follow_up_questions": cls._dedupe_follow_up_questions(follow_ups, limit=5),
+            "follow_up_questions": list(deduped_follow_ups or []),
         }
 
     async def _knowledge_answer_once(
@@ -1445,7 +1641,14 @@ class ComponentPipeline:
         )
         normalized_text = self._normalize_text(text)
         normalized_challenge_query_text = self._normalize_text(challenge_query_text)
-        detail = DetailQueryParser.parse(user_text=text, nlu_data={})
+        alias_map = await alias_cache.get_alias_map(self.db)
+        parser_rules = await parser_rule_cache.get_parser_rules(self.db)
+        detail = DetailQueryParser.parse(
+            user_text=text,
+            nlu_data={},
+            alias_map=alias_map,
+            parser_rules=parser_rules,
+        )
         conversation_state_enabled = bool(getattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", False))
         state_working: Optional[Dict[str, Any]] = None
         conversation_state_filter_merge_applied = False
@@ -1581,6 +1784,12 @@ class ComponentPipeline:
             if decision.filler_stripped:
                 tone_filler_stripped_count += 1
             return str(decision.text or "")
+
+        def _card_identifier(card: Any) -> str:
+            card_id = getattr(card, "id", None)
+            if card_id is None:
+                card_id = getattr(card, "product_id", None)
+            return str(card_id or "")
 
         if conversation_state_enabled and state_working is not None:
             state_working = conversation_state.apply_workflow_update(
@@ -1752,193 +1961,259 @@ class ComponentPipeline:
             and not ambiguity_reason
             and not handled_attribute_list
         ):
-            if product_ids:
-                debug_meta["query_id_cache_hit"] = False
-                debug_meta["structured_read_mode"] = "history"
-                debug_meta["projection_hit"] = False
-            else:
-                query_cache_key: Optional[str] = None
-                sql_first_enabled = bool(getattr(settings, "CHAT_SQL_FIRST_ENABLED", True))
-                debug_meta["semantic_primary_used"] = False
-                if not sql_first_enabled:
-                    debug_meta["semantic_primary_skipped"] = True
-
-                if product_ids:
-                    query_cache_key = None
-                else:
-                    read_mode = "projection" if bool(getattr(settings, "CHAT_PROJECTION_READ_ENABLED", False)) else "eav"
-                    query_cache_key = stable_cache_key(
-                        f"{getattr(settings, 'CHAT_REDIS_KEY_PREFIX', 'chat:components')}:query_ids",
-                        {
-                            "q": normalized_text,
-                            "locale": locale.lower(),
-                            "sku": unique_sku_tokens[0].lower() if unique_sku_tokens else "",
-                            "sku_list": [item.lower() for item in unique_sku_tokens[:5]],
-                            "filters": detail.attribute_filters,
-                            "catalog_version": str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
-                            "read_mode": read_mode,
-                            "presentation": "master_dedupe_v1",
-                            "fetch_limit": result_fetch_limit,
-                        },
+            semantic_first_enabled = bool(getattr(settings, "CHAT_SEMANTIC_FIRST_ENABLED", True))
+            debug_meta["semantic_first_enabled"] = semantic_first_enabled
+            debug_meta["semantic_search_mode"] = "vector_first" if semantic_first_enabled else "sql_first_compat"
+            semantic_catalog_search_done = False
+            if semantic_first_enabled:
+                hard_filters, soft_filters = self._split_hard_and_soft_filters(
+                    attribute_filters=dict(detail.attribute_filters or {}),
+                )
+                debug_meta["semantic_first_enabled"] = True
+                debug_meta["semantic_search_mode"] = "vector_first"
+                debug_meta["semantic_hard_constraint_keys"] = list(hard_filters.keys())
+                debug_meta["semantic_soft_hint_keys"] = list(soft_filters.keys())
+                query_cache_key = stable_cache_key(
+                    f"{getattr(settings, 'CHAT_REDIS_KEY_PREFIX', 'chat:components')}:query_ids",
+                    {
+                        "q": normalized_text,
+                        "locale": locale.lower(),
+                        "sku": unique_sku_tokens[0].lower() if unique_sku_tokens else "",
+                        "sku_list": [item.lower() for item in unique_sku_tokens[:5]],
+                        "filters": detail.attribute_filters,
+                        "catalog_version": str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
+                        "search_mode": "vector_first",
+                        "presentation": "master_dedupe_v1",
+                        "fetch_limit": result_fetch_limit,
+                    },
+                )
+                cached_ids_payload = await self._redis_cache.get_json(query_cache_key)
+                if isinstance(cached_ids_payload, dict) and isinstance(cached_ids_payload.get("product_ids"), list):
+                    product_ids = list(cached_ids_payload.get("product_ids") or [])
+                    cached_source = str(cached_ids_payload.get("source") or "vector")
+                    retrieval_source = (
+                        ComponentSource(cached_source)
+                        if cached_source in {e.value for e in ComponentSource}
+                        else ComponentSource.VECTOR
                     )
-                    cached_ids_payload = await self._redis_cache.get_json(query_cache_key)
-                    if isinstance(cached_ids_payload, dict) and isinstance(cached_ids_payload.get("product_ids"), list):
-                        product_ids = list(cached_ids_payload.get("product_ids") or [])
-                        cached_source = str(cached_ids_payload.get("source") or "sql")
-                        retrieval_source = ComponentSource(cached_source) if cached_source in {e.value for e in ComponentSource} else ComponentSource.SQL
-                        result_count = int(cached_ids_payload.get("result_count") or 0)
-                        debug_meta["query_id_cache_hit"] = True
-                        debug_meta["match_tier"] = result_policy.classify_match_tier(
-                            structured_found=retrieval_source == ComponentSource.SQL and bool(product_ids),
-                            semantic_found=retrieval_source == ComponentSource.VECTOR and bool(product_ids),
-                        )
-                    else:
-                        debug_meta["query_id_cache_hit"] = False
-                        structured_started = time.perf_counter()
-                        structured_result, structured_meta = await self._catalog_search.structured_search(
+                    result_count = int(cached_ids_payload.get("result_count") or 0)
+                    debug_meta["query_id_cache_hit"] = True
+                    debug_meta["semantic_acceptance_score"] = float(
+                        cached_ids_payload.get("semantic_acceptance_score") or 0.0
+                    )
+                    debug_meta["semantic_guardrail_used"] = bool(cached_ids_payload.get("semantic_guardrail_used", False))
+                    debug_meta["semantic_guardrail_reason"] = str(cached_ids_payload.get("semantic_guardrail_reason") or "")
+                    debug_meta["semantic_hard_constraint_rejection_reason"] = str(
+                        cached_ids_payload.get("semantic_hard_constraint_rejection_reason") or ""
+                    )
+                    debug_meta["semantic_exact_lookup_used"] = bool(cached_ids_payload.get("semantic_exact_lookup_used", False))
+                    debug_meta["match_tier"] = result_policy.classify_match_tier(
+                        structured_found=retrieval_source == ComponentSource.SQL and bool(product_ids),
+                        semantic_found=retrieval_source == ComponentSource.VECTOR and bool(product_ids),
+                    )
+                else:
+                    embedding_error: Optional[str] = None
+                    semantic_cards: List[Any] = []
+                    semantic_best_distance: Optional[float] = None
+                    semantic_exact_lookup_used = False
+                    semantic_guardrail_used = False
+                    semantic_guardrail_reason = ""
+                    semantic_hard_constraint_rejection_reason = ""
+                    semantic_result_source = ComponentSource.VECTOR
+
+                    if int(getattr(settings, "CHAT_HARD_MAX_EMBEDDINGS_PER_REQUEST", 1)) > 0:
+                        try:
+                            embed_started = time.perf_counter()
+                            embedding = await llm_service.generate_embedding(text)
+                            spans["vector_search_ms"] += (time.perf_counter() - embed_started) * 1000.0
+                            query_embedding = list(embedding or [])
+                            embedding_calls += 1
+                            external_call_counts["embedding_query"] = (
+                                int(external_call_counts.get("embedding_query", 0)) + 1
+                            )
+                        except Exception as exc:
+                            embedding_error = str(exc)
+                            debug_meta["component_embedding_error"] = embedding_error
+
+                    if query_embedding is None and (unique_sku_tokens or hard_filters):
+                        exact_started = time.perf_counter()
+                        exact_result, exact_meta = await self._catalog_search.structured_search(
                             sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
-                            attribute_filters=detail.attribute_filters,
+                            attribute_filters=hard_filters,
                             limit=result_fetch_limit,
                             candidate_cap=int(getattr(settings, "CHAT_STRUCTURED_CANDIDATE_CAP", 300)),
                             catalog_version=str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
                             return_ids_only=True,
                         )
-                        spans["db_product_lookup_ms"] += (time.perf_counter() - structured_started) * 1000.0
-                        product_ids = list(structured_result.product_ids or [])
-                        retrieval_source = ComponentSource.SQL
-                        debug_meta["structured_read_mode"] = structured_meta.get("structured_read_mode")
-                        debug_meta["projection_hit"] = structured_meta.get("projection_hit")
-
-                        opal_retry_filters: Optional[Dict[str, str]] = None
-                        if not product_ids:
-                            color_value = str(detail.attribute_filters.get("color") or "").strip().lower()
-                            if color_value == "opal" and "opal_color" not in detail.attribute_filters:
-                                opal_retry_filters = dict(detail.attribute_filters)
-                                opal_retry_filters.pop("color", None)
-                                opal_retry_filters["opal_color"] = "opal"
-
-                        if opal_retry_filters:
-                            retry_started = time.perf_counter()
-                            retry_result, retry_meta = await self._catalog_search.structured_search(
-                                sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
-                                attribute_filters=opal_retry_filters,
-                                limit=result_fetch_limit,
-                                candidate_cap=int(getattr(settings, "CHAT_STRUCTURED_CANDIDATE_CAP", 300)),
-                                catalog_version=str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
-                                return_ids_only=True,
-                            )
-                            spans["db_product_lookup_ms"] += (time.perf_counter() - retry_started) * 1000.0
-                            product_ids = list(retry_result.product_ids or [])
-                            debug_meta["opal_color_retry_applied"] = True
-                            debug_meta["opal_color_retry_found"] = bool(product_ids)
-                            debug_meta["opal_color_retry_filters"] = dict(opal_retry_filters)
-                            if product_ids:
-                                detail = replace(detail, attribute_filters=opal_retry_filters)
-                                debug_meta["structured_read_mode"] = retry_meta.get("structured_read_mode")
-                                debug_meta["projection_hit"] = retry_meta.get("projection_hit")
-                                query_cache_key = stable_cache_key(
-                                    f"{getattr(settings, 'CHAT_REDIS_KEY_PREFIX', 'chat:components')}:query_ids",
-                                    {
-                                        "q": normalized_text,
-                                        "locale": locale.lower(),
-                                        "sku": unique_sku_tokens[0].lower() if unique_sku_tokens else "",
-                                        "sku_list": [item.lower() for item in unique_sku_tokens[:5]],
-                                        "filters": detail.attribute_filters,
-                                        "catalog_version": str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
-                                        "read_mode": read_mode,
-                                        "presentation": "master_dedupe_v1",
-                                        "fetch_limit": result_fetch_limit,
-                                    },
-                                )
-                        else:
-                            debug_meta["opal_color_retry_applied"] = False
-
-                        semantic_decision = result_policy.semantic_fallback_decision(
-                            workflow=workflow,
-                            attribute_filters=detail.attribute_filters,
-                            sku_tokens=unique_sku_tokens,
-                            detail_mode=bool(detail.is_detail_request),
-                            store_overview_request=store_overview_request,
+                        spans["db_product_lookup_ms"] += (time.perf_counter() - exact_started) * 1000.0
+                        product_ids = list(exact_result.product_ids or [])
+                        result_count = len(product_ids)
+                        semantic_best_distance = 0.0 if product_ids else None
+                        semantic_exact_lookup_used = bool(unique_sku_tokens and product_ids)
+                        semantic_guardrail_used = True
+                        semantic_guardrail_reason = (
+                            "exact_lookup_without_embedding"
+                            if unique_sku_tokens
+                            else "embedding_unavailable_structured_guardrail"
                         )
-                        debug_meta["semantic_fallback_allowed"] = bool(semantic_decision.allow)
-                        debug_meta["semantic_fallback_reason"] = semantic_decision.reason
+                        semantic_result_source = ComponentSource.SQL
+                        debug_meta["structured_read_mode"] = exact_meta.get("structured_read_mode")
+                        debug_meta["projection_hit"] = exact_meta.get("projection_hit")
+                    elif unique_sku_tokens and query_embedding is not None:
+                        exact_started = time.perf_counter()
+                        exact_result = await self._catalog_search.smart_search(
+                            query_embedding=query_embedding,
+                            candidates=unique_sku_tokens,
+                            limit=result_fetch_limit,
+                        )
+                        spans["vector_search_ms"] += (time.perf_counter() - exact_started) * 1000.0
+                        semantic_cards = list(exact_result.cards or [])
+                        product_ids = list(exact_result.product_ids or [_card_identifier(card) for card in semantic_cards])
+                        semantic_best_distance = exact_result.best_distance
+                        semantic_exact_lookup_used = bool(
+                            semantic_best_distance is not None and float(semantic_best_distance) == 0.0
+                        )
+                        semantic_result_source = (
+                            ComponentSource.SQL if semantic_exact_lookup_used else ComponentSource.VECTOR
+                        )
+                    elif query_embedding is not None:
+                        vector_started = time.perf_counter()
+                        vector_result = await self._catalog_search.vector_search(
+                            query_embedding=query_embedding,
+                            limit=result_fetch_limit,
+                            candidate_limit=max(result_fetch_limit * 4, 36),
+                        )
+                        spans["vector_search_ms"] += (time.perf_counter() - vector_started) * 1000.0
+                        semantic_cards = list(vector_result.cards or [])
+                        product_ids = list(vector_result.product_ids or [_card_identifier(card) for card in semantic_cards])
+                        semantic_best_distance = vector_result.best_distance
+                    else:
+                        product_ids = []
+                        semantic_result_source = ComponentSource.VECTOR
 
-                        if product_ids:
-                            if len(product_ids) >= int(result_fetch_limit):
-                                result_count = await self._catalog_search.structured_count(
-                                    sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
-                                    attribute_filters=detail.attribute_filters,
-                                )
-                                debug_meta["structured_count_skipped"] = False
-                            else:
-                                result_count = len(product_ids)
-                                debug_meta["structured_count_skipped"] = True
-                            debug_meta["match_tier"] = result_policy.classify_match_tier(
-                                structured_found=True,
-                                semantic_found=False,
-                            )
-                        elif (
-                            semantic_decision.allow
-                            and int(getattr(settings, "CHAT_HARD_MAX_EMBEDDINGS_PER_REQUEST", 1)) > 0
-                            and not unique_sku_tokens
-                        ):
-                            try:
-                                embed_started = time.perf_counter()
-                                embedding = await llm_service.generate_embedding(text)
-                                spans["vector_search_ms"] += (time.perf_counter() - embed_started) * 1000.0
-                                query_embedding = list(embedding or [])
-                                embedding_calls += 1
-                                external_call_counts["embedding_query"] = (
-                                    int(external_call_counts.get("embedding_query", 0)) + 1
-                                )
-                                vector_started = time.perf_counter()
-                                vector_result = await self._catalog_search.smart_search(
-                                    query_embedding=embedding,
-                                    candidates=sku_tokens or [text],
-                                    limit=result_fetch_limit,
-                                )
-                                spans["vector_search_ms"] += (time.perf_counter() - vector_started) * 1000.0
-                                product_ids = list(vector_result.product_ids or [str(card.id) for card in vector_result.cards])
-                                result_count = len(product_ids)
-                                retrieval_source = ComponentSource.VECTOR if product_ids else ComponentSource.SQL
-                                debug_meta["match_tier"] = result_policy.classify_match_tier(
-                                    structured_found=False,
-                                    semantic_found=bool(product_ids),
-                                )
-                                if not product_ids:
-                                    ambiguity_reason = "structured_no_match"
-                            except Exception as exc:
-                                debug_meta["component_vector_fallback_error"] = str(exc)
-                                debug_meta["component_vector_fallback_skipped"] = True
-                                product_ids = []
-                                result_count = 0
-                                retrieval_source = ComponentSource.SQL
-                                ambiguity_reason = "structured_no_match"
-                                debug_meta["match_tier"] = result_policy.classify_match_tier(
-                                    structured_found=False,
-                                    semantic_found=False,
-                                )
+                    if semantic_cards and soft_filters and not hard_filters:
+                        soft_cards, soft_meta = self._apply_soft_hint_gate(
+                            cards=semantic_cards,
+                            soft_filters=soft_filters,
+                        )
+                        debug_meta.update(soft_meta)
+                        if soft_cards:
+                            semantic_cards = soft_cards
+                            product_ids = [_card_identifier(card) for card in semantic_cards]
                         else:
-                            debug_meta["component_vector_fallback_skipped"] = True
+                            semantic_guardrail_used = True
+                            semantic_guardrail_reason = "soft_constraint_verification"
+                            semantic_hard_constraint_rejection_reason = (
+                                soft_meta.get("semantic_soft_constraint_rejection_reason") or "soft_constraint_no_match"
+                            )
+                            debug_meta["semantic_hard_constraint_rejection_reason"] = (
+                                semantic_hard_constraint_rejection_reason
+                            )
                             product_ids = []
+                            semantic_cards = []
                             result_count = 0
-                            retrieval_source = ComponentSource.SQL
-                            ambiguity_reason = "structured_no_match"
+                            ambiguity_reason = "soft_constraint_mismatch"
                             debug_meta["match_tier"] = result_policy.classify_match_tier(
                                 structured_found=False,
                                 semantic_found=False,
                             )
 
-                        if query_cache_key:
-                            await self._redis_cache.set_json(
-                                query_cache_key,
-                                {
-                                    "product_ids": [str(item) for item in product_ids],
-                                    "source": retrieval_source.value,
-                                    "result_count": result_count,
-                                },
-                                ttl_seconds=300,
+                    if semantic_cards and hard_filters:
+                        filtered_cards, hard_meta = self._apply_hard_constraint_gate(
+                            cards=semantic_cards,
+                            hard_filters=hard_filters,
+                        )
+                        debug_meta.update(hard_meta)
+                        if filtered_cards:
+                            semantic_cards = filtered_cards
+                            product_ids = [_card_identifier(card) for card in semantic_cards]
+                        else:
+                            semantic_guardrail_used = True
+                            semantic_guardrail_reason = "hard_constraint_verification"
+                            verify_started = time.perf_counter()
+                            verify_result, verify_meta = await self._catalog_search.structured_search(
+                                sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
+                                attribute_filters=hard_filters,
+                                limit=result_fetch_limit,
+                                candidate_cap=int(getattr(settings, "CHAT_STRUCTURED_CANDIDATE_CAP", 300)),
+                                catalog_version=str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
+                                return_ids_only=True,
                             )
+                            spans["db_product_lookup_ms"] += (time.perf_counter() - verify_started) * 1000.0
+                            verified_ids = list(verify_result.product_ids or [])
+                            debug_meta["structured_read_mode"] = verify_meta.get("structured_read_mode")
+                            debug_meta["projection_hit"] = verify_meta.get("projection_hit")
+                            debug_meta["semantic_guardrail_verification_hit"] = bool(verified_ids)
+                            debug_meta["semantic_guardrail_reason"] = semantic_guardrail_reason
+                            semantic_hard_constraint_rejection_reason = (
+                                hard_meta.get("semantic_hard_constraint_rejection_reason") or "hard_constraint_no_match"
+                            )
+                            debug_meta["semantic_hard_constraint_rejection_reason"] = (
+                                semantic_hard_constraint_rejection_reason
+                            )
+                            if verified_ids:
+                                product_ids = verified_ids
+                                semantic_result_source = ComponentSource.SQL
+                                semantic_best_distance = 0.0
+                            else:
+                                product_ids = []
+                                result_count = 0
+                                ambiguity_reason = "structured_no_match"
+                                debug_meta["match_tier"] = result_policy.classify_match_tier(
+                                    structured_found=False,
+                                    semantic_found=False,
+                                )
+
+                    if not product_ids and not ambiguity_reason:
+                        if hard_filters:
+                            ambiguity_reason = "structured_no_match"
+                            if not debug_meta.get("semantic_hard_constraint_rejection_reason"):
+                                debug_meta["semantic_hard_constraint_rejection_reason"] = "hard_constraint_no_match"
+                        else:
+                            ambiguity_reason = "structured_no_match"
+
+                    if query_cache_key and product_ids:
+                        await self._redis_cache.set_json(
+                            query_cache_key,
+                            {
+                                "product_ids": [str(item) for item in product_ids],
+                                "source": semantic_result_source.value,
+                                "result_count": len(product_ids),
+                                "semantic_acceptance_score": round(
+                                    self._semantic_acceptance_score(semantic_best_distance),
+                                    4,
+                                ),
+                                "semantic_guardrail_used": semantic_guardrail_used,
+                                "semantic_guardrail_reason": semantic_guardrail_reason,
+                                "semantic_hard_constraint_rejection_reason": debug_meta.get(
+                                    "semantic_hard_constraint_rejection_reason", ""
+                                ),
+                                "semantic_exact_lookup_used": semantic_exact_lookup_used,
+                            },
+                            ttl_seconds=300,
+                        )
+                    result_count = len(product_ids)
+                    retrieval_source = semantic_result_source
+                    debug_meta["semantic_acceptance_score"] = round(
+                        self._semantic_acceptance_score(semantic_best_distance),
+                        4,
+                    )
+                    debug_meta["semantic_guardrail_used"] = semantic_guardrail_used
+                    debug_meta["semantic_guardrail_reason"] = semantic_guardrail_reason
+                    debug_meta["semantic_exact_lookup_used"] = semantic_exact_lookup_used
+                    debug_meta["semantic_search_error"] = embedding_error or ""
+                    debug_meta["semantic_result_source"] = retrieval_source.value
+                    debug_meta["match_tier"] = result_policy.classify_match_tier(
+                        structured_found=retrieval_source == ComponentSource.SQL and bool(product_ids),
+                        semantic_found=retrieval_source == ComponentSource.VECTOR and bool(product_ids),
+                    )
+                    semantic_catalog_search_done = True
+            if semantic_catalog_search_done:
+                debug_meta["semantic_first_used"] = True
+            elif product_ids:
+                debug_meta["query_id_cache_hit"] = False
+                debug_meta["structured_read_mode"] = "history"
+                debug_meta["projection_hit"] = False
 
             selected_components = self._plan_components(
                 user_text=text,
@@ -1989,7 +2264,7 @@ class ComponentPipeline:
                 candidate_cards = [self._to_product_card(item) for item in canonical_products]
                 resolution = ProductDetailResolver().resolve_detail_request(
                     candidate_cards=candidate_cards,
-                    distance_by_id={str(card.id): 0.0 for card in candidate_cards},
+                    distance_by_id={_card_identifier(card): 0.0 for card in candidate_cards},
                     requested_fields=detail.requested_fields,
                     attribute_filters=detail.attribute_filters,
                     sku_token=unique_sku_tokens[0] if unique_sku_tokens else None,
@@ -2024,9 +2299,9 @@ class ComponentPipeline:
                     debug_meta["detail_follow_ups"] = list(detail_payload.follow_up_questions or [])
                     detail_by_id = {str(item.product_id): item for item in canonical_products}
                     canonical_products = [
-                        detail_by_id[str(card.id)]
+                        detail_by_id[_card_identifier(card)]
                         for card in list(detail_payload.product_carousel or [])
-                        if str(card.id) in detail_by_id
+                        if _card_identifier(card) in detail_by_id
                     ]
                     result_count = len(canonical_products)
                     if canonical_products:
@@ -2082,7 +2357,9 @@ class ComponentPipeline:
                                 candidate_limit=max(result_fetch_limit * 4, 36),
                             )
                             spans["vector_search_ms"] += (time.perf_counter() - vector_started) * 1000.0
-                            expansion_product_ids = [str(card.id) for card in list(complementary_result.cards or [])]
+                            expansion_product_ids = [
+                                _card_identifier(card) for card in list(complementary_result.cards or [])
+                            ]
                             recommendation_distance_by_id.update(
                                 {
                                     str(key): float(value)
@@ -2320,7 +2597,7 @@ class ComponentPipeline:
         )
         spans["response_build_ms"] += (time.perf_counter() - build_started) * 1000.0
 
-        legacy = self._derive_legacy(
+        contract = self._build_component_contract(
             context=context,
             components=components,
             pick_text=lambda key, variants: _tone_pick(key, variants),
@@ -2335,30 +2612,31 @@ class ComponentPipeline:
         )
         response = ChatResponse(
             conversation_id=conversation_id,
-            reply_text=str(legacy["reply_text"]),
-            carousel_msg=str(legacy["carousel_msg"] or ""),
-            product_carousel=list(legacy["product_carousel"] or []),
-            follow_up_questions=list(legacy["follow_up_questions"] or []),
+            reply_text=str(contract["assistant_text"]),
+            carousel_msg=str(contract["carousel_msg"] or ""),
+            product_carousel=list(contract["product_carousel"] or []),
+            follow_up_questions=list(contract["follow_up_questions"] or []),
             routing=route_decision.to_public_routing(
                 execution_mode="component",
                 selection_source=str(routing_selection_source or "component_pipeline"),
             ),
             sources=knowledge_sources,
             debug={},
-            components=components,
+            components=list(contract["components"] or []),
             meta=meta,
         )
         conversation_state_payload: Optional[Dict[str, Any]] = None
         if conversation_state_enabled and state_working is not None:
-            state_product_ids = conversation_state.product_ids_from_cards(response.product_carousel)
-            state_product_skus = conversation_state.product_skus_from_cards(response.product_carousel)
+            response_cards = component_contract.product_cards_from_response(response)
+            state_product_ids = conversation_state.product_ids_from_cards(response_cards)
+            state_product_skus = conversation_state.product_skus_from_cards(response_cards)
             inventory_claim = {
                 "sku": str(debug_meta.get("inventory_verified_sku") or ""),
                 "stock_status": str(debug_meta.get("inventory_verified_status") or ""),
                 "last_stock_sync_at": str(debug_meta.get("inventory_last_stock_sync_at") or ""),
             }
-            if not inventory_claim["sku"] and list(response.product_carousel or []):
-                first_card = response.product_carousel[0]
+            if not inventory_claim["sku"] and list(response_cards or []):
+                first_card = response_cards[0]
                 inventory_claim["sku"] = str(getattr(first_card, "sku", "") or "")
                 inventory_claim["stock_status"] = str(getattr(first_card, "stock_status", "") or "")
             state_working = conversation_state.apply_retrieval_update(
@@ -2371,8 +2649,8 @@ class ComponentPipeline:
                 state_working,
                 requested_fields=detail.requested_fields,
                 currency=(
-                    str(response.product_carousel[0].currency or "")
-                    if list(response.product_carousel or [])
+                    str(response_cards[0].currency or "")
+                    if list(response_cards or [])
                     else ""
                 ),
                 route=workflow,

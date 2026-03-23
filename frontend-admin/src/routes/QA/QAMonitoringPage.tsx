@@ -76,7 +76,7 @@ export const QAMonitoringPage: React.FC = () => {
             });
             const components = normalizeChatComponents(response.data.components);
             setTestResult({
-                answer: getAssistantMessageText(components) || response.data.reply || response.data.message || 'No response',
+                answer: getAssistantMessageText(components) || 'No response',
                 sources: response.data.sources || [],
             });
             // Refresh logs to show the new test in the table

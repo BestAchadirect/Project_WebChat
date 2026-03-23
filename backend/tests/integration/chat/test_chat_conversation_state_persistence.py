@@ -24,7 +24,6 @@ def chat_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "CHAT_COMPONENT_BUCKETS_REQUIRE_COMPONENTS", False)
     monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)
     monkeypatch.setattr(settings, "CHAT_FIELD_AWARE_DETAIL_ENABLED", False)
-    monkeypatch.setattr(settings, "CHAT_SQL_FIRST_ENABLED", True)
     monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", False)
 
 

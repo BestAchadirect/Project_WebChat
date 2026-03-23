@@ -27,6 +27,7 @@ from app.services.chat.agentic.orchestrator import AgentOrchestrator, AgentRunRe
 from app.services.chat.recommendation_service import RecommendationService
 from app.services.chat.components import ComponentPipeline, redis_component_cache
 from app.services.chat import (
+    component_contract,
     conversation_state,
     follow_up_policy,
     persistence,
@@ -209,12 +210,13 @@ class ChatService:
             or (debug_meta.get("workflow") if isinstance(debug_meta, dict) else "")
             or ""
         )
-        raw_follow_ups = list(response.follow_up_questions or [])
+        response_products = component_contract.product_cards_from_response(response)
+        raw_follow_ups = component_contract.follow_up_questions_from_response(response)
         filtered_follow_ups = self._filter_follow_up_questions(
             questions=raw_follow_ups,
             user_text=user_text,
             route=route,
-            has_products=bool(response.product_carousel),
+            has_products=bool(response_products),
             retrieval_gate=retrieval_meta if isinstance(retrieval_meta, dict) else None,
             limit=5,
         )
@@ -223,7 +225,7 @@ class ChatService:
                 "before_count": len(raw_follow_ups),
                 "after_count": len(filtered_follow_ups),
             }
-        response.follow_up_questions = filtered_follow_ups
+        component_contract.upsert_quick_replies_component(response, filtered_follow_ups)
 
         latency_payload = self._build_latency_payload(
             spans=spans,

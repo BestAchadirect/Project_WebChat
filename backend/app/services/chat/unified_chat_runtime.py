@@ -4,9 +4,9 @@ import time
 from typing import Any, Dict, Optional
 
 from app.core.config import settings
-from app.schemas.chat import ChatComponent, ChatRequest, ChatResponse, ChatResponseMeta, ChatRouting
+from app.schemas.chat import ChatComponent, ChatComponentType, ChatRequest, ChatResponse, ChatResponseMeta, ChatRouting
 from app.services.ai.llm_service import llm_service
-from app.services.chat import alias_cache, challenge_context, routing_policy
+from app.services.chat import alias_cache, challenge_context, parser_rule_cache, routing_policy
 from app.services.chat.components.types import ComponentSource
 from app.services.chat.detail_query_parser import DetailQueryParser
 
@@ -56,16 +56,65 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
         query_summary: str,
         agentic_result: Any,
     ) -> ChatResponse:
+        assistant_text = str(getattr(agentic_result, "final_reply", "") or "").strip()
+        product_carousel = list(getattr(agentic_result, "product_carousel", []) or [])
+        follow_up_questions = [
+            str(item or "").strip()
+            for item in list(getattr(agentic_result, "follow_up_questions", []) or [])
+            if str(item or "").strip()
+        ]
+        components: list[ChatComponent] = []
+        if assistant_text:
+            components.append(
+                ChatComponent(
+                    type=ChatComponentType.ASSISTANT_MESSAGE,
+                    data={"text": assistant_text},
+                )
+            )
+        if product_carousel:
+            cards = []
+            for card in product_carousel:
+                cards.append(
+                    {
+                        "product_id": str(getattr(card, "id", "") or ""),
+                        "object_id": getattr(card, "object_id", None),
+                        "sku": str(getattr(card, "sku", "") or ""),
+                        "title": str(getattr(card, "name", "") or ""),
+                        "description": getattr(card, "description", None),
+                        "price": float(getattr(card, "price", 0.0) or 0.0),
+                        "currency": str(getattr(card, "currency", "USD") or "USD"),
+                        "in_stock": str(getattr(card, "stock_status", "") or "").strip().lower() == "in_stock",
+                        "stock_qty": None,
+                        "image_url": getattr(card, "image_url", None),
+                        "material": str(dict(getattr(card, "attributes", {}) or {}).get("material") or "").strip(),
+                        "gauge": str(dict(getattr(card, "attributes", {}) or {}).get("gauge") or "").strip(),
+                        "attributes": dict(getattr(card, "attributes", {}) or {}),
+                        "product_url": getattr(card, "product_url", None),
+                    }
+                )
+            components.append(
+                ChatComponent(
+                    type=ChatComponentType.PRODUCT_CARDS,
+                    data={"cards": cards},
+                )
+            )
+        if follow_up_questions:
+            components.append(
+                ChatComponent(
+                    type=ChatComponentType.QUICK_REPLIES,
+                    data={"items": list(follow_up_questions)},
+                )
+            )
         return ChatResponse(
             conversation_id=conversation_id_value,
-            reply_text=str(getattr(agentic_result, "final_reply", "") or ""),
+            reply_text=assistant_text,
             carousel_msg=str(getattr(agentic_result, "carousel_msg", "") or ""),
-            product_carousel=list(getattr(agentic_result, "product_carousel", []) or []),
-            follow_up_questions=list(getattr(agentic_result, "follow_up_questions", []) or []),
+            product_carousel=product_carousel,
+            follow_up_questions=follow_up_questions,
             routing=routing,
             sources=list(getattr(agentic_result, "sources", []) or []),
             debug={},
-            components=[],
+            components=components,
             meta=ChatResponseMeta(
                 query_summary=str(query_summary or ""),
                 latency_ms=0.0,
@@ -121,8 +170,23 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
         conversation = await self.get_or_create_conversation(user, req.conversation_id)
         conversation_id_value = _safe_conversation_id(conversation, conversation_id_value)
 
-        alias_map = await alias_cache.get_alias_map(self.db)
-        detail = DetailQueryParser.parse(user_text=text, nlu_data={}, alias_map=alias_map)
+        alias_map: Dict[str, Dict[str, str]] = {}
+        parser_rules = parser_rule_cache.get_cached_parser_rules()
+        if hasattr(self.db, "execute"):
+            try:
+                alias_map = await alias_cache.get_alias_map(self.db)
+            except Exception as alias_exc:
+                debug_meta["alias_cache_error"] = str(alias_exc)
+            try:
+                parser_rules = await parser_rule_cache.get_parser_rules(self.db)
+            except Exception as parser_exc:
+                debug_meta["parser_rule_cache_error"] = str(parser_exc)
+        detail = DetailQueryParser.parse(
+            user_text=text,
+            nlu_data={},
+            alias_map=alias_map,
+            parser_rules=parser_rules,
+        )
         sku_tokens = routing_policy.extract_sku_tokens(text)
         challenge_decision = challenge_context.ChallengeContextDecision()
         challenge_payload: Optional[Dict[str, Any]] = None
@@ -222,6 +286,7 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
         if execution_decision is not None:
             debug_meta["routing_confidence_gate_applied"] = execution_decision.confidence_gate_applied
             debug_meta["routing_shadow_mode"] = execution_decision.shadow_mode
+            debug_meta["routing_timeout_retry_used"] = execution_decision.timeout_retry_used
             debug_meta["agentic"] = {
                 "selected": execution_decision.execution_mode == "agentic",
                 "selection_reason": execution_decision.reason,
@@ -235,6 +300,7 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
                 "llm_execution_mode": execution_decision.llm_execution_mode,
                 "confidence_gate_applied": execution_decision.confidence_gate_applied,
                 "shadow_mode": execution_decision.shadow_mode,
+                "timeout_retry_used": execution_decision.timeout_retry_used,
                 "used_tools": False,
                 "trace": [],
                 "fallback_to_component": False,
@@ -242,6 +308,7 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
         else:
             debug_meta["routing_confidence_gate_applied"] = False
             debug_meta["routing_shadow_mode"] = False
+            debug_meta["routing_timeout_retry_used"] = False
             debug_meta["agentic"] = {
                 "selected": False,
                 "selection_reason": str(route_decision.reason or "challenge_context"),
@@ -255,6 +322,7 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
                 "llm_execution_mode": "",
                 "confidence_gate_applied": False,
                 "shadow_mode": False,
+                "timeout_retry_used": False,
                 "used_tools": False,
                 "trace": [],
                 "fallback_to_component": False,

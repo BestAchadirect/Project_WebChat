@@ -97,7 +97,8 @@ class Settings(BaseSettings):
     CHAT_DETAIL_MIN_CONFIDENCE: float = 0.55
     CHAT_DETAIL_ENABLE_SEMANTIC_CACHE: bool = False
     CHAT_FAIL_FAST_ON_EMBEDDING_ERROR: bool = True
-    CHAT_SQL_FIRST_ENABLED: bool = True
+    CHAT_SEMANTIC_FIRST_ENABLED: bool = True
+    CHAT_SEMANTIC_MIN_ACCEPTANCE_SCORE: float = 0.35
     CHAT_PROJECTION_READ_ENABLED: bool = False
     CHAT_PROJECTION_DUAL_WRITE_ENABLED: bool = True
     CHAT_STRUCTURED_CANDIDATE_CAP: int = 300
@@ -122,6 +123,8 @@ class Settings(BaseSettings):
     CHAT_LLM_ROUTING_MAX_TOKENS: int = 180
     CHAT_LLM_ROUTING_TEMPERATURE: float = 0.0
     CHAT_LLM_ROUTING_TIMEOUT_MS: int = 3500
+    CHAT_LLM_ROUTING_TIMEOUT_RETRY_ENABLED: bool = True
+    CHAT_LLM_ROUTING_TIMEOUT_RETRY_MS: int = 2000
     CHAT_LLM_ROUTING_MIN_CONFIDENCE: float = 0.7
     CHAT_LLM_ROUTING_SHADOW_MODE: bool = False
     CHAT_AGENTIC_MIN_CONFIDENCE: float = 0.8
@@ -150,6 +153,7 @@ class Settings(BaseSettings):
     FACETS_V2_DUAL_WRITE_ENABLED: bool = True
     FACETS_V2_READ_ENABLED: bool = True
     ALIASES_REFRESH_TIMEOUT_SECONDS: float = 5.0
+    PARSER_RULES_REFRESH_TIMEOUT_SECONDS: float = 5.0
 
     # Klevu product sync
     KLEVU_API_ENDPOINT: str = "https://eucs30v2.ksearchnet.com/cs/v2/search"

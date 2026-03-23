@@ -27,3 +27,16 @@ class SynonymUpdateRequest(BaseModel):
 class SynonymAttribute(BaseModel):
     name: str
     display_name: str
+
+
+class SynonymAlias(BaseModel):
+    id: int
+    raw_value: str
+    is_active: bool
+
+
+class SynonymGroup(BaseModel):
+    attribute: str
+    attribute_display_name: str
+    canonical_value: str
+    synonyms: List[SynonymAlias]

@@ -8,7 +8,10 @@ from app.core.config import settings
 
 def feature_flags_snapshot() -> Dict[str, Any]:
     return {
-        "chat_sql_first_enabled": bool(getattr(settings, "CHAT_SQL_FIRST_ENABLED", True)),
+        "chat_semantic_first_enabled": bool(getattr(settings, "CHAT_SEMANTIC_FIRST_ENABLED", True)),
+        "chat_semantic_min_acceptance_score": float(
+            getattr(settings, "CHAT_SEMANTIC_MIN_ACCEPTANCE_SCORE", 0.35)
+        ),
         "chat_projection_read_enabled": bool(getattr(settings, "CHAT_PROJECTION_READ_ENABLED", False)),
         "chat_projection_dual_write_enabled": bool(getattr(settings, "CHAT_PROJECTION_DUAL_WRITE_ENABLED", True)),
         "chat_structured_query_cache_enabled": bool(
@@ -63,7 +66,13 @@ def feature_flags_snapshot() -> Dict[str, Any]:
         "chat_llm_routing_enabled": bool(getattr(settings, "CHAT_LLM_ROUTING_ENABLED", False)),
         "chat_llm_routing_model": str(getattr(settings, "CHAT_LLM_ROUTING_MODEL", "")),
         "chat_llm_routing_max_tokens": int(getattr(settings, "CHAT_LLM_ROUTING_MAX_TOKENS", 180)),
-        "chat_llm_routing_timeout_ms": int(getattr(settings, "CHAT_LLM_ROUTING_TIMEOUT_MS", 1200)),
+        "chat_llm_routing_timeout_ms": int(getattr(settings, "CHAT_LLM_ROUTING_TIMEOUT_MS", 3500)),
+        "chat_llm_routing_timeout_retry_enabled": bool(
+            getattr(settings, "CHAT_LLM_ROUTING_TIMEOUT_RETRY_ENABLED", True)
+        ),
+        "chat_llm_routing_timeout_retry_ms": int(
+            getattr(settings, "CHAT_LLM_ROUTING_TIMEOUT_RETRY_MS", 2000)
+        ),
         "chat_llm_routing_min_confidence": float(
             getattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
         ),

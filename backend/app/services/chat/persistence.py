@@ -10,7 +10,7 @@ from app.core.logging import get_logger
 from app.models.chat import Conversation, Message, MessageRole
 from app.models.qa_log import QALog, QAStatus
 from app.schemas.chat import ChatComponent, ChatResponse, ProductCard
-from app.services.chat import qa_metrics
+from app.services.chat import component_contract, qa_metrics
 
 logger = get_logger(__name__)
 
@@ -93,10 +93,12 @@ async def finalize_response(
         token_usage=token_usage,
         chat_metrics=chat_metrics,
     )
+    assistant_text = component_contract.assistant_text_from_response(response)
+    response_products = component_contract.product_cards_from_response(response)
 
     qa_log = QALog(
         question=user_text,
-        answer=response.reply_text,
+        answer=assistant_text,
         sources=[
             {
                 "source_id": s.source_id,
@@ -125,8 +127,8 @@ async def finalize_response(
             db=db,
             conversation_id=conversation_id,
             role=MessageRole.ASSISTANT,
-            content=response.reply_text,
-            product_data=response.product_carousel,
+            content=assistant_text,
+            product_data=response_products,
             components=response.components,
             token_usage=token_usage_payload,
             commit=False,
@@ -156,6 +158,8 @@ async def finalize_response(
         await db.rollback()
         raise
 
+    response.reply_text = assistant_text
+    response.product_carousel = list(response_products or [])
     response.qa_log_id = qa_log_id
     return response
 

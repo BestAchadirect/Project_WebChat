@@ -2,13 +2,29 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from app.schemas.chat import ChatResponse, ChatRouting, KnowledgeSource, ProductCard
+from app.schemas.chat import ChatComponent, ChatComponentType, ChatResponse, ChatRouting, KnowledgeSource, ProductCard
 from app.services.ai.answer_polisher import answer_polisher
 from app.services.currency_service import currency_service
 from app.services.ai.llm_service import llm_service
 
 
 class ResponseRenderer:
+    @staticmethod
+    def _to_product_card_payload(card: ProductCard) -> Dict[str, Any]:
+        return {
+            "product_id": str(card.id),
+            "object_id": card.object_id,
+            "sku": str(card.sku),
+            "title": str(card.name),
+            "description": card.description,
+            "price": float(card.price),
+            "currency": str(card.currency),
+            "in_stock": str(card.stock_status or "").strip().lower() == "in_stock",
+            "image_url": card.image_url,
+            "product_url": card.product_url,
+            "attributes": dict(card.attributes or {}),
+        }
+
     @staticmethod
     def _routing_for_route(route: str) -> ChatRouting:
         normalized = str(route or "").strip().lower()
@@ -130,16 +146,45 @@ class ResponseRenderer:
             )
             text = self._strip_sources_block(text)
 
+        components: List[ChatComponent] = []
+        if str(text or "").strip():
+            components.append(
+                ChatComponent(
+                    type=ChatComponentType.ASSISTANT_MESSAGE,
+                    data={"text": str(text).strip()},
+                )
+            )
+        if list(product_carousel or []):
+            components.append(
+                ChatComponent(
+                    type=ChatComponentType.PRODUCT_CARDS,
+                    data={"cards": [self._to_product_card_payload(card) for card in list(product_carousel or [])]},
+                )
+            )
+        clean_follow_ups = [
+            str(item or "").strip()
+            for item in list(follow_up_questions or [])
+            if str(item or "").strip()
+        ]
+        if clean_follow_ups:
+            components.append(
+                ChatComponent(
+                    type=ChatComponentType.QUICK_REPLIES,
+                    data={"items": list(clean_follow_ups)},
+                )
+            )
+
         return ChatResponse(
             conversation_id=conversation_id,
             reply_text=text,
             carousel_msg=carousel_msg,
             product_carousel=product_carousel,
-            follow_up_questions=follow_up_questions,
+            follow_up_questions=clean_follow_ups,
             routing=self._routing_for_route(route),
             sources=sources,
             debug=debug,
             view_button_text=button_text,
             material_label=material_label,
             jewelry_type_label=jewelry_type_label,
+            components=components,
         )
