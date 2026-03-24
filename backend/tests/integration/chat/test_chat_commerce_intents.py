@@ -10,7 +10,7 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ChatRequest
-from app.services.chat import routing_policy
+from app.services.chat.routing import routing_policy
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.components.types import ComponentSource
@@ -71,10 +71,7 @@ async def test_component_pipeline_recommend_workflow_returns_recommendation_rout
 
     class _CatalogStub:
         async def structured_search(self, **kwargs):
-            return SimpleNamespace(product_ids=[str(first.product_id), str(second.product_id)]), {
-                "structured_read_mode": "eav",
-                "projection_hit": False,
-            }
+            return SimpleNamespace(product_ids=[str(first.product_id), str(second.product_id)]), {}
 
         async def structured_count(self, **kwargs):
             return 2

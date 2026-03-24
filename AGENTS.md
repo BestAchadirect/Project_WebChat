@@ -29,6 +29,9 @@ Do not move or rename directories unless explicitly requested.
   `backend/app/services/knowledge`, `backend/app/services/imports`,
   `backend/app/services/tasks`, `backend/app/services/tickets`, `backend/app/services/legacy`.
 - Keep compatibility wrappers in `backend/app/services/*.py` during deprecation window; new code must import domain paths.
+- Chat component builders and registry stay in `backend/app/services/chat/components/`.
+- Chat pipeline orchestration internals belong in `backend/app/services/chat/components/pipeline_runtime/`.
+- Keep the public component pipeline entrypoint at `backend/app/services/chat/components/pipeline.py`.
 - Backend schemas/models: `backend/app/schemas/` and `backend/app/models/`.
 - Backend shared internals: `backend/app/core/`, `backend/app/utils/`, `backend/app/db/`.
 - Backend prompts: `backend/app/prompts/`.
@@ -85,4 +88,4 @@ Do not move or rename directories unless explicitly requested.
 
 ## Ownership
 - Owner: Project maintainers.
-- Last reviewed: 2026-03-10.
+- Last reviewed: 2026-03-24.

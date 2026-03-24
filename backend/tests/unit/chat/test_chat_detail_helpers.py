@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import uuid4
 
-from app.services.chat.detail_query_parser import DetailQueryParser
-from app.services.chat.parser_rule_types import build_rule_set
-from app.services.chat.detail_response_builder import DetailResponseBuilder
-from app.services.chat.product_detail_resolver import ProductDetailResolver
+from app.services.chat.parsing.detail_query_parser import DetailQueryParser
+from app.services.chat.parsing.parser_rule_types import build_rule_set
+from app.services.chat.presentation.detail_response_builder import DetailResponseBuilder
+from app.services.chat.retrieval.product_detail_resolver import ProductDetailResolver
 
 
 @dataclass
@@ -145,11 +145,12 @@ def test_detail_query_parser_infers_plain_opal_from_alias_map_even_without_detec
         alias_map=_db_alias_map(),
         parser_rules=rules,
     )
-    assert parsed.attribute_filters.get("finish") == "sterilized"
+    assert parsed.attribute_filters.get("finish") is None
     assert parsed.attribute_filters.get("stone") == "opal"
+    assert parsed.semantic_hints == []
 
 
-def test_detail_query_parser_infers_sterilization_without_finish_alias_map() -> None:
+def test_detail_query_parser_does_not_force_sterilization_into_finish_without_exact_wording() -> None:
     alias_map = _db_alias_map()
     alias_map.pop("finish", None)
     parsed = DetailQueryParser.parse(
@@ -159,7 +160,7 @@ def test_detail_query_parser_infers_sterilization_without_finish_alias_map() -> 
         parser_rules=_db_rules(),
     )
 
-    assert parsed.attribute_filters.get("finish") == "sterilized"
+    assert parsed.attribute_filters.get("finish") is None
     assert any(
         parsed.attribute_filters.get(key) == "opal"
         for key in ("stone", "color", "opal_color")

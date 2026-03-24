@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.chat import conversation_state
+from app.services.chat.runtime import conversation_state
 
 
 def test_load_state_normalizes_and_preserves_unknown_keys() -> None:

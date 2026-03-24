@@ -24,17 +24,14 @@ from app.schemas.chat import (
 )
 from app.services.catalog.product_search import CatalogProductSearchService
 from app.services.chat.agentic.orchestrator import AgentOrchestrator, AgentRunResult
-from app.services.chat.recommendation_service import RecommendationService
-from app.services.chat.components import ComponentPipeline, redis_component_cache
-from app.services.chat import (
-    component_contract,
-    conversation_state,
-    follow_up_policy,
-    persistence,
-    routing_policy,
-    runtime_metrics,
-    unified_chat_runtime,
-)
+from app.services.chat.retrieval.recommendation_service import RecommendationService
+from app.services.chat.components.cache import redis_component_cache
+from app.services.chat.components.pipeline import ComponentPipeline
+from app.services.chat.presentation import component_contract, public_response
+from app.services.chat.runtime import conversation_state, persistence, unified_chat_runtime
+from app.services.chat.retrieval import follow_up_policy
+from app.services.chat.routing import routing_policy
+from app.services.chat.observability import runtime_metrics
 from app.services.knowledge.retrieval import KnowledgeRetrievalService
 from app.utils.debug_log import debug_log as _debug_log
 
@@ -234,8 +231,9 @@ class ChatService:
             token_usage=token_usage if isinstance(token_usage, dict) else None,
         )
         debug_meta["latency_spans"] = latency_payload
+        debug_payload = public_response.sanitize_debug_payload(debug_meta)
         response.debug = dict(response.debug or {})
-        response.debug.update(debug_meta)
+        response.debug.update(debug_payload)
         response.debug["latency_spans"] = latency_payload
         self._log_event(
             run_id=run_id,
@@ -562,7 +560,6 @@ class ChatService:
         route_decision_override: Optional[routing_policy.WorkflowDecision] = None,
         routing_selection_source: str = "",
         channel: str = "widget",
-        challenge_context: Optional[Dict[str, Any]] = None,
     ):
         pipeline = ComponentPipeline(
             db=self.db,
@@ -577,7 +574,6 @@ class ChatService:
             route_decision_override=route_decision_override,
             routing_selection_source=routing_selection_source,
             channel=channel,
-            challenge_context=challenge_context,
         )
 
     async def _run_agentic_workflow(

@@ -3,36 +3,14 @@ from __future__ import annotations
 from typing import Any, Dict, List, Sequence, Tuple, TypeVar
 
 from app.schemas.chat import ProductCard
-
-ALLOWED_PRODUCT_FILTERS = {
-    "min_price",
-    "max_price",
-    "stock_status",
-    "category",
-    "material",
-    "jewelry_type",
-    "color",
-}
+from app.services.chat.text_normalization import normalize_user_text as _normalize_text
+from app.services.chat.parsing.search_policy import ALLOWED_PRODUCT_FILTERS, normalize_filter_map
 
 _T = TypeVar("_T")
 
 
 def normalize_product_filters(filters: Dict[str, Any] | None) -> Dict[str, Any]:
-    payload = dict(filters or {})
-    clean: Dict[str, Any] = {}
-    for key, value in payload.items():
-        if key not in ALLOWED_PRODUCT_FILTERS:
-            continue
-        if value is None:
-            continue
-        if isinstance(value, str):
-            trimmed = value.strip()
-            if not trimmed:
-                continue
-            clean[key] = trimmed
-        else:
-            clean[key] = value
-    return clean
+    return normalize_filter_map(filters, allowed_keys=ALLOWED_PRODUCT_FILTERS)
 
 
 def product_card_matches_filters(card: ProductCard, filters: Dict[str, Any]) -> bool:
@@ -62,8 +40,8 @@ def product_card_matches_filters(card: ProductCard, filters: Dict[str, Any]) -> 
             return False
 
     if stock_status is not None:
-        desired = str(stock_status).strip().lower()
-        actual = str(card.stock_status or "").strip().lower()
+        desired = _normalize_text(stock_status)
+        actual = _normalize_text(card.stock_status)
         if desired and desired != actual:
             return False
 
@@ -75,8 +53,8 @@ def product_card_matches_filters(card: ProductCard, filters: Dict[str, Any]) -> 
     ):
         if expected is None:
             continue
-        actual = str(attributes.get(key) or "").strip().lower()
-        if actual != str(expected).strip().lower():
+        actual = _normalize_text(attributes.get(key))
+        if actual != _normalize_text(expected):
             return False
 
     return True
@@ -90,11 +68,10 @@ def paginate_items(
     max_items: int,
 ) -> Tuple[List[_T], int, int, int]:
     total_items = len(items)
-    total_pages = max(1, ((total_items - 1) // page_size) + 1) if total_items > 0 else 1
-    safe_page = min(page, total_pages)
-    start = (safe_page - 1) * page_size
-    end = start + page_size
+    safe_page_size = max(1, min(int(page_size), int(max_items)))
+    total_pages = max(1, ((total_items - 1) // safe_page_size) + 1) if total_items > 0 else 1
+    safe_page = min(max(1, int(page)), total_pages)
+    start = (safe_page - 1) * safe_page_size
+    end = start + safe_page_size
     page_items = list(items[start:end])
-    if len(page_items) > max_items:
-        page_items = page_items[:max_items]
     return page_items, total_items, safe_page, total_pages

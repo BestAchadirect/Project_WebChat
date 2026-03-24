@@ -7,7 +7,7 @@ pytest.importorskip("pydantic_settings")
 
 from app.core.config import settings
 from app.schemas.chat import ChatRequest, ChatResponse, ChatRouting
-from app.services.chat import persistence
+from app.services.chat.runtime import persistence
 from app.services.chat.service import ChatService
 from tests.fixtures.chat import (
     DummyConversation,

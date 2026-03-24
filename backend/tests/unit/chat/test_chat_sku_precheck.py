@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ProductCard
-from app.services.chat import sku_precheck
+from app.services.chat.retrieval import sku_precheck
 
 
 def card(sku: str) -> ProductCard:

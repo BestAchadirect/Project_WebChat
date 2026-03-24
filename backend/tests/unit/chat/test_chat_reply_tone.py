@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.chat import reply_tone
+from app.services.chat.presentation import reply_tone
 
 
 def test_compose_variant_is_deterministic_without_recent_history() -> None:

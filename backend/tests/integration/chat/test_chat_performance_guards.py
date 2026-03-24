@@ -11,14 +11,15 @@ pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ChatRequest, KnowledgeSource, ProductCard
 from app.services.ai.llm_service import llm_service
-from app.services.chat import alias_cache, parser_rule_cache
-from app.services.chat import routing_policy
+from app.services.chat.runtime import alias_cache
+from app.services.chat.parsing import parser_rule_cache
+from app.services.chat.routing import routing_policy
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.components.types import ComponentSource
-from app.services.chat.detail_query_parser import DetailQuery
-from app.services.chat.product_detail_resolver import ProductDetailResolver
-from app.services.chat.result_policy import classify_match_tier, semantic_fallback_decision
+from app.services.chat.parsing.detail_query_parser import DetailQuery
+from app.services.chat.retrieval.product_detail_resolver import ProductDetailResolver
+from app.services.chat.retrieval.result_policy import classify_match_tier
 
 
 class _RedisStub:
@@ -114,29 +115,8 @@ def test_detail_filtering_is_deterministic_without_llm() -> None:
     assert [item.sku for item in resolution.matches] == ["ST-1"]
 
 
-def test_semantic_fallback_decision_blocks_structured_filters() -> None:
-    decision = semantic_fallback_decision(
-        workflow="catalog",
-        attribute_filters={"material": "titanium"},
-        sku_tokens=[],
-        detail_mode=False,
-        store_overview_request=False,
-    )
-    assert decision.allow is False
-    assert decision.reason == "structured_filters_present"
+def test_result_policy_match_tier_allows_semantic_suggestion() -> None:
     assert classify_match_tier(structured_found=False, semantic_found=False) == "no_match"
-
-
-def test_semantic_fallback_decision_allows_discovery_queries() -> None:
-    decision = semantic_fallback_decision(
-        workflow="catalog",
-        attribute_filters={},
-        sku_tokens=[],
-        detail_mode=False,
-        store_overview_request=False,
-    )
-    assert decision.allow is True
-    assert decision.reason == "discovery_query"
     assert classify_match_tier(structured_found=False, semantic_found=True) == "semantic_suggestion"
 
 
@@ -395,6 +375,168 @@ async def test_component_pipeline_product_browse_reply_is_deterministic_without_
     assert result.debug.get("match_tier") == "semantic_suggestion"
     assert "steel material" in result.response.reply_text.lower()
     assert result.response.follow_up_questions == []
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_semantic_hint_no_match_returns_focused_clarify(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    search_card = ProductCard(
+        id=uuid4(),
+        object_id="BROAD-1",
+        sku="BROAD-1",
+        name="Broad Steel Item",
+        price=12.0,
+        currency="USD",
+        stock_status="in_stock",
+        attributes={"material": "steel", "jewelry_type": "labret"},
+    )
+
+    class _CatalogStub:
+        async def structured_count(self, **kwargs):
+            return 0
+
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(
+                product_ids=[str(search_card.id)],
+                cards=[search_card],
+                distance_by_id={str(search_card.id): 0.08},
+                best_distance=0.08,
+            )
+
+        async def structured_search(self, **kwargs):
+            return SimpleNamespace(product_ids=[]), {}
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+        return DetailQuery(
+            requested_fields=[],
+            attribute_filters={},
+            semantic_hints=["sterilization"],
+            clarify_focus="sterilization_meaning",
+            wants_image=False,
+            is_detail_request=False,
+        )
+
+    async def fake_generate_embedding(text: str):
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        fake_parse,
+    )
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="I want to buy sterilization product", locale="en-US"),
+        conversation_id=77,
+        run_id="run-semantic-hint-clarify",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    assert result.response.routing.workflow == "catalog"
+    assert any(component.type.value == "clarify" for component in result.response.components)
+    assert result.response.product_carousel == []
+    assert result.debug.get("clarify_reason") == "semantic_concept_unclear"
+    assert result.debug.get("semantic_guardrail_reason") == "semantic_hint_clarify"
+    assert result.debug.get("semantic_hint_clarify_used") is True
+    assert "pre-sterilized jewelry" in result.response.reply_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_semantic_hint_lexical_rescue_returns_products(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product = _canonical_product(
+        sku="STERILE-1",
+        title="Sterilized Piercing Supply",
+        attributes={"master_code": "STERILE-1", "category": "EO gas sterilized piercing"},
+    )
+    search_card = ProductCard(
+        id=product.product_id,
+        object_id=product.sku,
+        sku=product.sku,
+        name=product.title,
+        description=product.description,
+        price=float(product.price),
+        currency=product.currency,
+        stock_status="in_stock",
+        search_text="eo gas sterilized piercing supply surgical steel",
+        attributes={"category": "EO gas sterilized piercing"},
+    )
+
+    class _CatalogStub:
+        async def structured_count(self, **kwargs):
+            return 0
+
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(
+                product_ids=[],
+                cards=[],
+                distance_by_id={},
+                best_distance=None,
+            )
+
+        async def lexical_search(self, **kwargs):
+            return SimpleNamespace(
+                product_ids=[str(search_card.id)],
+                cards=[search_card],
+                distance_by_id={str(search_card.id): 0.85},
+                best_distance=0.85,
+            )
+
+        async def structured_search(self, **kwargs):
+            raise AssertionError("structured search should not run before lexical rescue")
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_resolve(*, product_ids, component_types, redis_cache):
+        return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+        return DetailQuery(
+            requested_fields=[],
+            attribute_filters={},
+            semantic_hints=["sterilization"],
+            clarify_focus="sterilization_meaning",
+            wants_image=False,
+            is_detail_request=False,
+        )
+
+    async def fake_generate_embedding(text: str):
+        return [0.1, 0.2, 0.3]
+
+    pipeline._field_resolver.resolve = fake_resolve  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        fake_parse,
+    )
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="I want to buy sterilization product", locale="en-US"),
+        conversation_id=77,
+        run_id="run-semantic-lexical-rescue",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    assert result.response.routing.workflow == "catalog"
+    assert result.response.product_carousel
+    assert not any(component.type.value == "clarify" for component in result.response.components)
+    assert result.debug.get("lexical_search_used") is True
+    assert result.debug.get("lexical_rescue_used") is True
+    assert result.debug.get("semantic_search_mode") == "vector_lexical_hybrid"
 
 
 @pytest.mark.asyncio

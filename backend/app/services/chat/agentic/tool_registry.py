@@ -7,9 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.services.catalog.product_search import CatalogProductSearchService
-from app.services.chat import routing_policy
+from app.services.chat.routing import routing_policy
+from app.services.chat.parsing.search_policy import ALLOWED_PRODUCT_FILTERS
 from app.services.chat.agentic.tool_handlers import (
-    ALLOWED_PRODUCT_FILTERS,
     normalize_product_filters,
     paginate_items,
     product_card_matches_filters,
@@ -192,12 +192,12 @@ class AgentToolRegistry:
         return normalize_product_filters(filters)
 
     async def search_products(self, args: SearchProductsArgs) -> Dict[str, Any]:
-        page_size = args.page_size
+        max_items = max(1, int(getattr(settings, "AGENTIC_MAX_TOOL_RESULT_ITEMS", 10)))
+        page_size = min(args.page_size, max_items)
         page = args.page
         filters = self._normalize_filters(args.filters)
 
         query_embedding = await llm_service.generate_embedding(args.query)
-        max_items = max(1, int(getattr(settings, "AGENTIC_MAX_TOOL_RESULT_ITEMS", 10)))
         candidate_limit = min(400, max(max_items * 6, page * page_size * 4, 40))
         search_result = await self._catalog_search.vector_search(
             query_embedding=query_embedding,

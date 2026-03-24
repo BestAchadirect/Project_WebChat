@@ -6,7 +6,12 @@ import pytest
 
 pytest.importorskip("pydantic_settings")
 
-from app.services.chat import runtime_metrics
+from app.services.chat.observability import runtime_metrics
+
+
+def test_feature_flags_snapshot_does_not_expose_projection_read_flag() -> None:
+    flags = runtime_metrics.feature_flags_snapshot()
+    assert "chat_projection_read_enabled" not in flags
 
 
 def test_new_latency_spans_contains_expected_defaults() -> None:

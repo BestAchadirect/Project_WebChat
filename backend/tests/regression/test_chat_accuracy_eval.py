@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("pydantic_settings")
 
-from app.services.chat import accuracy_eval
+from app.services.chat.observability import accuracy_eval
 
 
 PRODUCT_DATASET_PATH = Path(__file__).parent / "data" / "product_accuracy_cases.json"

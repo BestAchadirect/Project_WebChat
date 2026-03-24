@@ -71,20 +71,7 @@ def test_chat_endpoint_returns_service_response(build_client, monkeypatch: pytes
     assert "follow_up_questions" not in payload
     assert payload["components"][0]["type"] == "assistant_message"
     assert payload["components"][0]["data"]["text"] == "api response"
-    assert payload["debug"] == {
-        "run_id": "chat-123",
-        "workflow": "catalog",
-        "workflow_path": "component_primary",
-        "execution_mode": "component",
-        "component_mode": "primary",
-        "source": "sql",
-        "latency_ms": 12.34,
-        "agentic": {
-            "selected": False,
-            "used_tools": False,
-            "fallback_to_component": False,
-        },
-    }
+    assert payload["debug"] == {}
     assert captured["channel"] == "widget"
     assert isinstance(captured["request"], ChatRequest)
 

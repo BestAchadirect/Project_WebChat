@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.chat.response_consistency import ResponseConsistencyPolicy
+from app.services.chat.presentation.response_consistency import ResponseConsistencyPolicy
 
 
 @pytest.mark.regression

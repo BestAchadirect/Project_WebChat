@@ -6,7 +6,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.append(str(BACKEND_ROOT))
 
-from app.services.chat import accuracy_eval
+from app.services.chat.observability import accuracy_eval
 
 
 def main() -> int:

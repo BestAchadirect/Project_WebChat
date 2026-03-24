@@ -5,9 +5,11 @@ from uuid import uuid4
 
 import pytest
 
+from app.core.config import settings
 from app.schemas.chat import KnowledgeSource
 from app.services.chat.components.builders.clarify import ClarifyComponent
 from app.services.chat.components.builders.error import ErrorComponent
+from app.services.ai.llm_service import llm_service
 from app.services.chat.components.builders.knowledge_answer import KnowledgeAnswerComponent
 from app.services.chat.components.builders.product_cards import ProductCardsComponent
 from app.services.chat.components.builders.product_detail import ProductDetailComponent
@@ -120,3 +122,58 @@ async def test_clarify_builder_hides_questions_and_suggestions_from_public_paylo
     assert component.data["message"] == "I want to give you the right answer, but I need one more detail."
     assert "questions" not in component.data
     assert "suggestions" not in component.data
+
+
+@pytest.mark.asyncio
+async def test_clarify_builder_can_use_contextual_llm_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    context = _sample_context()
+    context.ambiguity_reason = "need_more_context"
+    context.error_message = None
+    context.debug = {}
+
+    async def fake_generate_chat_json(**kwargs):
+        return {"message": "Which size are you looking for?"}
+
+    monkeypatch.setattr(settings, "CHAT_CONTEXTUAL_COMPONENT_COPY_ENABLED", True)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    component = await ClarifyComponent().build(context)
+
+    assert component.data["message"] == "Which size are you looking for?"
+
+
+@pytest.mark.asyncio
+async def test_error_builder_can_use_contextual_llm_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    context = _sample_context()
+    context.error_message = None
+
+    async def fake_generate_chat_json(**kwargs):
+        return {"message": "I ran into an issue with that request. Please try again in a moment."}
+
+    monkeypatch.setattr(settings, "CHAT_CONTEXTUAL_COMPONENT_COPY_ENABLED", True)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    component = await ErrorComponent().build(context)
+
+    assert component.data["message"] == "I ran into an issue with that request. Please try again in a moment."
+
+
+@pytest.mark.asyncio
+async def test_contextual_component_copy_falls_back_to_tone_variants_on_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _sample_context()
+    context.error_message = None
+    context.debug = {}
+
+    async def broken_generate_chat_json(**kwargs):
+        raise RuntimeError("llm unavailable")
+
+    monkeypatch.setattr(settings, "CHAT_CONTEXTUAL_COMPONENT_COPY_ENABLED", True)
+    monkeypatch.setattr(llm_service, "generate_chat_json", broken_generate_chat_json)
+
+    clarify_component = await ClarifyComponent().build(context)
+    error_component = await ErrorComponent().build(context)
+
+    assert clarify_component.data["message"]
+    assert error_component.data["message"]

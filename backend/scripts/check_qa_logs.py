@@ -8,7 +8,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.db.session import AsyncSessionLocal
 from app.models.qa_log import QALog
-from app.services.chat import qa_metrics
+from app.services.chat.observability import qa_metrics
 from sqlalchemy import select
 
 async def check_logs():

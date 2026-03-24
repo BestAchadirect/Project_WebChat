@@ -12,7 +12,9 @@ pytest.importorskip("pydantic_settings")
 from app.core.config import settings
 from app.schemas.chat import ChatRequest
 from app.services.ai.llm_service import llm_service
-from app.services.chat import alias_cache, parser_rule_cache, routing_policy
+from app.services.chat.runtime import alias_cache
+from app.services.chat.parsing import parser_rule_cache
+from app.services.chat.routing import routing_policy
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.components.types import ComponentSource
@@ -104,7 +106,7 @@ async def test_component_pipeline_merges_filters_from_conversation_state(monkeyp
             captured["attribute_filters"] = dict(kwargs["attribute_filters"])
             return (
                 SimpleNamespace(product_ids=[str(product.product_id)]),
-                {"structured_read_mode": "eav", "projection_hit": False},
+                {},
             )
 
         async def structured_count(self, **kwargs):
@@ -168,7 +170,7 @@ async def test_component_pipeline_does_not_merge_filters_when_state_disabled(mon
             captured["attribute_filters"] = dict(kwargs["attribute_filters"])
             return (
                 SimpleNamespace(product_ids=[str(product.product_id)]),
-                {"structured_read_mode": "eav", "projection_hit": False},
+                {},
             )
 
         async def structured_count(self, **kwargs):

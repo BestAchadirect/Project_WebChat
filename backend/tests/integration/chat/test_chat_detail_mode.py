@@ -11,12 +11,12 @@ pytest.importorskip("pydantic_settings")
 
 from app.core.config import settings
 from app.schemas.chat import ChatRequest
-from app.services.chat import routing_policy
+from app.services.chat.routing import routing_policy
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.components.types import ComponentSource
-from app.services.chat.detail_query_parser import DetailQuery
-from app.services.chat.product_detail_resolver import DetailResolutionResult
+from app.services.chat.parsing.detail_query_parser import DetailQuery
+from app.services.chat.retrieval.product_detail_resolver import DetailResolutionResult
 
 
 class _RedisStub:
@@ -82,7 +82,7 @@ async def test_component_pipeline_detail_mode_price_stock_returns_product_detail
 
     class _CatalogStub:
         async def structured_search(self, **kwargs):
-            return SimpleNamespace(product_ids=[str(product.product_id)]), {"structured_read_mode": "eav"}
+            return SimpleNamespace(product_ids=[str(product.product_id)]), {}
 
         async def structured_count(self, **kwargs):
             return 1
@@ -100,7 +100,7 @@ async def test_component_pipeline_detail_mode_price_stock_returns_product_detail
     async def fake_resolve(*, product_ids, component_types, redis_cache):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
-    def fake_parse(*, user_text: str, nlu_data):
+    def fake_parse(*, user_text: str, nlu_data, **_):
         return DetailQuery(
             requested_fields=["price", "stock"],
             attribute_filters={"jewelry_type": "barbell", "color": "black", "gauge": "25mm"},
@@ -144,7 +144,7 @@ async def test_component_primary_detail_path_runs_even_if_legacy_flags_are_off(
 
     class _CatalogStub:
         async def structured_search(self, **kwargs):
-            return SimpleNamespace(product_ids=[str(product.product_id)]), {"structured_read_mode": "eav"}
+            return SimpleNamespace(product_ids=[str(product.product_id)]), {}
 
         async def structured_count(self, **kwargs):
             return 1
@@ -162,7 +162,7 @@ async def test_component_primary_detail_path_runs_even_if_legacy_flags_are_off(
     async def fake_resolve(*, product_ids, component_types, redis_cache):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
-    def fake_parse(*, user_text: str, nlu_data):
+    def fake_parse(*, user_text: str, nlu_data, **_):
         return DetailQuery(
             requested_fields=["image"],
             attribute_filters={"jewelry_type": "labret"},
@@ -200,7 +200,7 @@ async def test_component_pipeline_detail_mode_no_match_has_no_follow_up_quick_re
 
     class _CatalogStub:
         async def structured_search(self, **kwargs):
-            return SimpleNamespace(product_ids=[str(product.product_id)]), {"structured_read_mode": "eav"}
+            return SimpleNamespace(product_ids=[str(product.product_id)]), {}
 
         async def structured_count(self, **kwargs):
             return 1
@@ -218,7 +218,7 @@ async def test_component_pipeline_detail_mode_no_match_has_no_follow_up_quick_re
     async def fake_resolve(*, product_ids, component_types, redis_cache):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
-    def fake_parse(*, user_text: str, nlu_data):
+    def fake_parse(*, user_text: str, nlu_data, **_):
         return DetailQuery(
             requested_fields=["stock", "attributes"],
             attribute_filters={"jewelry_type": "labret", "gauge": "1.2mm"},
@@ -289,9 +289,7 @@ async def test_component_pipeline_detail_mode_broad_price_query_requests_clarifi
 
     class _CatalogStub:
         async def structured_search(self, **kwargs):
-            return SimpleNamespace(product_ids=[str(first.product_id), str(second.product_id)]), {
-                "structured_read_mode": "eav"
-            }
+            return SimpleNamespace(product_ids=[str(first.product_id), str(second.product_id)]), {}
 
         async def structured_count(self, **kwargs):
             return 2
@@ -315,7 +313,7 @@ async def test_component_pipeline_detail_mode_broad_price_query_requests_clarifi
                 ordered.append(second)
         return ordered, {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
-    def fake_parse(*, user_text: str, nlu_data):
+    def fake_parse(*, user_text: str, nlu_data, **_):
         return DetailQuery(
             requested_fields=["price"],
             attribute_filters={"jewelry_type": "labret"},

@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("pydantic_settings")
 
-from app.services.chat import regression_eval
+from app.services.chat.observability import regression_eval
 
 
 DATASET_PATH = Path(__file__).parent / "data" / "chat_regression_cases.json"

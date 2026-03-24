@@ -11,29 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.product import Product
 from app.models.product_search_projection import ProductSearchProjection
 from app.services.catalog.attributes_service import eav_service
+from app.services.catalog.search_policy import (
+    JEWELRY_TYPE_FALLBACK_TOKENS,
+    MATERIAL_FALLBACK_TOKENS,
+)
 from app.services.catalog.attribute_sync_service import product_attribute_sync_service
 
 
 class ProductProjectionSyncService:
-    _MATERIAL_FALLBACK_TOKENS: Dict[str, List[str]] = {
-        "Titanium G23": ["titanium g23", "g23", "implant grade", "implant-grade", "implant"],
-        "Titanium": ["titanium"],
-        "Steel": ["surgical steel", "stainless steel", "316l", "steel"],
-        "Gold": ["gold"],
-        "Silver": ["silver"],
-        "Niobium": ["niobium"],
-        "Acrylic": ["acrylic"],
-    }
-    _JEWELRY_TYPE_FALLBACK_TOKENS: Dict[str, List[str]] = {
-        "Barbell": ["barbell", "barbells"],
-        "Circular Barbell": ["circular barbell", "horseshoe"],
-        "Labret": ["labret", "labrets"],
-        "Ring": ["ring", "rings"],
-        "Stud": ["stud", "studs"],
-        "Tunnel": ["tunnel", "tunnels"],
-        "Plug": ["plug", "plugs"],
-    }
-
     @staticmethod
     def _norm(value: Any) -> str:
         text = str(value or "").strip().lower()
@@ -51,7 +36,12 @@ class ProductProjectionSyncService:
         return attrs
 
     @classmethod
-    def _infer_from_search_text(cls, *, search_text: str, token_map: Dict[str, List[str]]) -> Optional[str]:
+    def _infer_from_search_text(
+        cls,
+        *,
+        search_text: str,
+        token_map: Mapping[str, Sequence[str]],
+    ) -> Optional[str]:
         text = cls._norm(search_text)
         if not text:
             return None
@@ -106,7 +96,7 @@ class ProductProjectionSyncService:
         if not material_norm:
             inferred = cls._infer_from_search_text(
                 search_text=search_text_norm,
-                token_map=cls._MATERIAL_FALLBACK_TOKENS,
+                token_map=MATERIAL_FALLBACK_TOKENS,
             )
             material_norm = cls._norm(inferred)
 
@@ -114,7 +104,7 @@ class ProductProjectionSyncService:
         if not jewelry_type_norm:
             inferred = cls._infer_from_search_text(
                 search_text=search_text_norm,
-                token_map=cls._JEWELRY_TYPE_FALLBACK_TOKENS,
+                token_map=JEWELRY_TYPE_FALLBACK_TOKENS,
             )
             jewelry_type_norm = cls._norm(inferred)
 

@@ -19,6 +19,7 @@ class ProductCard(BaseModel):
     image_url: Optional[str] = None
     product_url: Optional[str] = None
     attributes: Dict[str, Any] = {}
+    search_text: Optional[str] = Field(default=None, exclude=True)
 
 
 class KnowledgeSource(BaseModel):

@@ -6,7 +6,8 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ChatResponse, ChatRouting, KnowledgeSource, ProductCard
-from app.services.chat import persistence, qa_metrics
+from app.services.chat.runtime import persistence
+from app.services.chat.observability import qa_metrics
 from tests.fixtures.persistence import PersistenceDB
 
 

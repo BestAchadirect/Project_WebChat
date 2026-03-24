@@ -763,9 +763,22 @@ const ChatComponentsRenderer: React.FC<{
 
                 if (type === 'knowledge_answer') {
                     const answer = asString(data.answer).trim();
-                    if (!answer || answer === message.content.trim()) return null;
+                    if (!answer) return null;
+                    const assistantText = message.content.trim();
+                    const answerLower = answer.toLowerCase();
+                    const assistantLower = assistantText.toLowerCase();
+                    const isDuplicate =
+                        answer === assistantText ||
+                        (assistantLower.length > 0 && answerLower.length > 0 && assistantLower.includes(answerLower));
+                    if (isDuplicate) return null;
                     return (
-                        <div key={`${type}-${index}`} className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800">
+                        <div
+                            key={`${type}-${index}`}
+                            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800"
+                        >
+                            <div className="text-[10px] uppercase tracking-wider font-bold text-gray-400 mb-1">
+                                Knowledge
+                            </div>
                             <span className="whitespace-pre-wrap">{answer}</span>
                         </div>
                     );

@@ -11,6 +11,7 @@ from app.services.chat.agentic.tool_registry import (
     SearchProductsArgs,
     AgentToolRegistry,
 )
+from app.services.chat.agentic.tool_handlers import paginate_items
 
 
 def test_search_products_args_accepts_page_size_alias() -> None:
@@ -66,4 +67,19 @@ def test_is_tool_suitable_for_inventory_query() -> None:
         sku_token=None,
     )
     assert result is True
+
+
+def test_paginate_items_clamps_page_size_to_max_items() -> None:
+    items = list(range(15))
+    page_items, total_items, safe_page, total_pages = paginate_items(
+        items,
+        page=2,
+        page_size=20,
+        max_items=10,
+    )
+
+    assert total_items == 15
+    assert safe_page == 2
+    assert total_pages == 2
+    assert page_items == list(range(10, 15))
 

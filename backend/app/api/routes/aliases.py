@@ -13,7 +13,7 @@ from app.schemas.chat_alias import (
     SynonymGroup,
     SynonymUpdateRequest,
 )
-from app.services.chat import alias_cache
+from app.services.chat.runtime import alias_cache
 from app.models.product_attribute import AttributeDefinition
 
 router = APIRouter()

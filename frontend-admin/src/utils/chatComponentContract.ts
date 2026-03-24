@@ -39,6 +39,10 @@ export const buildFallbackAssistantComponents = (text: string): ChatComponentLik
     return [{ type: 'assistant_message', data: { text: trimmed } }];
 };
 
+export const hasAssistantMessageComponent = (components: ChatComponentLike[]): boolean => {
+    return components.some((item) => item.type === 'assistant_message' && String(item.data.text || '').trim() !== '');
+};
+
 export const getAssistantMessageText = (components: ChatComponentLike[]): string => {
     const preferredTypes = [
         'assistant_message',

@@ -14,9 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.product import Product, ProductEmbedding, StockStatus
 from app.models.product_attribute import ProductAttributeValue
-from app.models.product_search_projection import ProductSearchProjection
 from app.schemas.chat import ProductCard
 from app.services.catalog.attributes_service import eav_service
+from app.services.catalog.search_policy import (
+    JEWELRY_TYPE_FALLBACK_TOKENS,
+    MATERIAL_FALLBACK_TOKENS,
+    uses_eav_partial_match,
+)
+from app.services.chat.parsing.attribute_normalization import normalize_text
+from app.services.chat.parsing.search_policy import normalize_filter_map
 
 
 @dataclass
@@ -37,43 +43,24 @@ class _StructuredCacheEntry:
 class CatalogProductSearchService:
     """Shared product retrieval service for chat and agentic tools."""
 
-    _MATERIAL_FALLBACK_TOKENS: Dict[str, List[str]] = {
-        "Titanium G23": ["titanium g23", "g23", "implant grade", "implant-grade"],
-        "Titanium": ["titanium"],
-        "Steel": ["surgical steel", "stainless steel", "316l", "steel"],
-        "Gold": ["gold"],
-        "Silver": ["silver"],
-        "Niobium": ["niobium"],
-        "Acrylic": ["acrylic"],
+    _LEXICAL_NOISE_TOKENS = {
+        "buy",
+        "have",
+        "item",
+        "items",
+        "jewelry",
+        "need",
+        "please",
+        "product",
+        "products",
+        "show",
+        "want",
     }
-    _JEWELRY_TYPE_FALLBACK_TOKENS: Dict[str, List[str]] = {
-        "Barbell": ["barbell", "barbells"],
-        "Circular Barbell": ["circular barbell", "horseshoe"],
-        "Labret": ["labret", "labrets"],
-        "Ring": ["ring", "rings"],
-        "Stud": ["stud", "studs"],
-        "Tunnel": ["tunnel", "tunnels"],
-        "Plug": ["plug", "plugs"],
-    }
+
     _FILTER_KEY_ALIASES: Dict[str, str] = {
         "type": "jewelry_type",
         "types": "jewelry_type",
         "diameter": "outer_diameter",
-    }
-    _EAV_PARTIAL_MATCH_KEYS = {
-        "category",
-        "color",
-        "crystal_color",
-        "cz_color",
-        "design",
-        "finish",
-        "jewelry_type",
-        "material",
-        "opal_color",
-        "packing_option",
-        "pearl_color",
-        "rack",
-        "threading",
     }
 
     def __init__(self, db: AsyncSession):
@@ -105,19 +92,14 @@ class CatalogProductSearchService:
 
     @staticmethod
     def _normalize_filter_map(attribute_filters: Optional[Dict[str, str]]) -> Dict[str, str]:
-        out: Dict[str, str] = {}
-        for key, value in (attribute_filters or {}).items():
-            clean_key = str(key or "").strip().lower()
-            clean_key = CatalogProductSearchService._FILTER_KEY_ALIASES.get(clean_key, clean_key)
-            clean_value = str(value or "").strip()
-            if not clean_key or not clean_value:
-                continue
-            out[clean_key] = clean_value
-        return out
+        return normalize_filter_map(
+            attribute_filters,
+            key_aliases=CatalogProductSearchService._FILTER_KEY_ALIASES,
+        )
 
     @staticmethod
     def _normalize_filter_value(value: str) -> str:
-        return str(value or "").strip().lower()
+        return normalize_text(value)
 
     @staticmethod
     def _like_condition(column, expected_norm: str):
@@ -133,7 +115,7 @@ class CatalogProductSearchService:
     @classmethod
     def _eav_filter_condition(cls, *, attribute_id: int, key: str, expected_norm: str):
         value_expr = cls._eav_value_expr()
-        if key in cls._EAV_PARTIAL_MATCH_KEYS:
+        if uses_eav_partial_match(key):
             return and_(
                 ProductAttributeValue.attribute_id == attribute_id,
                 value_expr.like(f"%{expected_norm}%"),
@@ -143,29 +125,6 @@ class CatalogProductSearchService:
             value_expr == expected_norm,
         )
 
-    @classmethod
-    def _projection_filter_condition(cls, *, key: str, expected_norm: str):
-        if not expected_norm:
-            return None
-        if key == "material":
-            return or_(
-                cls._like_condition(ProductSearchProjection.material_norm, expected_norm),
-                cls._like_condition(ProductSearchProjection.search_text_norm, expected_norm),
-            )
-        if key == "jewelry_type":
-            return cls._like_condition(ProductSearchProjection.jewelry_type_norm, expected_norm)
-        if key == "gauge":
-            return func.lower(func.coalesce(ProductSearchProjection.gauge_norm, "")) == expected_norm
-        if key == "threading":
-            return func.lower(func.coalesce(ProductSearchProjection.threading_norm, "")) == expected_norm
-        if key == "color":
-            return or_(
-                cls._like_condition(ProductSearchProjection.color_norm, expected_norm),
-                cls._like_condition(ProductSearchProjection.opal_color_norm, expected_norm),
-                cls._like_condition(ProductSearchProjection.search_text_norm, expected_norm),
-            )
-        return cls._like_condition(ProductSearchProjection.search_text_norm, expected_norm)
-
     @staticmethod
     def _structured_cache_key(
         *,
@@ -174,7 +133,6 @@ class CatalogProductSearchService:
         limit: int,
         candidate_cap: int,
         catalog_version: str,
-        read_mode: str,
     ) -> str:
         payload = {
             "sku_token": str(sku_token or "").strip().lower(),
@@ -182,7 +140,6 @@ class CatalogProductSearchService:
             "limit": int(limit),
             "candidate_cap": int(candidate_cap),
             "catalog_version": str(catalog_version or "").strip().lower(),
-            "read_mode": str(read_mode or "").strip().lower(),
         }
         raw = json.dumps(payload, ensure_ascii=True, sort_keys=True)
         return raw
@@ -254,7 +211,7 @@ class CatalogProductSearchService:
         if not str(attrs.get("material") or "").strip():
             inferred_material = self._infer_from_search_text(
                 search_text=search_text,
-                token_map=self._MATERIAL_FALLBACK_TOKENS,
+                token_map=MATERIAL_FALLBACK_TOKENS,
             )
             if inferred_material:
                 attrs["material"] = inferred_material
@@ -262,7 +219,7 @@ class CatalogProductSearchService:
         if not str(attrs.get("jewelry_type") or attrs.get("type") or "").strip():
             inferred_type = self._infer_from_search_text(
                 search_text=search_text,
-                token_map=self._JEWELRY_TYPE_FALLBACK_TOKENS,
+                token_map=JEWELRY_TYPE_FALLBACK_TOKENS,
             )
             if inferred_type:
                 attrs["jewelry_type"] = inferred_type
@@ -280,13 +237,14 @@ class CatalogProductSearchService:
             image_url=product.image_url,
             product_url=product.product_url,
             attributes=attrs,
+            search_text=product.search_text,
         )
 
     @staticmethod
     def _infer_from_search_text(
         *,
         search_text: str,
-        token_map: Dict[str, List[str]],
+        token_map: Dict[str, Sequence[str]],
     ) -> Optional[str]:
         text = str(search_text or "").strip().lower()
         if not text:
@@ -301,6 +259,27 @@ class CatalogProductSearchService:
     @staticmethod
     def _clean_code_candidate(token: str) -> str:
         return token.strip().strip(".,;:()[]{}")
+
+    @classmethod
+    def _significant_query_terms(cls, text: str) -> List[str]:
+        normalized = normalize_text(text)
+        if not normalized:
+            return []
+        terms: List[str] = []
+        seen: set[str] = set()
+        for raw in normalized.split():
+            token = str(raw or "").strip().lower()
+            if len(token) < 4 or token in cls._LEXICAL_NOISE_TOKENS:
+                continue
+            if token not in seen:
+                seen.add(token)
+                terms.append(token)
+            if len(token) >= 7:
+                prefix = token[:6]
+                if prefix and prefix not in seen:
+                    seen.add(prefix)
+                    terms.append(prefix)
+        return terms
 
     async def _cards_from_products(self, products: Sequence[Product]) -> List[ProductCard]:
         if not products:
@@ -459,6 +438,93 @@ class CatalogProductSearchService:
         self.last_metrics["db_product_lookup_ms"] = precheck_db_ms + vector_db_ms
         return result
 
+    async def lexical_search(
+        self,
+        *,
+        query_text: str,
+        limit: int = 10,
+        candidate_limit: Optional[int] = None,
+    ) -> ProductSearchResult:
+        self._reset_metrics()
+        normalized_query = normalize_text(query_text)
+        if not normalized_query:
+            return ProductSearchResult(cards=[], distances=[], best_distance=None, distance_by_id={})
+
+        cap = max(limit, candidate_limit or 0)
+        if cap <= 0:
+            cap = max(limit, min(60, limit * 4))
+
+        document_text = func.concat_ws(
+            " ",
+            func.coalesce(Product.search_text, ""),
+            func.coalesce(Product.description, ""),
+            func.coalesce(Product.master_code, ""),
+            func.coalesce(Product.sku, ""),
+        )
+        document = func.to_tsvector(
+            "english",
+            document_text,
+        )
+        query = func.websearch_to_tsquery("english", normalized_query)
+        rank = func.ts_rank_cd(document, query).label("rank")
+
+        stmt = (
+            select(Product, rank)
+            .where(Product.is_active.is_(True))
+            .where(document.op("@@")(query))
+            .order_by(
+                case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
+                rank.desc(),
+            )
+            .limit(cap)
+        )
+
+        lexical_started = time.perf_counter()
+        result = await self.db.execute(stmt)
+        rows = result.all()
+        self._add_metric("db_product_lookup_ms", (time.perf_counter() - lexical_started) * 1000.0)
+        if not rows:
+            search_blob = func.lower(document_text)
+            score_expr = None
+            for term in self._significant_query_terms(normalized_query):
+                condition = case((search_blob.like(f"%{term}%"), 1.0), else_=0.0)
+                score_expr = condition if score_expr is None else score_expr + condition
+            if score_expr is not None:
+                fallback_rank = score_expr.label("rank")
+                fallback_stmt = (
+                    select(Product, fallback_rank)
+                    .where(Product.is_active.is_(True))
+                    .where(fallback_rank > 0)
+                    .order_by(
+                        case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
+                        fallback_rank.desc(),
+                    )
+                    .limit(cap)
+                )
+                fallback_started = time.perf_counter()
+                fallback_result = await self.db.execute(fallback_stmt)
+                rows = fallback_result.all()
+                self._add_metric("db_product_lookup_ms", (time.perf_counter() - fallback_started) * 1000.0)
+        if not rows:
+            return ProductSearchResult(cards=[], distances=[], best_distance=None, distance_by_id={})
+
+        ranked_rows: List[Tuple[Product, float]] = [
+            (product, float(score or 0.0)) for product, score in rows[:limit]
+        ]
+        cards_started = time.perf_counter()
+        cards = await self._cards_from_products([product for product, _score in ranked_rows])
+        self._add_metric("db_product_lookup_ms", (time.perf_counter() - cards_started) * 1000.0)
+        score_by_id = {str(product.id): score for product, score in ranked_rows}
+        scores = [score for _product, score in ranked_rows]
+        best_score = max(scores) if scores else None
+
+        return ProductSearchResult(
+            cards=cards,
+            distances=[],
+            best_distance=best_score,
+            distance_by_id=score_by_id,
+        )
+
     async def structured_search(
         self,
         *,
@@ -474,8 +540,6 @@ class CatalogProductSearchService:
         cap = max(50, int(candidate_cap or getattr(settings, "CHAT_STRUCTURED_CANDIDATE_CAP", 300)))
         clean_sku = self._clean_code_candidate(str(sku_token or ""))
         catalog_ver = str(catalog_version or getattr(settings, "CHAT_CATALOG_VERSION", "v1"))
-        projection_read_enabled = bool(getattr(settings, "CHAT_PROJECTION_READ_ENABLED", False))
-        read_mode = "projection" if projection_read_enabled else "eav"
 
         cache_key = self._structured_cache_key(
             sku_token=clean_sku,
@@ -483,16 +547,12 @@ class CatalogProductSearchService:
             limit=limit,
             candidate_cap=cap,
             catalog_version=catalog_ver,
-            read_mode=read_mode,
         )
         cached_payload = self._structured_cache_get(cache_key)
         if isinstance(cached_payload, dict):
             cached_product_ids = [item for item in list(cached_payload.get("product_ids", []) or []) if item]
             cached_cards = [] if return_ids_only else [ProductCard(**item) for item in list(cached_payload.get("cards", []) or [])]
             distance_by_id = {str(card.id): 0.0 for card in cached_cards}
-            cached_projection_hit = bool(cached_payload.get("projection_hit", False))
-            cached_projection_ms = float(cached_payload.get("projection_lookup_ms", 0.0) or 0.0)
-            cached_resolved_mode = str(cached_payload.get("structured_read_mode") or read_mode)
             self.last_meta["structured_query_cache_hit"] = True
             return (
                 ProductSearchResult(
@@ -507,53 +567,10 @@ class CatalogProductSearchService:
                     "structured_candidate_cap": cap,
                     "structured_filter_count": len(clean_filters),
                     "structured_used_sku": bool(clean_sku),
-                    "projection_hit": cached_projection_hit,
-                    "projection_lookup_ms": cached_projection_ms,
-                    "structured_read_mode": cached_resolved_mode,
                 },
             )
 
         candidates: List[Product] = []
-        projection_hit = False
-        projection_lookup_ms = 0.0
-        resolved_mode = "eav"
-
-        if projection_read_enabled:
-            projection_started = time.perf_counter()
-            try:
-                projection_stmt = (
-                    select(Product)
-                    .join(ProductSearchProjection, ProductSearchProjection.product_id == Product.id)
-                    .where(Product.is_active.is_(True))
-                    .where(ProductSearchProjection.is_active.is_(True))
-                )
-                if clean_sku:
-                    projection_stmt = projection_stmt.where(
-                        func.lower(ProductSearchProjection.sku_norm) == clean_sku.lower()
-                    )
-
-                for key, expected in clean_filters.items():
-                    expected_norm = self._normalize_filter_value(expected)
-                    condition = self._projection_filter_condition(key=key, expected_norm=expected_norm)
-                    if condition is not None:
-                        projection_stmt = projection_stmt.where(condition)
-
-                projection_stmt = projection_stmt.order_by(
-                    case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
-                    Product.created_at.desc(),
-                ).limit(max(1, min(cap, 2000)))
-                projection_result = await self.db.execute(projection_stmt)
-                candidates = list(projection_result.scalars().all())
-                projection_hit = bool(candidates)
-                resolved_mode = "projection" if projection_hit else "projection_fallback_eav"
-            except Exception:
-                candidates = []
-                projection_hit = False
-                resolved_mode = "projection_unavailable_fallback_eav"
-            finally:
-                projection_lookup_ms = (time.perf_counter() - projection_started) * 1000.0
-                self._add_metric("db_product_lookup_ms", projection_lookup_ms)
-
         lookup_started = time.perf_counter()
         if not candidates and clean_sku:
             sku_stmt = (
@@ -691,9 +708,6 @@ class CatalogProductSearchService:
         payload = {
             "cards": [card.dict() for card in cards],
             "product_ids": [str(pid) for pid in product_ids],
-            "projection_hit": projection_hit,
-            "projection_lookup_ms": round(float(projection_lookup_ms), 2),
-            "structured_read_mode": resolved_mode if projection_read_enabled else "eav",
         }
         self._structured_cache_set(cache_key, payload)
 
@@ -710,9 +724,6 @@ class CatalogProductSearchService:
                 "structured_candidate_cap": cap,
                 "structured_filter_count": len(clean_filters),
                 "structured_used_sku": bool(clean_sku),
-                "projection_hit": projection_hit,
-                "projection_lookup_ms": round(float(projection_lookup_ms), 2),
-                "structured_read_mode": resolved_mode if projection_read_enabled else "eav",
             },
         )
 
@@ -724,32 +735,6 @@ class CatalogProductSearchService:
     ) -> int:
         clean_filters = self._normalize_filter_map(attribute_filters)
         clean_sku = self._clean_code_candidate(str(sku_token or ""))
-        projection_read_enabled = bool(getattr(settings, "CHAT_PROJECTION_READ_ENABLED", False))
-
-        if projection_read_enabled:
-            try:
-                projection_stmt = (
-                    select(func.count(func.distinct(Product.id)))
-                    .select_from(Product)
-                    .join(ProductSearchProjection, ProductSearchProjection.product_id == Product.id)
-                    .where(Product.is_active.is_(True))
-                    .where(ProductSearchProjection.is_active.is_(True))
-                )
-                if clean_sku:
-                    projection_stmt = projection_stmt.where(
-                        func.lower(ProductSearchProjection.sku_norm) == clean_sku.lower()
-                    )
-                for key, expected in clean_filters.items():
-                    condition = self._projection_filter_condition(
-                        key=key,
-                        expected_norm=self._normalize_filter_value(expected),
-                    )
-                    if condition is not None:
-                        projection_stmt = projection_stmt.where(condition)
-                result = await self.db.execute(projection_stmt)
-                return int(result.scalar() or 0)
-            except Exception:
-                pass
 
         if clean_sku:
             stmt = (

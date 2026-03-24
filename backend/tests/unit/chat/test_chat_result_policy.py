@@ -1,30 +1,4 @@
-from app.services.chat.result_policy import classify_match_tier, semantic_fallback_decision
-
-
-def test_result_policy_blocks_semantic_fallback_for_detail_mode() -> None:
-    decision = semantic_fallback_decision(
-        workflow="catalog",
-        attribute_filters={},
-        sku_tokens=[],
-        detail_mode=True,
-        store_overview_request=False,
-    )
-
-    assert decision.allow is False
-    assert decision.reason == "detail_mode"
-
-
-def test_result_policy_allows_semantic_fallback_for_discovery_query() -> None:
-    decision = semantic_fallback_decision(
-        workflow="recommendation",
-        attribute_filters={},
-        sku_tokens=[],
-        detail_mode=False,
-        store_overview_request=False,
-    )
-
-    assert decision.allow is True
-    assert decision.reason == "discovery_query"
+from app.services.chat.retrieval.result_policy import classify_match_tier
 
 
 def test_result_policy_classifies_match_tiers() -> None:

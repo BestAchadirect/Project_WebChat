@@ -10,8 +10,8 @@ pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ChatComponent, ChatRequest, KnowledgeSource, ProductCard
 from app.services.ai.llm_service import llm_service
-from app.services.chat import routing_policy
-from app.services.chat import product_presentation
+from app.services.chat.routing import routing_policy
+from app.services.chat.presentation import product_presentation
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.pipeline import ComponentPipeline
@@ -40,6 +40,8 @@ def _workflow_decision(
     workflow: str,
     *,
     store_overview_request: bool = False,
+    needs_knowledge: bool | None = None,
+    knowledge_query: str = "",
 ) -> routing_policy.WorkflowDecision:
     source = ComponentSource.KNOWLEDGE if workflow == "knowledge" else ComponentSource.SQL
     if workflow == "fallback":
@@ -48,9 +50,10 @@ def _workflow_decision(
         workflow=workflow,
         source=source,
         needs_products=workflow in {"catalog", "recommendation"},
-        needs_knowledge=workflow == "knowledge",
+        needs_knowledge=workflow == "knowledge" if needs_knowledge is None else bool(needs_knowledge),
         needs_clarification=workflow == "fallback",
         store_overview_request=store_overview_request,
+        knowledge_query=knowledge_query,
         reason="test_override",
         confidence=1.0,
     )
@@ -95,7 +98,7 @@ def test_product_presentation_builds_extended_filter_copy() -> None:
     assert follow_up == ""
 
 
-def test_component_pipeline_derive_legacy_uses_attribute_copy_and_see_more() -> None:
+def test_component_pipeline_build_component_contract_uses_attribute_copy_and_see_more() -> None:
     context = ComponentContext(
         user_text="I am looking for Gold product",
         locale="en-US",
@@ -112,7 +115,8 @@ def test_component_pipeline_derive_legacy_uses_attribute_copy_and_see_more() -> 
     )
     components = [ChatComponent(type="product_cards", data={"cards": [{}]})]
 
-    payload = ComponentPipeline._derive_legacy(context=context, components=components)
+    payload = ComponentPipeline._build_component_contract(context=context, components=components)
+    payload["reply_text"] = str(payload["assistant_text"])
 
     reply_text = str(payload["reply_text"]).lower()
     assert "gold" in reply_text
@@ -170,7 +174,7 @@ async def test_component_pipeline_uses_complementary_mapping_for_recommendation_
 
     class _CatalogStub:
         async def structured_search(self, **kwargs):
-            return SimpleNamespace(product_ids=[anchor.product_id]), {"structured_read_mode": "eav", "projection_hit": False}
+            return SimpleNamespace(product_ids=[anchor.product_id]), {}
 
         async def structured_count(self, **kwargs):
             return 1
@@ -397,3 +401,171 @@ async def test_component_pipeline_store_overview_knowledge_answer_prefers_struct
     assert "bangkok" in answer.lower()
     assert ("address" in answer.lower()) or ("contact" in answer.lower())
     assert not answer.lower().startswith("here is what i found:")
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_catalog_mixed_intent_adds_knowledge_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product = _canonical_product(sku="BB-1", title="Steel Barbell", master_code="BB-1")
+    source = KnowledgeSource(
+        source_id="kb-hours",
+        title="Showroom Hours",
+        category="Contact",
+        content_snippet="Our Bangkok showroom is open Monday to Saturday from 10 AM to 6 PM.",
+        relevance=0.92,
+        url="https://example.com/hours",
+        distance=0.08,
+    )
+
+    class _RedisStub:
+        async def get_json(self, key):
+            return None
+
+        async def set_json(self, key, value, ttl_seconds=0):
+            return None
+
+    class _KnowledgeStub:
+        async def search(self, *args, **kwargs):
+            return [source]
+
+    class _CatalogStub:
+        async def structured_count(self, **kwargs):
+            return 0
+
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(
+                product_ids=[str(product.product_id)],
+                cards=[],
+                distance_by_id={str(product.product_id): 0.08},
+                best_distance=0.08,
+            )
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_resolve(*, product_ids, component_types, redis_cache):
+        return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    async def fake_generate_embedding(text: str):
+        return [0.1, 0.2, 0.3]
+
+    async def fake_knowledge_answer_once(**kwargs):
+        assert "open" in str(kwargs.get("question") or "").lower()
+        return "Our Bangkok showroom is open Monday to Saturday, 10 AM to 6 PM.", False
+
+    monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
+    monkeypatch.setattr(pipeline, "_knowledge_answer_once", fake_knowledge_answer_once)
+
+    result = await pipeline.run(
+        request=ChatRequest(
+            user_id="guest-1",
+            message="I want to buy barbell product and also next week i'm going to thailand when are your store going to open?",
+            locale="en-US",
+        ),
+        conversation_id=42,
+        run_id="run-mixed-intent-catalog-knowledge",
+        route_decision_override=_workflow_decision(
+            "catalog",
+            needs_knowledge=True,
+            knowledge_query="when is your Thailand showroom open next week",
+        ),
+    )
+
+    component_types = [component.type.value for component in list(result.response.components or [])]
+    assert result.response.routing.workflow == "catalog"
+    assert "product_cards" in component_types
+    assert "knowledge_answer" in component_types
+    assert "barbell" in result.response.reply_text.lower()
+    assert "bangkok showroom is open" in result.response.reply_text.lower()
+    assert result.response.sources and result.response.sources[0].source_id == "kb-hours"
+    assert result.debug.get("mixed_intent_knowledge_used") is True
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_catalog_mixed_intent_adds_payment_knowledge_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product = _canonical_product(sku="TI-1", title="Titanium Labret", master_code="TI-1")
+    source = KnowledgeSource(
+        source_id="kb-payment",
+        title="Payment Methods",
+        category="Policy",
+        content_snippet="We accept credit card, bank transfer, and PayPal.",
+        relevance=0.95,
+        url="https://example.com/payment",
+        distance=0.05,
+    )
+
+    class _RedisStub:
+        async def get_json(self, key):
+            return None
+
+        async def set_json(self, key, value, ttl_seconds=0):
+            return None
+
+    class _KnowledgeStub:
+        async def search(self, *args, **kwargs):
+            return [source]
+
+    class _CatalogStub:
+        async def structured_count(self, **kwargs):
+            return 0
+
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(
+                product_ids=[str(product.product_id)],
+                cards=[],
+                distance_by_id={str(product.product_id): 0.07},
+                best_distance=0.07,
+            )
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_resolve(*, product_ids, component_types, redis_cache):
+        return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    async def fake_generate_embedding(text: str):
+        return [0.2, 0.3, 0.4]
+
+    async def fake_knowledge_answer_once(**kwargs):
+        assert "payment" in str(kwargs.get("question") or "").lower()
+        return "We accept credit card, bank transfer, and PayPal.", False
+
+    monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
+    monkeypatch.setattr(pipeline, "_knowledge_answer_once", fake_knowledge_answer_once)
+
+    result = await pipeline.run(
+        request=ChatRequest(
+            user_id="guest-1",
+            message="Show me titanium jewelry and also what payment methods do you accept?",
+            locale="en-US",
+        ),
+        conversation_id=43,
+        run_id="run-mixed-intent-payment",
+        route_decision_override=_workflow_decision(
+            "catalog",
+            needs_knowledge=True,
+            knowledge_query="what payment methods do you accept",
+        ),
+    )
+
+    component_types = [component.type.value for component in list(result.response.components or [])]
+    assert result.response.routing.workflow == "catalog"
+    assert "product_cards" in component_types
+    assert "knowledge_answer" in component_types
+    assert "titanium" in result.response.reply_text.lower()
+    assert "bank transfer" in result.response.reply_text.lower()
+    assert result.response.sources and result.response.sources[0].source_id == "kb-payment"
+    assert result.debug.get("mixed_intent_knowledge_used") is True

@@ -7,7 +7,7 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ProductCard
-from app.services.chat.recommendation_service import RecommendationService
+from app.services.chat.retrieval.recommendation_service import RecommendationService
 
 
 def _card(

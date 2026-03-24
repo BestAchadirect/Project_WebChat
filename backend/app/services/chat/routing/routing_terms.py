@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+TIMEOUT_KNOWLEDGE_TERMS = (
+    "contact",
+    "email",
+    "phone",
+    "address",
+    "location",
+    "where is",
+    "where are",
+    "support",
+    "sales",
+    "shipping",
+    "refund",
+    "return policy",
+    "payment",
+    "warranty",
+    "company",
+    "store",
+    "buy in person",
+)
+
+TIMEOUT_RECOMMENDATION_TERMS = (
+    "recommend",
+    "suggest",
+    "any ideas",
+    "what should i get",
+)
+
+TIMEOUT_CATALOG_TERMS = (
+    "do you have",
+    "show me",
+    "looking for",
+    "find",
+    "search",
+    "product",
+    "products",
+    "item",
+    "items",
+    "titanium",
+    "steel",
+    "gold",
+    "silver",
+    "opal",
+    "labret",
+    "barbell",
+    "ring",
+    "gauge",
+    "size",
+    "color",
+    "finish",
+    "threading",
+    "sterilized",
+    "sterilization",
+)

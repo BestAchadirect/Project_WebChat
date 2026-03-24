@@ -5,7 +5,7 @@ import pytest
 
 from app.core.config import settings
 from app.services.ai.llm_service import llm_service
-from app.services.chat import routing_policy
+from app.services.chat.routing import routing_policy
 
 
 def test_extract_sku_tokens_dedupes_and_filters_noise() -> None:
@@ -51,7 +51,6 @@ async def test_llm_routing_returns_catalog_workflow_when_valid(monkeypatch: pyte
         }
 
     monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
-    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_SHADOW_MODE", False)
     monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
     monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
 
@@ -69,6 +68,7 @@ async def test_llm_routing_returns_catalog_workflow_when_valid(monkeypatch: pyte
     assert decision.execution_mode == "component"
     assert decision.selection_source == "llm"
     assert decision.llm_workflow == "catalog"
+    assert decision.route_decision.knowledge_query == ""
 
 
 @pytest.mark.asyncio
@@ -86,7 +86,6 @@ async def test_llm_routing_returns_off_topic_workflow_when_valid(monkeypatch: py
         }
 
     monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
-    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_SHADOW_MODE", False)
     monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
     monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
 
@@ -106,6 +105,7 @@ async def test_llm_routing_returns_off_topic_workflow_when_valid(monkeypatch: py
     assert decision.execution_mode == "component"
     assert decision.selection_source == "llm"
     assert decision.llm_workflow == "off_topic"
+    assert decision.route_decision.knowledge_query == ""
 
 
 @pytest.mark.asyncio
@@ -353,3 +353,73 @@ async def test_llm_routing_prompt_includes_company_and_recommendation_examples(
     assert 'User: "what is your company?"' in system_prompt
     assert 'User: "Do you have any product suggest?"' in system_prompt
     assert 'User: "Can you do coding. and who are you? are you an ai?"' in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_llm_routing_keeps_location_knowledge_query_for_mixed_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        return {
+            "workflow": "catalog",
+            "execution_mode": "component",
+            "needs_products": True,
+            "needs_knowledge": True,
+            "needs_clarification": False,
+            "store_overview_request": False,
+            "knowledge_query": "when is your Thailand showroom open next week",
+            "reason": "mixed request with store-hours follow-up",
+            "confidence": 0.93,
+        }
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="I want to buy barbell product and also next week i'm going to thailand when are your store going to open?",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "catalog"
+    assert decision.route_decision.needs_knowledge is True
+    assert decision.route_decision.knowledge_query == "when is your Thailand showroom open next week"
+
+
+@pytest.mark.asyncio
+async def test_llm_routing_keeps_payment_knowledge_query_for_mixed_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        return {
+            "workflow": "catalog",
+            "execution_mode": "component",
+            "needs_products": True,
+            "needs_knowledge": True,
+            "needs_clarification": False,
+            "store_overview_request": False,
+            "knowledge_query": "what payment methods do you accept",
+            "reason": "mixed request with payment follow-up",
+            "confidence": 0.93,
+        }
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="Show me titanium jewelry and also what payment methods do you accept?",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "catalog"
+    assert decision.route_decision.needs_knowledge is True
+    assert decision.route_decision.knowledge_query == "what payment methods do you accept"

@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ProductCard
-from app.services.chat import follow_up_policy
+from app.services.chat.retrieval import follow_up_policy
 from app.services.chat.service import ChatService
 
 STOPWORDS = {"show", "for", "the", "and", "with", "you", "me", "what"}
