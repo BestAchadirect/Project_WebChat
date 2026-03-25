@@ -107,7 +107,14 @@ class PipelineWorkflowDetailMixin:
         debug_meta["raw_product_row_count"] = int(len(state.canonical_products))
         debug_meta["product_unique_master_count"] = int(total_unique_products)
         debug_meta["product_display_count"] = int(len(display_products))
-        debug_meta["product_overflow_available"] = bool(total_unique_products > len(display_products))
+        if not bool(getattr(state, "pagination_requested", False)):
+            state.pagination_offset = 0
+            state.pagination_limit = int(display_limit)
+            state.pagination_has_more = bool(total_unique_products > len(display_products))
+        debug_meta["product_overflow_available"] = bool(getattr(state, "pagination_has_more", False))
+        debug_meta["catalog_pagination_offset"] = int(getattr(state, "pagination_offset", 0) or 0)
+        debug_meta["catalog_pagination_limit"] = int(getattr(state, "pagination_limit", display_limit) or display_limit)
+        debug_meta["catalog_pagination_has_more"] = bool(getattr(state, "pagination_has_more", False))
         state.canonical_products = list(display_products)
         state.result_count = max(int(state.result_count or 0), int(total_unique_products))
         if recommendation_requested and not state.recommendations:

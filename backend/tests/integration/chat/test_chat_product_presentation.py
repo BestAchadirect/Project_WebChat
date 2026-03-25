@@ -8,14 +8,17 @@ import pytest
 
 pytest.importorskip("pydantic_settings")
 
+from app.core.config import settings
 from app.schemas.chat import ChatComponent, ChatRequest, KnowledgeSource, ProductCard
 from app.services.ai.llm_service import llm_service
 from app.services.chat.routing import routing_policy
 from app.services.chat.presentation import product_presentation
+from app.services.chat.presentation import component_contract
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.components.types import ComponentSource, ComponentType
+from app.services.chat.runtime import conversation_state
 
 
 def _canonical_product(*, sku: str, title: str, master_code: str) -> CanonicalProduct:
@@ -98,6 +101,98 @@ def test_product_presentation_builds_extended_filter_copy() -> None:
     assert follow_up == ""
 
 
+@pytest.mark.asyncio
+async def test_component_pipeline_catalog_pagination_continues_cached_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    products = [
+        _canonical_product(
+            sku=f"TI-{idx}",
+            title=f"Titanium {idx}",
+            master_code=f"TI-{idx}",
+        )
+        for idx in range(1, 13)
+    ]
+    full_ids = [str(item.product_id) for item in products]
+    cache_key = "chat:components:query_ids:pagination-test"
+
+    class _RedisStub:
+        async def get_json(self, key):
+            if key == cache_key:
+                return {
+                    "product_ids": list(full_ids),
+                    "source": "vector",
+                    "result_count": len(full_ids),
+                }
+            return None
+
+        async def set_json(self, key, value, ttl_seconds=0):
+            return None
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_load_conversation_state(*, conversation_id):
+        return {
+            "version": conversation_state.CONVERSATION_STATE_VERSION,
+            "last_workflow": "catalog",
+            "last_refined_query": "Show me titanium jewelry",
+            "last_user_query": "Show me titanium jewelry",
+            "last_attribute_filters": {"material": "Titanium"},
+            "last_requested_fields": [],
+            "last_query_cache_key": cache_key,
+            "last_result_count": len(full_ids),
+            "last_display_offset": 0,
+            "last_display_limit": 10,
+            "last_product_ids": list(full_ids[:10]),
+            "last_product_skus": [item.sku for item in products[:10]],
+            "last_currency": "",
+            "last_route": "catalog",
+            "last_answer_source_ids": [],
+            "last_inventory_claim": {
+                "sku": "",
+                "stock_status": "",
+                "last_stock_sync_at": "",
+            },
+            "tone_recent": [],
+            "updated_at": "",
+        }
+
+    async def fake_resolve(*, product_ids, component_types, redis_cache):
+        selected = [item for item in products if str(item.product_id) in {str(raw) for raw in product_ids}]
+        return selected, {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True, raising=False)
+    monkeypatch.setattr(pipeline, "_load_conversation_state", fake_load_conversation_state)
+    monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+
+    result = await pipeline.run(
+        request=ChatRequest(
+            user_id="guest-1",
+            message="Show more titanium jewelry",
+            client_action="catalog_pagination",
+            locale="en-US",
+        ),
+        conversation_id=42,
+        run_id="run-pagination",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    card_ids = [str(card.id) for card in result.response.product_carousel]
+    assert card_ids == [str(products[10].product_id), str(products[11].product_id)]
+    assert result.debug.get("catalog_pagination_requested") is True
+    assert result.debug.get("catalog_pagination_offset") == 10
+    assert result.debug.get("catalog_pagination_has_more") is False
+    assert not any(
+        item.lower().startswith("show more")
+        for item in component_contract.follow_up_questions_from_response(result.response)
+    )
+
+
 def test_component_pipeline_build_component_contract_uses_attribute_copy_and_see_more() -> None:
     context = ComponentContext(
         user_text="I am looking for Gold product",
@@ -124,6 +219,44 @@ def test_component_pipeline_build_component_contract_uses_attribute_copy_and_see
     assert not any(str(item).lower().startswith("see more") for item in payload["follow_up_questions"])
     assert not any("compare" in str(item).lower() for item in payload["follow_up_questions"])
     assert len(payload["product_carousel"]) == 2
+
+    debug_meta: dict[str, object] = {}
+    follow_ups = ComponentPipeline._build_conversion_follow_ups(
+        products=context.canonical_products,
+        attribute_filters=context.attribute_filters,
+        user_text=context.user_text,
+        needs_knowledge=False,
+        result_count=12,
+        display_count=10,
+        debug_meta=debug_meta,
+    )
+
+    assert any(str(item).lower().startswith("show more") for item in follow_ups)
+    quick_reply_actions = dict(debug_meta.get("quick_reply_actions") or {})
+    assert quick_reply_actions
+    assert quick_reply_actions.get("show more gold jewelry", {}).get("action") == "catalog_pagination"
+
+
+def test_component_pipeline_clarify_policy_for_pagination_exhausted() -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=SimpleNamespace(),
+    )
+
+    policy = pipeline._build_clarify_policy(
+        reason="pagination_exhausted",
+        user_text="Show more titanium jewelry",
+        tone_pick=lambda _key, variants: str(list(variants or [""])[0]),
+        products=[],
+        attribute_filters={},
+        needs_knowledge=False,
+        requested_fields=[],
+    )
+
+    assert "last set of matching products" in str(policy.get("message") or "").lower()
+    assert policy.get("questions") == ["Which filter should I change next?"]
 
 
 @pytest.mark.asyncio
@@ -301,7 +434,10 @@ async def test_component_pipeline_store_overview_request_returns_featured_produc
     assert result.debug.get("store_overview_request") is True
     assert "We carry products like" in result.response.reply_text
     assert len(result.response.product_carousel) == 2
-    assert any(item.startswith("Show ") for item in result.response.follow_up_questions)
+    assert any(
+        item.startswith("Show ")
+        for item in component_contract.follow_up_questions_from_response(result.response)
+    )
 
 
 @pytest.mark.asyncio
@@ -401,6 +537,93 @@ async def test_component_pipeline_store_overview_knowledge_answer_prefers_struct
     assert "bangkok" in answer.lower()
     assert ("address" in answer.lower()) or ("contact" in answer.lower())
     assert not answer.lower().startswith("here is what i found:")
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_knowledge_answer_keeps_long_payment_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _RedisStub:
+        async def get_json(self, key):
+            return None
+
+        async def set_json(self, key, value, ttl_seconds=0):
+            return None
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_generate_chat_json(*args, **kwargs):
+        return {
+            "reply": (
+                "We accept the following payment methods: "
+                "1. PayPal or Credit Card - Fast and convenient for orders under USD 3,000. "
+                "2. Bank Transfer - For orders over USD 3,000. "
+                "Bank transfers may take 2-5 days for verification. "
+                "Please ensure that bank transfer fees are covered."
+            )
+        }
+
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    answer, from_cache = await pipeline._knowledge_answer_once(
+        question="What payment methods do you accept?",
+        sources=[
+            KnowledgeSource(
+                source_id="src-payment",
+                chunk_id="chunk-payment",
+                title="Payment Methods",
+                content_snippet="We accept credit card, bank transfer, and PayPal.",
+                category="Policy",
+                relevance=0.95,
+                url="https://example.com/payment",
+                distance=0.05,
+            )
+        ],
+        locale="en-US",
+        store_overview_request=False,
+        llm_cache_key="test-payment-key",
+    )
+
+    assert from_cache is False
+    assert "credit card" in answer.lower()
+    assert "bank transfer" in answer.lower()
+    assert "fees are covered" in answer.lower()
+    assert len(answer) > 240
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_builds_contextual_show_more_follow_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=SimpleNamespace(),
+    )
+
+    products = [
+        SimpleNamespace(
+            sku=f"TI-{idx}",
+            attributes={"material": "Titanium", "jewelry_type": "Barbell"},
+        )
+        for idx in range(1, 13)
+    ]
+
+    follow_ups = pipeline._build_show_more_follow_up(
+        products=products,
+        attribute_filters={"material": "Titanium"},
+        result_count=12,
+        display_count=10,
+        display_offset=0,
+    )
+
+    assert any(item.lower().startswith("show more titanium jewelry") for item in follow_ups)
 
 
 @pytest.mark.asyncio

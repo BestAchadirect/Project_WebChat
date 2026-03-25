@@ -125,7 +125,10 @@ def follow_up_questions_from_components(components: Iterable[Any]) -> List[str]:
         else:
             continue
         for raw in items:
-            text = str(raw or "").strip()
+            if isinstance(raw, dict):
+                text = str(raw.get("label") or raw.get("text") or raw.get("question") or raw.get("message") or "").strip()
+            else:
+                text = str(raw or "").strip()
             key = text.lower()
             if not text or key in seen:
                 continue
@@ -152,11 +155,21 @@ def follow_up_questions_from_response(response: ChatResponse) -> List[str]:
     items = follow_up_questions_from_components(getattr(response, "components", []))
     if items:
         return items
-    return [str(item or "").strip() for item in list(getattr(response, "follow_up_questions", []) or []) if str(item or "").strip()]
+    return []
 
 
-def upsert_quick_replies_component(response: ChatResponse, questions: List[str]) -> None:
+def upsert_quick_replies_component(
+    response: ChatResponse,
+    questions: List[str],
+    *,
+    actions_by_label: Dict[str, Dict[str, Any]] | None = None,
+) -> None:
     clean = [str(item or "").strip() for item in list(questions or []) if str(item or "").strip()]
+    action_lookup = {
+        str(label or "").strip().lower(): dict(action or {})
+        for label, action in dict(actions_by_label or {}).items()
+        if str(label or "").strip() and isinstance(action, dict)
+    }
     updated: List[ChatComponent] = []
     for component in list(getattr(response, "components", []) or []):
         kind = _component_type(component)
@@ -180,6 +193,19 @@ def upsert_quick_replies_component(response: ChatResponse, questions: List[str])
                 )
             )
     if clean:
-        updated.append(ChatComponent(type="quick_replies", data={"items": clean}))
+        items: List[Any] = []
+        for label in clean:
+            action = action_lookup.get(label.lower())
+            if action and str(action.get("action") or "").strip():
+                payload = action.get("payload")
+                item: Dict[str, Any] = {
+                    "label": label,
+                    "action": str(action.get("action") or "").strip(),
+                }
+                if isinstance(payload, dict) and payload:
+                    item["payload"] = dict(payload)
+                items.append(item)
+                continue
+            items.append(label)
+        updated.append(ChatComponent(type="quick_replies", data={"items": items}))
     response.components = updated
-    response.follow_up_questions = list(clean)

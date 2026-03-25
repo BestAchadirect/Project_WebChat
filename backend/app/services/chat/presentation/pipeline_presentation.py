@@ -288,6 +288,21 @@ class PipelinePresentationMixin:
                     ],
                 )
                 questions = ["Can you share a SKU or fewer filters?"]
+            elif reason_norm == "pagination_exhausted":
+                message = tone_pick(
+                    "clarify:pagination_exhausted",
+                    [
+                        "That was the last set of matching products I found. Try a different material, gauge, or jewelry type.",
+                        "I reached the end of the matching products. If you want more, change one filter like material or gauge.",
+                        "That was the final page of matches. Adjust your search and I can find more options.",
+                    ],
+                )
+                questions = ["Which filter should I change next?"]
+                suggestions = [
+                    "Show titanium jewelry",
+                    "Show labret options",
+                    "What other materials do you have?",
+                ]
             elif reason_norm == "detail_request_needs_specific_product":
                 requested = {str(item or "").strip().lower() for item in list(requested_fields or []) if str(item or "").strip()}
                 jewelry_type = str((attribute_filters or {}).get("jewelry_type") or "").strip().lower()
@@ -429,7 +444,11 @@ class PipelinePresentationMixin:
             attribute_filters: Dict[str, str],
             user_text: str,
             needs_knowledge: bool,
+            result_count: int,
+            display_count: int,
+            display_offset: int = 0,
             limit: int = 5,
+            debug_meta: Optional[Dict[str, Any]] = None,
         ) -> List[str]:
             if not bool(getattr(settings, "CHAT_CONVERSION_FOLLOW_UPS_ENABLED", True)):
                 return []
@@ -446,9 +465,74 @@ class PipelinePresentationMixin:
             )
             if has_opal:
                 follow_ups.append("Show opal colors")
+            follow_ups.extend(
+                cls._build_show_more_follow_up(
+                    products=products,
+                    attribute_filters=attribute_filters,
+                    result_count=result_count,
+                    display_count=display_count,
+                    display_offset=int(display_offset or 0),
+                )
+            )
+            if follow_ups and isinstance(debug_meta, dict):
+                quick_reply_actions = dict(debug_meta.get("quick_reply_actions") or {})
+                for label in follow_ups:
+                    label_key = str(label or "").strip().lower()
+                    if not label_key.startswith("show more"):
+                        continue
+                    quick_reply_actions[label_key] = {
+                        "action": "catalog_pagination",
+                        "payload": {
+                            "kind": "catalog_pagination",
+                            "label": str(label or "").strip(),
+                        },
+                    }
+                if quick_reply_actions:
+                    debug_meta["quick_reply_actions"] = quick_reply_actions
             if needs_knowledge:
                 follow_ups.append("How can I contact you?")
             return cls._dedupe_follow_up_questions(follow_ups, limit=limit)
+
+    @classmethod
+    def _build_show_more_follow_up(
+            cls,
+            *,
+            products: Sequence[Any],
+            attribute_filters: Dict[str, str],
+            result_count: int,
+            display_count: int,
+            display_offset: int = 0,
+        ) -> List[str]:
+            total_results = max(0, int(result_count or 0))
+            shown_results = max(0, int(display_count or 0))
+            shown_offset = max(0, int(display_offset or 0))
+            if total_results <= shown_results + shown_offset:
+                return []
+
+            def _label_from_key(key: str) -> str:
+                raw = str((attribute_filters or {}).get(key) or "").strip()
+                if raw:
+                    return cls._display_attribute_value(raw)
+                values = cls._top_product_attributes(products=products, key=key, limit=1)
+                return values[0] if values else ""
+
+            material = _label_from_key("material")
+            if material:
+                return [f"Show more {material} jewelry"]
+
+            jewelry_type = _label_from_key("jewelry_type")
+            if jewelry_type:
+                return [f"Show more {jewelry_type} options"]
+
+            design = _label_from_key("design")
+            if design:
+                return [f"Show more {design} designs"]
+
+            category = _label_from_key("category")
+            if category:
+                return [f"Show more {category} items"]
+
+            return ["Show more matching items"]
 
     @staticmethod
     def _apply_clarify_debug(
@@ -490,6 +574,9 @@ class PipelinePresentationMixin:
             latency_ms: float,
             llm_calls: int,
             embedding_calls: int,
+            product_result_count: int,
+            product_display_count: int,
+            product_has_more: bool,
         ) -> ChatResponseMeta:
             return ChatResponseMeta(
                 query_summary=str(query_summary or ""),
@@ -497,6 +584,9 @@ class PipelinePresentationMixin:
                 source=source.value,
                 llm_calls=int(llm_calls),
                 embedding_calls=int(embedding_calls),
+                product_result_count=int(product_result_count or 0),
+                product_display_count=int(product_display_count or 0),
+                product_has_more=bool(product_has_more),
             )
 
     @staticmethod
@@ -603,7 +693,7 @@ class PipelinePresentationMixin:
                 answer=snippet,
                 question=question,
                 max_sentences=2,
-                max_chars=240,
+                max_chars=int(getattr(settings, "CHAT_KNOWLEDGE_ANSWER_MAX_CHARS", 420)),
             )
 
     @classmethod
@@ -691,8 +781,15 @@ class PipelinePresentationMixin:
         ) -> str:
             text = cls._clean_knowledge_snippet_text(answer)
             text = re.sub(r"^\s*here is what i found:\s*", "", text, flags=re.IGNORECASE)
-            sentences = cls._extract_sentences(text, limit=max_sentences)
-            concise = " ".join(sentences).strip() if sentences else text.strip()
+            looks_like_list = bool(
+                re.search(r"(?:^|[\s;])\d+\.\s+", text)
+                or re.search(r"(?:^|\s)[*-]\s+", text)
+            )
+            if looks_like_list:
+                concise = text.strip()
+            else:
+                sentences = cls._extract_sentences(text, limit=max_sentences)
+                concise = " ".join(sentences).strip() if sentences else text.strip()
             if not concise:
                 return ""
             if len(concise) > max(1, int(max_chars)):
@@ -872,6 +969,15 @@ class PipelinePresentationMixin:
                             "Here are the products that best fit your request.",
                         ],
                     )
+                if bool(context.debug.get("catalog_pagination_requested")):
+                    assistant_text = choose(
+                        "catalog:pagination",
+                        [
+                            "Here are more matching products from your search.",
+                            "I found more matching products from the same search.",
+                            "Here are more options from your search.",
+                        ],
+                    )
                 if not bool(context.debug.get("store_overview_request")):
                     follow_ups.extend(
                         cls._build_conversion_follow_ups(
@@ -879,7 +985,11 @@ class PipelinePresentationMixin:
                             attribute_filters=context.attribute_filters,
                             user_text=user_text,
                             needs_knowledge=bool(context.debug.get("workflow_needs_knowledge", False)),
+                            result_count=int(context.result_count or 0),
+                            display_count=len(display_products or []),
+                            display_offset=int(context.debug.get("catalog_pagination_offset", 0) or 0),
                             limit=5,
+                            debug_meta=context.debug,
                         )
                     )
             elif has_knowledge_answer:
@@ -1043,6 +1153,12 @@ class PipelinePresentationMixin:
                 components=components,
                 pick_text=lambda key, variants: tone_pick(key, variants),
             )
+            product_display_count = len(list(contract.get("product_carousel") or []))
+            product_result_count = int(state.result_count or 0)
+            product_has_more = bool(
+                getattr(state, "pagination_has_more", False)
+                or (product_result_count > product_display_count)
+            )
             total_ms = (time.perf_counter() - started) * 1000.0
             meta = self._to_meta(
                 query_summary=query_summary,
@@ -1050,6 +1166,9 @@ class PipelinePresentationMixin:
                 latency_ms=total_ms,
                 llm_calls=llm_calls,
                 embedding_calls=embedding_calls,
+                product_result_count=product_result_count,
+                product_display_count=product_display_count,
+                product_has_more=product_has_more,
             )
             public_routing = route_decision.to_public_routing(
                 execution_mode="component",
@@ -1066,7 +1185,6 @@ class PipelinePresentationMixin:
                 reply_text=str(contract["assistant_text"]),
                 carousel_msg=str(contract["carousel_msg"] or ""),
                 product_carousel=list(contract["product_carousel"] or []),
-                follow_up_questions=list(contract["follow_up_questions"] or []),
                 routing=public_routing,
                 sources=knowledge_sources,
                 debug={},
@@ -1104,6 +1222,10 @@ class PipelinePresentationMixin:
                         else ""
                     ),
                     route=workflow,
+                    query_cache_key=str(state.query_cache_key or ""),
+                    result_count=int(state.result_count or 0),
+                    display_offset=int(debug_meta.get("catalog_pagination_offset") or 0),
+                    display_limit=int(debug_meta.get("catalog_pagination_limit") or 0),
                     product_ids=state_product_ids,
                     product_skus=state_product_skus,
                     answer_source_ids=[str(source.source_id or "") for source in knowledge_sources if str(source.source_id or "").strip()],

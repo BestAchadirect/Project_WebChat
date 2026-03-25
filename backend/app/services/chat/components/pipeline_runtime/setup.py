@@ -10,6 +10,7 @@ from app.services.chat.parsing.llm_attribute_extractor import AttributeExtractio
 from app.services.chat.parsing import parser_rule_cache
 from app.services.chat.parsing.detail_query_parser import DetailQueryParser
 from app.services.chat.presentation import reply_tone
+from app.services.chat.presentation import product_presentation
 from app.services.chat.routing import routing_policy
 from app.services.chat.runtime import alias_cache, conversation_state
 from app.services.chat.text_normalization import normalize_user_text
@@ -100,6 +101,10 @@ class PipelineRunSetup:
     detail: Any
     conversation_state_enabled: bool
     state_working: Optional[Dict[str, Any]]
+    catalog_pagination_requested: bool
+    catalog_pagination_offset: int
+    catalog_pagination_limit: int
+    catalog_pagination_query_key: str
     sku_tokens: List[str]
     unique_sku_tokens: List[str]
     route_decision: routing_policy.WorkflowDecision
@@ -123,8 +128,12 @@ class PipelineSetupMixin:
             conversation_id: int,
             route_decision_override: Optional[routing_policy.WorkflowDecision],
             routing_selection_source: str,
+            client_action: str = "",
+            client_action_payload: Optional[Dict[str, Any]] = None,
         ) -> PipelineRunSetup:
             normalized_text = normalize_user_text(text)
+            client_action_norm = str(client_action or "").strip().lower()
+            client_action_payload = dict(client_action_payload or {})
 
             alias_map = await alias_cache.get_alias_map(self.db)
             parser_rules = await parser_rule_cache.get_parser_rules(self.db)
@@ -140,25 +149,18 @@ class PipelineSetupMixin:
             conversation_state_filter_merge_applied = False
             if conversation_state_enabled:
                 state_working = await self._load_conversation_state(conversation_id=conversation_id)
+            catalog_pagination_requested = bool(client_action_norm == "catalog_pagination")
+            catalog_pagination_offset = int(state_working.get("last_display_offset") or 0) if state_working else 0
+            catalog_pagination_limit = int(state_working.get("last_display_limit") or product_presentation.PRODUCT_DISPLAY_LIMIT) if state_working else product_presentation.PRODUCT_DISPLAY_LIMIT
+            catalog_pagination_query_key = str(state_working.get("last_query_cache_key") or "") if state_working else ""
 
             sku_tokens = routing_policy.extract_sku_tokens(text)
             unique_sku_tokens = [token for token in dict.fromkeys([str(item).strip() for item in sku_tokens]) if token]
 
-            if conversation_state_enabled and state_working is not None:
+            if conversation_state_enabled and state_working is not None and not catalog_pagination_requested:
                 debug_state_version = int(
                     state_working.get("version", conversation_state.CONVERSATION_STATE_VERSION)
                 )
-                if conversation_state.should_merge_follow_up_filters(
-                    user_text=text,
-                    current_filters=detail.attribute_filters,
-                    sku_token=unique_sku_tokens[0] if unique_sku_tokens else None,
-                ):
-                    merged_filters = conversation_state.merge_filters(
-                        detail.attribute_filters,
-                        state_working.get("last_attribute_filters", {}),
-                    )
-                    detail = replace(detail, attribute_filters=merged_filters)
-                    conversation_state_filter_merge_applied = True
                 tone_recent = reply_tone.normalize_recent(state_working.get("tone_recent"))
             else:
                 debug_state_version = conversation_state.CONVERSATION_STATE_VERSION
@@ -177,8 +179,22 @@ class PipelineSetupMixin:
                     confidence=0.0,
                 )
 
+            if catalog_pagination_requested:
+                route_decision = replace(
+                    route_decision,
+                    workflow="catalog",
+                    source=ComponentSource.SQL,
+                    needs_products=True,
+                    needs_knowledge=False,
+                    needs_clarification=False,
+                    store_overview_request=False,
+                    knowledge_query="",
+                    reason="catalog_pagination_continuation",
+                    confidence=max(float(route_decision.confidence or 0.0), 0.9),
+                )
+
             workflow = route_decision.workflow
-            if list(getattr(detail, "semantic_hints", []) or []) or str(getattr(detail, "clarify_focus", "") or "").strip():
+            if catalog_pagination_requested or list(getattr(detail, "semantic_hints", []) or []) or str(getattr(detail, "clarify_focus", "") or "").strip():
                 attribute_enrichment = AttributeExtractionResult(
                     exact_filters={},
                     semantic_hints=[],
@@ -246,6 +262,10 @@ class PipelineSetupMixin:
                 detail=detail,
                 conversation_state_enabled=conversation_state_enabled,
                 state_working=state_working,
+                catalog_pagination_requested=catalog_pagination_requested,
+                catalog_pagination_offset=catalog_pagination_offset,
+                catalog_pagination_limit=catalog_pagination_limit,
+                catalog_pagination_query_key=catalog_pagination_query_key,
                 sku_tokens=list(sku_tokens),
                 unique_sku_tokens=list(unique_sku_tokens),
                 route_decision=route_decision,

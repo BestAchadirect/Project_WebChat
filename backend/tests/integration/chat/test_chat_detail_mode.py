@@ -17,6 +17,7 @@ from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.components.types import ComponentSource
 from app.services.chat.parsing.detail_query_parser import DetailQuery
 from app.services.chat.retrieval.product_detail_resolver import DetailResolutionResult
+from app.services.chat.presentation import component_contract
 
 
 class _RedisStub:
@@ -266,7 +267,7 @@ async def test_component_pipeline_detail_mode_no_match_has_no_follow_up_quick_re
 
     assert result.detail_mode_triggered is True
     assert result.response.product_carousel == []
-    assert result.response.follow_up_questions
+    assert component_contract.follow_up_questions_from_response(result.response)
     assert any(component.type.value == "clarify" for component in result.response.components)
     assert "couldn't find a product" in result.response.reply_text.lower()
     assert result.debug.get("detail_match_count") == 0

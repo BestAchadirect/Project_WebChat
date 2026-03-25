@@ -100,17 +100,25 @@ class ComponentPipeline(
             started = time.perf_counter()
             text = str(request.message or "").strip()
             locale = str(request.locale or "en-US")
+            client_action = str(getattr(request, "client_action", "") or "").strip().lower()
+            client_action_payload = dict(getattr(request, "client_action_payload", {}) or {})
             setup = await self._prepare_pipeline_run(
                 text=text,
                 channel=channel,
                 conversation_id=conversation_id,
                 route_decision_override=route_decision_override,
                 routing_selection_source=routing_selection_source,
+                client_action=client_action,
+                client_action_payload=client_action_payload,
             )
             normalized_text = setup.normalized_text
             detail = setup.detail
             conversation_state_enabled = setup.conversation_state_enabled
             state_working = setup.state_working
+            catalog_pagination_requested = setup.catalog_pagination_requested
+            catalog_pagination_offset = setup.catalog_pagination_offset
+            catalog_pagination_limit = setup.catalog_pagination_limit
+            catalog_pagination_query_key = setup.catalog_pagination_query_key
             sku_tokens = setup.sku_tokens
             unique_sku_tokens = setup.unique_sku_tokens
             route_decision = setup.route_decision
@@ -146,32 +154,8 @@ class ComponentPipeline(
             display_limit = product_presentation.PRODUCT_DISPLAY_LIMIT
             result_fetch_limit = max(display_limit * 6, 20)
             state = PipelineWorkflowState(retrieval_source=source)
-            _ = await self._handle_terminal_workflows(
-                state=state,
-                text=text,
-                workflow=workflow,
-                detail=detail,
-                unique_sku_tokens=unique_sku_tokens,
-                result_fetch_limit=result_fetch_limit,
-                conversation_id=conversation_id,
-                debug_meta=debug_meta,
-                spans=spans,
-                external_call_counts=external_call_counts,
-                tone_pick=tone_controller.pick,
-            )
-            await self._handle_pre_catalog_workflows(
-                state=state,
-                text=text,
-                workflow=workflow,
-                detail=detail,
-                store_overview_request=store_overview_request,
-                unique_sku_tokens=unique_sku_tokens,
-                result_fetch_limit=result_fetch_limit,
-                debug_meta=debug_meta,
-                spans=spans,
-            )
-            if workflow in {"catalog", "recommendation"}:
-                await self._handle_catalog_workflow(
+            if catalog_pagination_requested:
+                await self._handle_catalog_pagination_workflow(
                     state=state,
                     text=text,
                     locale=locale,
@@ -181,46 +165,89 @@ class ComponentPipeline(
                     unique_sku_tokens=unique_sku_tokens,
                     recommendation_requested=recommendation_requested,
                     display_limit=display_limit,
-                    result_fetch_limit=result_fetch_limit,
-                    normalized_text=normalized_text,
+                    pagination_query_cache_key=catalog_pagination_query_key,
+                    pagination_offset=catalog_pagination_offset,
+                    pagination_limit=catalog_pagination_limit,
                     debug_meta=debug_meta,
                     spans=spans,
                     external_call_counts=external_call_counts,
                 )
-                if needs_knowledge and not state.ambiguity_reason:
-                    await self._handle_mixed_knowledge_enrichment(
+            else:
+                _ = await self._handle_terminal_workflows(
+                    state=state,
+                    text=text,
+                    workflow=workflow,
+                    detail=detail,
+                    unique_sku_tokens=unique_sku_tokens,
+                    result_fetch_limit=result_fetch_limit,
+                    conversation_id=conversation_id,
+                    debug_meta=debug_meta,
+                    spans=spans,
+                    external_call_counts=external_call_counts,
+                    tone_pick=tone_controller.pick,
+                )
+                await self._handle_pre_catalog_workflows(
+                    state=state,
+                    text=text,
+                    workflow=workflow,
+                    detail=detail,
+                    store_overview_request=store_overview_request,
+                    unique_sku_tokens=unique_sku_tokens,
+                    result_fetch_limit=result_fetch_limit,
+                    debug_meta=debug_meta,
+                    spans=spans,
+                )
+                if workflow in {"catalog", "recommendation"}:
+                    await self._handle_catalog_workflow(
                         state=state,
                         text=text,
-                    locale=locale,
-                    run_id=run_id,
-                    store_overview_request=store_overview_request,
-                    normalized_text=normalized_text,
-                    preferred_query=knowledge_query,
-                    debug_meta=debug_meta,
-                    spans=spans,
-                    external_call_counts=external_call_counts,
-                )
-            elif knowledge_workflow:
-                await self._handle_knowledge_workflow(
-                    state=state,
-                    text=text,
-                    locale=locale,
-                    run_id=run_id,
-                    store_overview_request=store_overview_request,
-                    normalized_text=normalized_text,
-                    preferred_query=knowledge_query,
-                    debug_meta=debug_meta,
-                    spans=spans,
-                    external_call_counts=external_call_counts,
-                )
-            elif fallback_workflow:
-                self._handle_fallback_workflow(
-                    state=state,
-                    text=text,
-                    route_decision=route_decision,
-                    attribute_filters=dict(detail.attribute_filters or {}),
-                    sku_tokens=unique_sku_tokens,
-                )
+                        locale=locale,
+                        workflow=workflow,
+                        detail=detail,
+                        store_overview_request=store_overview_request,
+                        unique_sku_tokens=unique_sku_tokens,
+                        recommendation_requested=recommendation_requested,
+                        display_limit=display_limit,
+                        result_fetch_limit=result_fetch_limit,
+                        normalized_text=normalized_text,
+                        debug_meta=debug_meta,
+                        spans=spans,
+                        external_call_counts=external_call_counts,
+                    )
+                    if needs_knowledge and not state.ambiguity_reason:
+                        await self._handle_mixed_knowledge_enrichment(
+                            state=state,
+                            text=text,
+                        locale=locale,
+                        run_id=run_id,
+                        store_overview_request=store_overview_request,
+                        normalized_text=normalized_text,
+                        preferred_query=knowledge_query,
+                        debug_meta=debug_meta,
+                        spans=spans,
+                        external_call_counts=external_call_counts,
+                    )
+                elif knowledge_workflow:
+                    await self._handle_knowledge_workflow(
+                        state=state,
+                        text=text,
+                        locale=locale,
+                        run_id=run_id,
+                        store_overview_request=store_overview_request,
+                        normalized_text=normalized_text,
+                        preferred_query=knowledge_query,
+                        debug_meta=debug_meta,
+                        spans=spans,
+                        external_call_counts=external_call_counts,
+                    )
+                elif fallback_workflow:
+                    self._handle_fallback_workflow(
+                        state=state,
+                        text=text,
+                        route_decision=route_decision,
+                        attribute_filters=dict(detail.attribute_filters or {}),
+                        sku_tokens=unique_sku_tokens,
+                    )
 
             return await self._finalize_pipeline_result(
                 started=started,

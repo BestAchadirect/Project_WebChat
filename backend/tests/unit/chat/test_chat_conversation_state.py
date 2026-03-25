@@ -45,18 +45,11 @@ def test_load_state_v1_payload_backfills_new_fields() -> None:
     assert state["last_inventory_claim"] == {"sku": "", "stock_status": "", "last_stock_sync_at": ""}
 
 
-def test_follow_up_filter_merge_only_applies_to_short_referential_queries() -> None:
-    assert conversation_state.should_merge_follow_up_filters(
-        user_text="cheaper ones",
-        current_filters={},
-        sku_token=None,
-    ) is True
-    assert conversation_state.merge_filters({}, {"material": "titanium"}) == {"material": "titanium"}
-    assert conversation_state.should_merge_follow_up_filters(
-        user_text="show black ones",
-        current_filters={"color": "black"},
-        sku_token=None,
-    ) is False
+def test_merge_filters_prefers_current_values_and_preserves_previous_ones() -> None:
+    assert conversation_state.merge_filters(
+        {"material": "gold", "color": "black"},
+        {"material": "titanium", "size": "small"},
+    ) == {"material": "gold", "size": "small", "color": "black"}
 
 
 def test_apply_response_update_persists_clean_tone_recent() -> None:

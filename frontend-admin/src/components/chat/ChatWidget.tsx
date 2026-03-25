@@ -349,7 +349,7 @@ const ProductCarousel: React.FC<{
     materialLabel?: string;
     jewelryTypeLabel?: string;
     thbToUsdRate?: number;
-    onQuickReply?: (text: string) => void;
+    onQuickReply?: (text: string, action?: string, payload?: Record<string, unknown>) => void;
     onProductClick?: (product: ProductCard, rank: number) => void;
 }> = ({
     items,
@@ -655,7 +655,7 @@ const ChatComponentsRenderer: React.FC<{
     viewButtonText?: string;
     materialLabel?: string;
     jewelryTypeLabel?: string;
-    onQuickReply: (text: string) => void;
+    onQuickReply: (text: string, action?: string, payload?: Record<string, unknown>) => void;
     onProductClick?: (product: ProductCard, rank: number) => void;
 }> = ({
     message,
@@ -682,7 +682,7 @@ const ChatComponentsRenderer: React.FC<{
                     return null;
                 }
 
-                if (type === 'assistant_message' || type === 'quick_replies') {
+                if (type === 'assistant_message') {
                     return null;
                 }
 
@@ -757,6 +757,54 @@ const ChatComponentsRenderer: React.FC<{
                     return (
                         <div key={`${type}-${index}`} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                             <span className="whitespace-pre-wrap">{messageText}</span>
+                        </div>
+                    );
+                }
+
+                if (type === 'quick_replies') {
+                    const rawItems = Array.isArray(data.items)
+                        ? data.items
+                        : Array.isArray(data.questions)
+                            ? data.questions
+                            : [];
+                    const items = rawItems
+                        .map((item) => {
+                            if (item && typeof item === 'object' && !Array.isArray(item)) {
+                                const record = asRecord(item);
+                                const label = asString(
+                                    record.label || record.text || record.question || record.message || record.value
+                                ).trim();
+                                if (!label) return null;
+                                const action = asString(record.action || record.type).trim().toLowerCase();
+                                const payload = asRecord(record.payload);
+                                return {
+                                    label,
+                                    action,
+                                    payload,
+                                };
+                            }
+                            const label = asString(item).trim();
+                            if (!label) return null;
+                            return {
+                                label,
+                                action: '',
+                                payload: {},
+                            };
+                        })
+                        .filter((item): item is { label: string; action: string; payload: Record<string, unknown> } => item !== null);
+                    if (items.length === 0) return null;
+                    return (
+                        <div key={`${type}-${index}`} className="flex flex-wrap gap-2">
+                            {items.map((item, itemIndex) => (
+                                <button
+                                    key={`${type}-item-${itemIndex}`}
+                                    type="button"
+                                    onClick={() => onQuickReply(item.label, item.action || undefined, item.payload)}
+                                    className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm transition-colors hover:bg-gray-50 hover:border-gray-300 active:scale-[0.99]"
+                                >
+                                    {item.label}
+                                </button>
+                            ))}
                         </div>
                     );
                 }
@@ -1191,7 +1239,11 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         }
     }, [input]);
 
-    const sendMessage = async (textOverride?: string) => {
+    const sendMessage = async (
+        textOverride?: string,
+        clientAction?: string,
+        clientActionPayload?: Record<string, unknown>,
+    ) => {
         const textToSend = textOverride || input;
         if (!textToSend.trim() || isLoading) return;
 
@@ -1212,7 +1264,9 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                 conversation_id: conversationId,
                 locale: config.locale,
                 customer_name: config.customerName,
-                email: config.email
+                email: config.email,
+                client_action: clientAction || undefined,
+                client_action_payload: clientAction ? (clientActionPayload || { label: textToSend }) : {},
             };
 
             const endpoint = config.apiBaseUrl ? `${config.apiBaseUrl}/chat/` : '/chat/';
@@ -1490,8 +1544,8 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                                     viewButtonText={msg.viewButtonText}
                                                     materialLabel={msg.materialLabel}
                                                     jewelryTypeLabel={msg.jewelryTypeLabel}
-                                                    onQuickReply={(question) => {
-                                                        void sendMessage(question);
+                                                    onQuickReply={(question, action, payload) => {
+                                                        void sendMessage(question, action, payload);
                                                     }}
                                                     onProductClick={(product, rank) => {
                                                         void trackProductClick(product, rank, msg.qaLogId);

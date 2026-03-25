@@ -20,6 +20,7 @@ from app.services.chat.components.types import ComponentSource
 from app.services.chat.parsing.detail_query_parser import DetailQuery
 from app.services.chat.retrieval.product_detail_resolver import ProductDetailResolver
 from app.services.chat.retrieval.result_policy import classify_match_tier
+from app.services.chat.presentation import component_contract
 
 
 class _RedisStub:
@@ -374,7 +375,7 @@ async def test_component_pipeline_product_browse_reply_is_deterministic_without_
     assert result.debug.get("component_source") == "vector"
     assert result.debug.get("match_tier") == "semantic_suggestion"
     assert "steel material" in result.response.reply_text.lower()
-    assert result.response.follow_up_questions == []
+    assert component_contract.follow_up_questions_from_response(result.response) == []
 
 
 @pytest.mark.asyncio
@@ -566,7 +567,7 @@ async def test_component_pipeline_high_risk_knowledge_error_returns_clarify(
     assert any(component.type.value == "clarify" for component in result.response.components)
     assert result.debug.get("component_knowledge_fail_soft") is True
     assert result.debug.get("clarify_reason") == "knowledge_unavailable"
-    follow_ups = [item.lower() for item in result.response.follow_up_questions]
+    follow_ups = [item.lower() for item in component_contract.follow_up_questions_from_response(result.response)]
     assert "what is your shipping policy?" in follow_ups
 
 
@@ -614,7 +615,7 @@ async def test_component_pipeline_high_risk_knowledge_with_weak_sources_returns_
     assert result.debug.get("clarify_reason") == "knowledge_needs_clarification"
     assert result.debug.get("knowledge_clarify_focus") == "contact"
     assert "email" in result.response.reply_text.lower() or "phone" in result.response.reply_text.lower()
-    follow_ups = [item.lower() for item in list(result.response.follow_up_questions or [])]
+    follow_ups = [item.lower() for item in component_contract.follow_up_questions_from_response(result.response)]
     assert any("sales email" in item for item in follow_ups)
     assert any("phone number" in item for item in follow_ups)
 

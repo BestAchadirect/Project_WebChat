@@ -111,7 +111,6 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
             reply_text=assistant_text,
             carousel_msg=str(getattr(agentic_result, "carousel_msg", "") or ""),
             product_carousel=product_carousel,
-            follow_up_questions=follow_up_questions,
             routing=routing,
             sources=list(getattr(agentic_result, "sources", []) or []),
             debug={},
@@ -122,6 +121,9 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
                 source="tool",
                 llm_calls=0,
                 embedding_calls=0,
+                product_result_count=len(product_carousel),
+                product_display_count=len(product_carousel),
+                product_has_more=False,
             ),
         )
 
@@ -334,7 +336,6 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
             reply_text="I could not process that request right now.",
             carousel_msg="",
             product_carousel=[],
-            follow_up_questions=[],
             routing=ChatRouting(
                 workflow="fallback",
                 execution_mode="component",
@@ -356,6 +357,9 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
                 source="error",
                 llm_calls=0,
                 embedding_calls=0,
+                product_result_count=0,
+                product_display_count=0,
+                product_has_more=False,
             ),
         )
         return await self._finalize_with_latency(

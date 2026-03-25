@@ -7,7 +7,7 @@ pytest.importorskip("pydantic_settings")
 from app.api.routes.chat import router
 from app.core.config import settings
 from app.dependencies import get_db
-from app.schemas.chat import ChatRequest, ChatResponse, ChatRouting
+from app.schemas.chat import ChatRequest, ChatResponse, ChatResponseMeta, ChatRouting
 from app.services.chat.service import ChatService
 
 
@@ -41,6 +41,16 @@ def response_payload() -> ChatResponse:
             },
         },
         components=[],
+        meta=ChatResponseMeta(
+            query_summary="show steel rings",
+            latency_ms=12.34,
+            source="sql",
+            llm_calls=0,
+            embedding_calls=0,
+            product_result_count=24,
+            product_display_count=8,
+            product_has_more=True,
+        ),
     )
 
 
@@ -72,6 +82,9 @@ def test_chat_endpoint_returns_service_response(build_client, monkeypatch: pytes
     assert payload["components"][0]["type"] == "assistant_message"
     assert payload["components"][0]["data"]["text"] == "api response"
     assert payload["debug"] == {}
+    assert payload["meta"]["product_result_count"] == 24
+    assert payload["meta"]["product_display_count"] == 8
+    assert payload["meta"]["product_has_more"] is True
     assert captured["channel"] == "widget"
     assert isinstance(captured["request"], ChatRequest)
 

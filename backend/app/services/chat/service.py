@@ -222,7 +222,11 @@ class ChatService:
                 "before_count": len(raw_follow_ups),
                 "after_count": len(filtered_follow_ups),
             }
-        component_contract.upsert_quick_replies_component(response, filtered_follow_ups)
+        component_contract.upsert_quick_replies_component(
+            response,
+            filtered_follow_ups,
+            actions_by_label=dict(debug_meta.get("quick_reply_actions") or {}) if isinstance(debug_meta, dict) else None,
+        )
 
         latency_payload = self._build_latency_payload(
             spans=spans,

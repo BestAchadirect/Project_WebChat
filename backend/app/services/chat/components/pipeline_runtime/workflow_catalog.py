@@ -8,9 +8,107 @@ from app.services.chat.components.pipeline_runtime.state import PipelineWorkflow
 from app.services.chat.components.pipeline_runtime.workflow_detail import PipelineWorkflowDetailMixin
 from app.services.chat.components.pipeline_runtime.workflow_recommendation import PipelineWorkflowRecommendationMixin
 from app.services.chat.components.types import ComponentSource, ComponentType
+from app.services.chat.presentation import product_presentation
 
 
 class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowRecommendationMixin, PipelineWorkflowDetailMixin):
+    async def _handle_catalog_pagination_workflow(
+            self,
+            *,
+            state: PipelineWorkflowState,
+            text: str,
+            locale: str,
+            workflow: str,
+            detail: Any,
+            store_overview_request: bool,
+            unique_sku_tokens: Sequence[str],
+            recommendation_requested: bool,
+            display_limit: int,
+            pagination_query_cache_key: str,
+            pagination_offset: int,
+            pagination_limit: int,
+            debug_meta: Dict[str, Any],
+            spans: Dict[str, float],
+            external_call_counts: Dict[str, int],
+        ) -> None:
+            del locale, workflow, detail, store_overview_request, unique_sku_tokens, recommendation_requested, external_call_counts
+            page_size = max(1, int(pagination_limit or display_limit or product_presentation.PRODUCT_DISPLAY_LIMIT))
+            page_offset = max(0, int(pagination_offset or 0)) + page_size
+            debug_meta["catalog_pagination_requested"] = True
+            debug_meta["catalog_pagination_offset"] = page_offset
+            debug_meta["catalog_pagination_limit"] = page_size
+            cache_key = str(pagination_query_cache_key or "").strip()
+            debug_meta["catalog_pagination_query_cache_key"] = cache_key
+            state.pagination_requested = True
+            state.pagination_offset = page_offset
+            state.pagination_limit = page_size
+            state.pagination_has_more = False
+            state.query_cache_key = cache_key
+            if not cache_key:
+                state.ambiguity_reason = "pagination_unavailable"
+                state.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                state.retrieval_source = ComponentSource.ERROR
+                state.result_count = 0
+                debug_meta["catalog_pagination_error"] = "missing_query_cache_key"
+                return
+
+            cached_ids_payload = await self._redis_cache.get_json(cache_key)
+            full_product_ids = list(cached_ids_payload.get("product_ids") or []) if isinstance(cached_ids_payload, dict) else []
+            cached_source = str(cached_ids_payload.get("source") or "vector") if isinstance(cached_ids_payload, dict) else "vector"
+            total_count = max(
+                int(cached_ids_payload.get("result_count") or 0) if isinstance(cached_ids_payload, dict) else 0,
+                len(full_product_ids),
+            )
+            debug_meta["catalog_pagination_cache_hit"] = bool(full_product_ids)
+            debug_meta["catalog_pagination_total_count"] = int(total_count)
+            if not full_product_ids:
+                state.ambiguity_reason = "pagination_unavailable"
+                state.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                state.retrieval_source = ComponentSource.ERROR
+                state.result_count = 0
+                debug_meta["catalog_pagination_error"] = "empty_query_cache"
+                return
+
+            resolver_started = time.perf_counter()
+            full_products, resolver_meta = await self._field_resolver.resolve(
+                product_ids=full_product_ids,
+                component_types=[ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS],
+                redis_cache=self._redis_cache,
+            )
+            spans["db_product_lookup_ms"] += (time.perf_counter() - resolver_started) * 1000.0
+            debug_meta.update(resolver_meta)
+            unique_products, total_unique_products = product_presentation.dedupe_products_by_master_code(
+                full_products,
+                limit=max(len(full_products), 1),
+            )
+            total_count = max(total_count, int(total_unique_products))
+            page_products = list(unique_products[page_offset: page_offset + page_size])
+            state.result_count = total_count
+            state.canonical_products = list(page_products)
+            state.product_ids = [self._card_identifier(card) for card in page_products]
+            state.retrieval_source = (
+                ComponentSource(cached_source)
+                if cached_source in {item.value for item in ComponentSource}
+                else ComponentSource.VECTOR
+            )
+            state.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
+
+            if not page_products:
+                state.ambiguity_reason = "pagination_exhausted"
+                state.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                state.canonical_products = []
+                state.recommendations = []
+                state.retrieval_source = ComponentSource.SQL
+                debug_meta["catalog_pagination_exhausted"] = True
+                debug_meta["catalog_pagination_has_more"] = False
+                return
+
+            state.pagination_has_more = (page_offset + len(page_products)) < total_count
+            debug_meta["catalog_pagination_has_more"] = state.pagination_has_more
+            debug_meta["catalog_pagination_page_count"] = len(page_products)
+            debug_meta["catalog_pagination_source"] = state.retrieval_source.value
+            debug_meta["catalog_pagination_query_text"] = str(text or "").strip()
+
     async def _handle_catalog_workflow(
             self,
             *,

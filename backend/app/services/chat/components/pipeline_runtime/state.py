@@ -43,3 +43,7 @@ class PipelineWorkflowState:
     attribute_list_target: str = ""
     semantic_catalog_search_done: bool = False
     query_cache_key: str = ""
+    pagination_requested: bool = False
+    pagination_offset: int = 0
+    pagination_limit: int = 0
+    pagination_has_more: bool = False

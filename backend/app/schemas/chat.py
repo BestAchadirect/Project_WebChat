@@ -41,6 +41,8 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[int] = None
     message: str
     locale: Optional[str] = "en-US"
+    client_action: Optional[str] = None
+    client_action_payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatContext(BaseModel):
@@ -135,7 +137,6 @@ def _augment_chat_components(
     components: List[ChatComponent],
     reply_text: str = "",
     product_carousel: Optional[List[ProductCard]] = None,
-    follow_up_questions: Optional[List[str]] = None,
 ) -> List[ChatComponent]:
     augmented = list(components or [])
     seen = {_component_type_value(component) for component in augmented}
@@ -166,16 +167,6 @@ def _augment_chat_components(
         )
         seen.add(ChatComponentType.PRODUCT_CARDS.value)
 
-    follow_ups = [str(item or "").strip() for item in list(follow_up_questions or []) if str(item or "").strip()]
-    if follow_ups and ChatComponentType.QUICK_REPLIES.value not in seen:
-        augmented.append(
-            ChatComponent(
-                type=ChatComponentType.QUICK_REPLIES,
-                data={"items": follow_ups},
-            )
-        )
-        seen.add(ChatComponentType.QUICK_REPLIES.value)
-
     return augmented
 
 
@@ -185,6 +176,9 @@ class ChatResponseMeta(BaseModel):
     source: Literal["sql", "vector", "tool", "knowledge", "error"] = "error"
     llm_calls: int = 0
     embedding_calls: int = 0
+    product_result_count: int = 0
+    product_display_count: int = 0
+    product_has_more: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -209,7 +203,6 @@ class ChatResponse(BaseModel):
             components=list(self.components or []),
             reply_text=self.reply_text,
             product_carousel=list(self.product_carousel or []),
-            follow_up_questions=list(self.follow_up_questions or []),
         )
         return self
 

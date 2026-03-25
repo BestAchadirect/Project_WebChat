@@ -176,7 +176,7 @@ class PipelineSupportMixin:
                     answer=store_overview_answer,
                     question=question,
                     max_sentences=3,
-                    max_chars=280,
+                    max_chars=int(getattr(settings, "CHAT_KNOWLEDGE_ANSWER_MAX_CHARS", 420)),
                 )
 
             snippets = "\n".join(
@@ -223,7 +223,12 @@ class PipelineSupportMixin:
                 usage_kind="component_knowledge_answer",
             )
             answer = str(data.get("reply", "") or "").strip()
-            answer = self._polish_knowledge_answer(answer=answer, question=question, max_sentences=2, max_chars=240)
+            answer = self._polish_knowledge_answer(
+                answer=answer,
+                question=question,
+                max_sentences=4,
+                max_chars=int(getattr(settings, "CHAT_KNOWLEDGE_ANSWER_MAX_CHARS", 420)),
+            )
             if store_overview_request and store_overview_answer:
                 normalized_answer = normalize_user_text(answer)
                 looks_like_dump = normalized_answer.startswith("here is what i found")

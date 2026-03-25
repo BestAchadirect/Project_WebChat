@@ -1,37 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import re
 from typing import Any, Dict, Iterable, List, Optional
 
-CONVERSATION_STATE_VERSION = 2
+CONVERSATION_STATE_VERSION = 3
 MAX_PRODUCT_IDS = 10
 MAX_PRODUCT_SKUS = 10
 MAX_SOURCE_IDS = 10
 MAX_TONE_RECENT = 8
-
-_FOLLOW_UP_TOKENS = {
-    "another",
-    "any",
-    "better",
-    "cheaper",
-    "cheapest",
-    "else",
-    "first",
-    "it",
-    "less",
-    "more",
-    "one",
-    "ones",
-    "same",
-    "second",
-    "similar",
-    "that",
-    "them",
-    "these",
-    "third",
-    "those",
-}
 
 
 def _default_state() -> Dict[str, Any]:
@@ -42,6 +18,10 @@ def _default_state() -> Dict[str, Any]:
         "last_user_query": "",
         "last_attribute_filters": {},
         "last_requested_fields": [],
+        "last_query_cache_key": "",
+        "last_result_count": 0,
+        "last_display_offset": 0,
+        "last_display_limit": 0,
         "last_product_ids": [],
         "last_product_skus": [],
         "last_currency": "",
@@ -63,6 +43,13 @@ def _clean_text(value: Any) -> str:
 
 def _clean_currency(value: Any) -> str:
     return _clean_text(value).upper()
+
+
+def _clean_int(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
 
 
 def _clean_requested_fields(value: Any) -> List[str]:
@@ -210,6 +197,10 @@ def load_state(raw: Any) -> Dict[str, Any]:
     normalized["last_user_query"] = _clean_text(raw.get("last_user_query"))
     normalized["last_attribute_filters"] = _clean_attribute_filters(raw.get("last_attribute_filters"))
     normalized["last_requested_fields"] = _clean_requested_fields(raw.get("last_requested_fields"))
+    normalized["last_query_cache_key"] = _clean_text(raw.get("last_query_cache_key"))
+    normalized["last_result_count"] = _clean_int(raw.get("last_result_count"))
+    normalized["last_display_offset"] = _clean_int(raw.get("last_display_offset"))
+    normalized["last_display_limit"] = _clean_int(raw.get("last_display_limit"))
     normalized["last_product_ids"] = _clean_product_ids(raw.get("last_product_ids"))
     normalized["last_product_skus"] = _clean_product_skus(raw.get("last_product_skus"))
     normalized["last_currency"] = _clean_currency(raw.get("last_currency"))
@@ -228,25 +219,6 @@ def merge_filters(current_filters: Any, previous_filters: Any) -> Dict[str, str]
     merged = _clean_attribute_filters(previous_filters)
     merged.update(_clean_attribute_filters(current_filters))
     return merged
-
-
-def should_merge_follow_up_filters(
-    *,
-    user_text: str,
-    current_filters: Any,
-    sku_token: Optional[str],
-) -> bool:
-    if sku_token or _clean_attribute_filters(current_filters):
-        return False
-
-    normalized = _clean_text(user_text).lower()
-    if not normalized:
-        return False
-
-    tokens = re.findall(r"[a-z0-9]+", normalized)
-    if not tokens or len(tokens) > 8:
-        return False
-    return any(token in _FOLLOW_UP_TOKENS for token in tokens)
 
 
 def apply_workflow_update(
@@ -285,6 +257,10 @@ def apply_response_update(
     requested_fields: Any,
     currency: str,
     route: str,
+    query_cache_key: str = "",
+    result_count: Optional[int] = None,
+    display_offset: Optional[int] = None,
+    display_limit: Optional[int] = None,
     product_ids: Any = None,
     product_skus: Any = None,
     answer_source_ids: Any = None,
@@ -296,6 +272,14 @@ def apply_response_update(
     updated["last_requested_fields"] = _clean_requested_fields(requested_fields)
     updated["last_currency"] = _clean_currency(currency)
     updated["last_route"] = _clean_text(route)
+    if query_cache_key is not None:
+        updated["last_query_cache_key"] = _clean_text(query_cache_key)
+    if result_count is not None:
+        updated["last_result_count"] = _clean_int(result_count)
+    if display_offset is not None:
+        updated["last_display_offset"] = _clean_int(display_offset)
+    if display_limit is not None:
+        updated["last_display_limit"] = _clean_int(display_limit)
     if product_ids is not None:
         updated["last_product_ids"] = _clean_product_ids(product_ids)
     if product_skus is not None:

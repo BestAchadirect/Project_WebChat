@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("pydantic_settings")
 
-from app.schemas.chat import ChatResponse, ChatRouting, KnowledgeSource, ProductCard
+from app.schemas.chat import ChatComponent, ChatResponse, ChatRouting, KnowledgeSource, ProductCard
 from app.services.chat.runtime import persistence
 from app.services.chat.observability import qa_metrics
 from tests.fixtures.persistence import PersistenceDB
@@ -34,7 +34,6 @@ def test_build_chat_qa_metrics_extracts_turn_observability() -> None:
         reply_text="I found products that match what you're looking for.",
         carousel_msg="",
         product_carousel=[_product()],
-        follow_up_questions=["See more titanium labrets"],
         routing=ChatRouting(workflow="recommendation", execution_mode="component", needs_products=True),
         sources=[
             KnowledgeSource(
@@ -42,6 +41,12 @@ def test_build_chat_qa_metrics_extracts_turn_observability() -> None:
                 title="Products",
                 content_snippet="Products",
                 relevance=0.9,
+            )
+        ],
+        components=[
+            ChatComponent(
+                type="quick_replies",
+                data={"items": ["See more titanium labrets"]},
             )
         ],
         debug={
@@ -80,7 +85,6 @@ async def test_finalize_response_persists_chat_metrics_in_token_usage() -> None:
         reply_text="Fallback answer",
         carousel_msg="",
         product_carousel=[],
-        follow_up_questions=[],
         routing=ChatRouting(workflow="fallback", execution_mode="component", needs_clarification=True),
         sources=[],
         debug={"workflow": "knowledge", "workflow_path": "fallback_component"},
