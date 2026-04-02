@@ -6,14 +6,11 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, Sequence
 
 from app.core.config import settings
+from app.prompts.routing import routing_decision_prompt
 from app.schemas.chat import ChatRouting
 from app.services.ai.llm_service import llm_service
 from app.services.chat.components.types import ComponentSource
-from app.services.chat.routing.routing_terms import (
-    TIMEOUT_CATALOG_TERMS,
-    TIMEOUT_KNOWLEDGE_TERMS,
-    TIMEOUT_RECOMMENDATION_TERMS,
-)
+from app.services.chat.runtime.capabilities import ChatRuntimeCapabilities, build_chat_runtime_capabilities
 
 SUPPORTED_WORKFLOWS = {
     "catalog",
@@ -34,6 +31,7 @@ class WorkflowDecision:
     needs_knowledge: bool
     needs_clarification: bool
     store_overview_request: bool
+    recommendation_mode_requested: str = "similar_items"
     knowledge_query: str = ""
     reason: str = ""
     confidence: float = 0.0
@@ -46,6 +44,7 @@ class WorkflowDecision:
             needs_knowledge=self.needs_knowledge,
             needs_clarification=self.needs_clarification,
             store_overview_request=self.store_overview_request,
+            recommendation_mode_requested=self.recommendation_mode_requested,
             reason=self.reason,
             confidence=self.confidence,
             selection_source=selection_source,
@@ -110,14 +109,13 @@ def extract_sku_tokens(text: str) -> list[str]:
     return deduped
 
 
-def is_agentic_channel_enabled(*, channel: str | None) -> bool:
-    if not bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)):
-        return False
-    allowed_raw = str(getattr(settings, "AGENTIC_ALLOWED_CHANNELS", "") or "")
-    allowed = {part.strip().lower() for part in allowed_raw.split(",") if part.strip()}
-    if not allowed:
-        return True
-    return str(channel or "").strip().lower() in allowed
+def is_agentic_channel_enabled(
+    *,
+    channel: str | None,
+    capabilities: ChatRuntimeCapabilities | None = None,
+) -> bool:
+    caps = capabilities or build_chat_runtime_capabilities()
+    return bool(caps.is_agentic_channel_enabled(channel=channel))
 
 
 def is_agentic_tool_suitable(
@@ -135,13 +133,7 @@ def is_agentic_tool_suitable(
         return False
     if sku_token:
         return True
-    inventory_keywords = ("in stock", "inventory", "availability", "available", "stock")
-    detail_keywords = ("details", "detail", "spec", "specs", "sku", "product code", "master code")
-    if any(token in text for token in inventory_keywords):
-        return True
-    if any(token in text for token in detail_keywords):
-        return True
-    # Allow catalog+knowledge mixed questions to escalate only when concrete product data is needed.
+    # Let the LLM decide agentic routing for broad catalog+knowledge chains.
     return bool(workflow == "catalog" and needs_products and needs_knowledge)
 
 
@@ -201,14 +193,11 @@ def _fallback_workflow_decision(*, reason: str, confidence: float = 0.0) -> Work
         needs_knowledge=False,
         needs_clarification=True,
         store_overview_request=False,
+        recommendation_mode_requested="similar_items",
         knowledge_query="",
         reason=reason,
         confidence=max(0.0, min(1.0, float(confidence))),
     )
-
-
-def _contains_any_phrase(text: str, phrases: Sequence[str]) -> bool:
-    return any(str(phrase).strip() and str(phrase).strip() in text for phrase in phrases)
 
 
 def _timeout_guardrail_decision(
@@ -221,38 +210,7 @@ def _timeout_guardrail_decision(
     text_norm = normalize_text(text)
     if not text_norm:
         return None
-
-    if _contains_any_phrase(text_norm, TIMEOUT_KNOWLEDGE_TERMS):
-        store_overview = _contains_any_phrase(text_norm, ("company", "store", "about us", "who are you"))
-        return WorkflowDecision(
-            workflow="knowledge",
-            source=ComponentSource.KNOWLEDGE,
-            needs_products=False,
-            needs_knowledge=True,
-            needs_clarification=False,
-            store_overview_request=store_overview,
-            knowledge_query="",
-            reason="routing_timeout_knowledge_guardrail",
-            confidence=0.51,
-        )
-
-    if _contains_any_phrase(text_norm, TIMEOUT_RECOMMENDATION_TERMS):
-        return WorkflowDecision(
-            workflow="recommendation",
-            source=ComponentSource.SQL,
-            needs_products=True,
-            needs_knowledge=False,
-            needs_clarification=True,
-            store_overview_request=False,
-            knowledge_query="",
-            reason="routing_timeout_recommendation_guardrail",
-            confidence=0.51,
-        )
-
-    product_like = bool(sku_tokens) or detail_has_filters or detail_request or _contains_any_phrase(
-        text_norm, TIMEOUT_CATALOG_TERMS
-    )
-    if product_like:
+    if bool(sku_tokens) or detail_has_filters or detail_request:
         return WorkflowDecision(
             workflow="catalog",
             source=ComponentSource.SQL,
@@ -260,6 +218,7 @@ def _timeout_guardrail_decision(
             needs_knowledge=False,
             needs_clarification=False,
             store_overview_request=False,
+            recommendation_mode_requested="similar_items",
             knowledge_query="",
             reason="routing_timeout_catalog_guardrail",
             confidence=0.51,
@@ -276,6 +235,9 @@ def _coerce_llm_routing_payload(payload: Dict[str, Any]) -> tuple[WorkflowDecisi
     needs_knowledge = _coerce_bool(payload.get("needs_knowledge"), default=defaults[1])
     needs_clarification = _coerce_bool(payload.get("needs_clarification"), default=defaults[2])
     store_overview_request = _coerce_bool(payload.get("store_overview_request"), default=False)
+    recommendation_mode_requested = str(payload.get("recommendation_mode_requested") or "similar_items").strip().lower()
+    if recommendation_mode_requested not in {"similar_items", "complementary_items"}:
+        recommendation_mode_requested = "similar_items"
     knowledge_query = str(payload.get("knowledge_query") or "").strip()
     reason = str(payload.get("reason") or "").strip()
     try:
@@ -308,6 +270,7 @@ def _coerce_llm_routing_payload(payload: Dict[str, Any]) -> tuple[WorkflowDecisi
         needs_knowledge=needs_knowledge,
         needs_clarification=needs_clarification,
         store_overview_request=store_overview_request,
+        recommendation_mode_requested=recommendation_mode_requested if workflow == "recommendation" else "similar_items",
         knowledge_query=knowledge_query if needs_knowledge else "",
         reason=reason,
         confidence=confidence,
@@ -346,127 +309,18 @@ async def _llm_decide_routing(
     sku_tokens: Sequence[str],
     compact_prompt: bool = False,
     timeout_ms: int | None = None,
+    capabilities: ChatRuntimeCapabilities | None = None,
 ) -> Dict[str, Any]:
-    model = str(getattr(settings, "CHAT_LLM_ROUTING_MODEL", "") or "").strip()
+    caps = capabilities or build_chat_runtime_capabilities()
+    model = str(caps.chat_llm_routing_model or "").strip()
     if not model:
         model = str(getattr(settings, "NLU_MODEL", "") or getattr(settings, "OPENAI_MODEL", ""))
 
-    max_tokens = max(120, int(getattr(settings, "CHAT_LLM_ROUTING_MAX_TOKENS", 180)))
+    max_tokens = max(120, int(caps.chat_llm_routing_max_tokens))
     if compact_prompt:
         max_tokens = min(max_tokens, 140)
-    temperature = float(getattr(settings, "CHAT_LLM_ROUTING_TEMPERATURE", 0.0))
-    if compact_prompt:
-        system = (
-            "Return ONLY strict JSON with keys: workflow, execution_mode, needs_products, needs_knowledge, "
-            "needs_clarification, store_overview_request, knowledge_query, reason, confidence.\n"
-            "workflow must be one of: catalog, knowledge, recommendation, smalltalk, off_topic, fallback.\n"
-            "execution_mode must be one of: component, agentic.\n"
-            "Rules:\n"
-            "- knowledge: company/store info, location, contact, sales/support, shipping/refund/payment/policy.\n"
-            "- catalog: product browse/search/filter requests.\n"
-            "- recommendation: product suggestion requests.\n"
-            "- smalltalk: greeting/thanks/casual store-related chat.\n"
-            "- off_topic: unrelated requests (coding, general AI assistant tasks, trivia).\n"
-            "- fallback only when message is genuinely unclear.\n"
-            "- For mixed requests, choose the primary workflow and set needs_products/needs_knowledge flags.\n"
-            "- For mixed requests, set knowledge_query to a short knowledge-only subquery for any secondary knowledge "
-            "question (for example contact, location, showroom, opening-hours, shipping, refund, payment, warranty, "
-            "or policy). Otherwise use an empty string.\n"
-            "- execution_mode=agentic only for concrete SKU/inventory/detail chains.\n"
-            "Confidence: 0.8-1.0 clear, 0.5-0.79 broad but understandable, <0.5 unclear."
-        )
-    else:
-        system = (
-            "Return ONLY strict JSON with keys: workflow, execution_mode, needs_products, needs_knowledge, "
-            "needs_clarification, store_overview_request, knowledge_query, reason, confidence.\n"
-            "workflow must be one of: catalog, knowledge, recommendation, smalltalk, off_topic, fallback.\n"
-            "execution_mode must be one of: component, agentic.\n"
-            "Routing rules:\n"
-            "- Use knowledge for company info, about us, store overview, contact details, sales contact, support, "
-            "location, buy in person, shipping, refund, payment, warranty, and other policy/help questions.\n"
-            "- Use catalog for product browsing, product discovery, filters, materials, colors, gauges, and general "
-            "shopping requests.\n"
-            "- Use recommendation when the user asks for suggestions, ideas, or recommendations, even if the request "
-            "is broad.\n"
-            "- Use smalltalk only for greetings, thanks, or casual non-business chat.\n"
-            "- Use off_topic for requests unrelated to shopping, product support, or store policies (e.g., coding help, "
-            "general AI tasks, unrelated trivia, non-store personal tasks).\n"
-            "- Use fallback only when the request is too unclear to answer safely.\n"
-            "Additional rules:\n"
-            "- If the request asks about buying in person, company/store location, sales team, or contact channels, "
-            "set needs_knowledge=true.\n"
-            "- If the request asks for suggestions without enough detail, prefer workflow=recommendation with "
-            "needs_clarification=true instead of fallback.\n"
-            "- If the request mixes shopping and policy/help, choose the main workflow owner and use flags to "
-            "represent both needs.\n"
-            "- For mixed requests, set knowledge_query to the knowledge-only subquestion for any secondary knowledge "
-            "question (for example location, address, showroom, in-person buying, opening-hours, contact, shipping, "
-            "refund, payment, warranty, or policy). Otherwise set knowledge_query to an empty string.\n"
-            "- Use store_overview_request=true only when the user is asking about the company/store/business itself.\n"
-            "- Use execution_mode=agentic only for concrete multi-step tool use such as SKU validation, inventory "
-            "checks, or chained product detail lookups.\n"
-            "- If uncertain, prefer the closest business workflow over smalltalk.\n"
-            "- Do not classify company/store/contact/location questions as smalltalk.\n"
-            "- If user asks for coding/programming or asks what you are as a general AI assistant outside store context, "
-            "prefer off_topic.\n"
-            "Confidence rules:\n"
-            "- Use high confidence (0.8-1.0) when the request is clear.\n"
-            "- Use medium confidence (0.5-0.79) when the request is understandable but broad.\n"
-            "- Use low confidence (<0.5) only when the request is genuinely unclear.\n"
-            "Examples:\n"
-            'User: "what is your company?"\n'
-            'Output: {"workflow":"knowledge","execution_mode":"component","needs_products":false,'
-            '"needs_knowledge":true,"needs_clarification":false,"store_overview_request":true,"knowledge_query":"",'
-            '"reason":"User is asking about the company or business.","confidence":0.9}\n'
-            'User: "where is your company? I want to buy in person"\n'
-            'Output: {"workflow":"knowledge","execution_mode":"component","needs_products":false,'
-            '"needs_knowledge":true,"needs_clarification":true,"store_overview_request":true,'
-            '"knowledge_query":"where is your company and can I buy in person",'
-            '"reason":"User is asking for company or store location and in-person buying information.",'
-            '"confidence":0.86}\n'
-            'User: "how can I contact your sales team?"\n'
-            'Output: {"workflow":"knowledge","execution_mode":"component","needs_products":false,'
-            '"needs_knowledge":true,"needs_clarification":false,"store_overview_request":true,"knowledge_query":"",'
-            '"reason":"User is asking for sales contact information.","confidence":0.95}\n'
-            'User: "Show me titanium jewelry and also what payment methods do you accept?"\n'
-            'Output: {"workflow":"catalog","execution_mode":"component","needs_products":true,'
-            '"needs_knowledge":true,"needs_clarification":false,"store_overview_request":false,'
-            '"knowledge_query":"what payment methods do you accept",'
-            '"reason":"Primary request is product browsing with a secondary payment question.","confidence":0.9}\n'
-            'User: "Do you have any product suggest?"\n'
-            'Output: {"workflow":"recommendation","execution_mode":"component","needs_products":true,'
-            '"needs_knowledge":false,"needs_clarification":true,"store_overview_request":false,"knowledge_query":"",'
-            '"reason":"User is asking for product suggestions but has not given enough preferences.",'
-            '"confidence":0.83}\n'
-            'User: "Suggest something in titanium"\n'
-            'Output: {"workflow":"recommendation","execution_mode":"component","needs_products":true,'
-            '"needs_knowledge":false,"needs_clarification":false,"store_overview_request":false,"knowledge_query":"",'
-            '"reason":"User wants product recommendations with a material preference.","confidence":0.92}\n'
-            'User: "Show me opal rings and how can I contact you?"\n'
-            'Output: {"workflow":"catalog","execution_mode":"component","needs_products":true,'
-            '"needs_knowledge":true,"needs_clarification":false,"store_overview_request":false,'
-            '"knowledge_query":"how can I contact you",'
-            '"reason":"Primary request is product browsing with a secondary contact need.","confidence":0.9}\n'
-            'User: "I want to buy barbell product and also next week i am going to thailand when are your store going to open?"\n'
-            'Output: {"workflow":"catalog","execution_mode":"component","needs_products":true,'
-            '"needs_knowledge":true,"needs_clarification":false,"store_overview_request":false,'
-            '"knowledge_query":"when is your Thailand showroom open next week",'
-            '"reason":"Primary request is product browsing with a secondary location or opening-hours need.",'
-            '"confidence":0.9}\n'
-            'User: "Do you have ABC-1 in stock?"\n'
-            'Output: {"workflow":"catalog","execution_mode":"agentic","needs_products":true,'
-            '"needs_knowledge":false,"needs_clarification":false,"store_overview_request":false,"knowledge_query":"",'
-            '"reason":"User wants a concrete inventory lookup for a specific SKU.","confidence":0.96}\n'
-            'User: "hi"\n'
-            'Output: {"workflow":"smalltalk","execution_mode":"component","needs_products":false,'
-            '"needs_knowledge":false,"needs_clarification":false,"store_overview_request":false,"knowledge_query":"",'
-            '"reason":"Greeting only.","confidence":0.98}\n'
-            'User: "Can you do coding. and who are you? are you an ai?"\n'
-            'Output: {"workflow":"off_topic","execution_mode":"component","needs_products":false,'
-            '"needs_knowledge":false,"needs_clarification":false,"store_overview_request":false,"knowledge_query":"",'
-            '"reason":"The request is unrelated to store shopping/support and asks for general AI/coding capability.",'
-            '"confidence":0.92}'
-        )
+    temperature = float(caps.chat_llm_routing_temperature)
+    system = routing_decision_prompt(compact_prompt=compact_prompt)
     user = (
         f"message={text}\n"
         f"locale={str(locale or '')}\n"
@@ -477,7 +331,7 @@ async def _llm_decide_routing(
     )
     timeout_source_ms = timeout_ms
     if timeout_source_ms is None:
-        timeout_source_ms = int(getattr(settings, "CHAT_LLM_ROUTING_TIMEOUT_MS", 3500))
+        timeout_source_ms = int(caps.chat_llm_routing_timeout_ms)
     timeout_seconds = max(0.2, float(timeout_source_ms) / 1000.0)
     return await asyncio.wait_for(
         llm_service.generate_chat_json(
@@ -503,15 +357,17 @@ async def decide_execution_mode_with_llm(
     detail_has_filters: bool,
     detail_request: bool,
     sku_tokens: Sequence[str],
+    capabilities: ChatRuntimeCapabilities | None = None,
 ) -> ExecutionDecision:
-    if not bool(getattr(settings, "CHAT_LLM_ROUTING_ENABLED", False)):
+    caps = capabilities or build_chat_runtime_capabilities()
+    if not bool(caps.chat_llm_routing_enabled):
         fallback = _fallback_workflow_decision(reason="llm_routing_disabled")
         return ExecutionDecision(
             route_decision=fallback,
             execution_mode="component",
             reason="llm_routing_disabled",
-            feature_enabled=bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)),
-            channel_allowed=is_agentic_channel_enabled(channel=channel),
+            feature_enabled=bool(caps.agentic_function_calling_enabled),
+            channel_allowed=is_agentic_channel_enabled(channel=channel, capabilities=caps),
             tool_suitable=False,
             selection_source="llm_fallback",
         )
@@ -521,16 +377,16 @@ async def decide_execution_mode_with_llm(
             route_decision=fallback,
             execution_mode="component",
             reason="empty_message",
-            feature_enabled=bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)),
-            channel_allowed=is_agentic_channel_enabled(channel=channel),
+            feature_enabled=bool(caps.agentic_function_calling_enabled),
+            channel_allowed=is_agentic_channel_enabled(channel=channel, capabilities=caps),
             tool_suitable=False,
             selection_source="llm_fallback",
         )
 
-    min_confidence = float(getattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7))
-    agentic_min_confidence = float(getattr(settings, "CHAT_AGENTIC_MIN_CONFIDENCE", 0.8))
-    timeout_retry_enabled = bool(getattr(settings, "CHAT_LLM_ROUTING_TIMEOUT_RETRY_ENABLED", True))
-    timeout_retry_ms = max(300, int(getattr(settings, "CHAT_LLM_ROUTING_TIMEOUT_RETRY_MS", 2000)))
+    min_confidence = float(caps.chat_llm_routing_min_confidence)
+    agentic_min_confidence = float(caps.chat_agentic_min_confidence)
+    timeout_retry_enabled = bool(caps.chat_llm_routing_timeout_retry_enabled)
+    timeout_retry_ms = max(300, int(caps.chat_llm_routing_timeout_retry_ms))
     timeout_retry_used = False
 
     llm_payload: Dict[str, Any] | None = None
@@ -543,6 +399,7 @@ async def decide_execution_mode_with_llm(
             detail_has_filters=detail_has_filters,
             detail_request=detail_request,
             sku_tokens=sku_tokens,
+            capabilities=caps,
         )
     except asyncio.TimeoutError as exc:
         routing_error = exc
@@ -583,8 +440,8 @@ async def decide_execution_mode_with_llm(
                     route_decision=timeout_guardrail,
                     execution_mode="component",
                     reason="routing_timeout_guardrail",
-                    feature_enabled=bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)),
-                    channel_allowed=is_agentic_channel_enabled(channel=channel),
+                    feature_enabled=bool(caps.agentic_function_calling_enabled),
+                    channel_allowed=is_agentic_channel_enabled(channel=channel, capabilities=caps),
                     tool_suitable=False,
                     selection_source="llm_timeout_guardrail",
                     timeout_retry_used=timeout_retry_used,
@@ -599,8 +456,8 @@ async def decide_execution_mode_with_llm(
                 route_decision=fallback,
                 execution_mode="component",
                 reason="routing_error",
-                feature_enabled=bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)),
-                channel_allowed=is_agentic_channel_enabled(channel=channel),
+                feature_enabled=bool(caps.agentic_function_calling_enabled),
+                channel_allowed=is_agentic_channel_enabled(channel=channel, capabilities=caps),
                 tool_suitable=False,
                 selection_source="llm_fallback",
                 timeout_retry_used=timeout_retry_used,
@@ -617,8 +474,8 @@ async def decide_execution_mode_with_llm(
                 route_decision=fallback,
                 execution_mode="component",
                 reason="invalid_routing_payload",
-                feature_enabled=bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)),
-                channel_allowed=is_agentic_channel_enabled(channel=channel),
+                feature_enabled=bool(caps.agentic_function_calling_enabled),
+                channel_allowed=is_agentic_channel_enabled(channel=channel, capabilities=caps),
                 tool_suitable=False,
                 selection_source="llm_fallback",
             ),
@@ -639,8 +496,8 @@ async def decide_execution_mode_with_llm(
                 route_decision=fallback,
                 execution_mode="component",
                 reason="confidence_below_threshold",
-                feature_enabled=bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)),
-                channel_allowed=is_agentic_channel_enabled(channel=channel),
+                feature_enabled=bool(caps.agentic_function_calling_enabled),
+                channel_allowed=is_agentic_channel_enabled(channel=channel, capabilities=caps),
                 tool_suitable=False,
                 selection_source="llm_fallback",
             ),
@@ -662,8 +519,8 @@ async def decide_execution_mode_with_llm(
                 route_decision=fallback,
                 execution_mode="component",
                 reason="agentic_confidence_below_threshold",
-                feature_enabled=bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)),
-                channel_allowed=is_agentic_channel_enabled(channel=channel),
+                feature_enabled=bool(caps.agentic_function_calling_enabled),
+                channel_allowed=is_agentic_channel_enabled(channel=channel, capabilities=caps),
                 tool_suitable=False,
                 selection_source="llm_fallback",
             ),
@@ -675,8 +532,8 @@ async def decide_execution_mode_with_llm(
             confidence_gate_applied=True,
         )
 
-    feature_enabled = bool(getattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False))
-    channel_allowed = is_agentic_channel_enabled(channel=channel)
+    feature_enabled = bool(caps.agentic_function_calling_enabled)
+    channel_allowed = is_agentic_channel_enabled(channel=channel, capabilities=caps)
     sku_token = str(sku_tokens[0]) if list(sku_tokens or []) else None
     tool_suitable = is_agentic_tool_suitable(
         user_text=text,

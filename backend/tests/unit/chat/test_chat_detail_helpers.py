@@ -120,19 +120,42 @@ def test_detail_query_parser_extracts_fields_and_filters() -> None:
     assert parsed.attribute_filters.get("gauge") == "25mm"
 
 
-def test_detail_query_parser_supports_opal_and_material_synonyms() -> None:
+def test_detail_query_parser_supports_explicit_opal_color_and_material_synonyms() -> None:
     parsed = DetailQueryParser.parse(
-        user_text="Need opal color with implant grade titanium barbell",
+        user_text="Need blue opal color with implant grade titanium barbell",
         nlu_data={},
         alias_map=_db_alias_map(),
         parser_rules=_db_rules(),
     )
-    assert parsed.attribute_filters.get("color") == "opal"
+    assert parsed.attribute_filters.get("opal_color") == "blue"
     assert parsed.attribute_filters.get("material") == "titanium g23"
     assert parsed.attribute_filters.get("jewelry_type") == "barbell"
 
 
-def test_detail_query_parser_infers_plain_opal_from_alias_map_even_without_detection_order() -> None:
+def test_detail_query_parser_does_not_infer_plain_opal_without_explicit_pattern() -> None:
+    rules = build_rule_set(
+        requested_field_patterns=_db_rules().requested_field_patterns,
+        value_extract_patterns=_db_rules().value_extract_patterns,
+        detection_attribute_order=["jewelry_type", "material", "threading", "finish", "design"],
+        allowed_attribute_filters=["stone", "opal_color", "finish", "material"],
+    )
+    parsed = DetailQueryParser.parse(
+        user_text="Do you have sterilization with opal?",
+        nlu_data={},
+        alias_map={key: value for key, value in _db_alias_map().items() if key not in {"color", "stone", "finish"}},
+        parser_rules=rules,
+    )
+    assert parsed.attribute_filters.get("finish") is None
+    assert parsed.attribute_filters.get("stone") is None
+    assert parsed.attribute_filters.get("opal_color") is None
+    assert parsed.semantic_hints == []
+
+
+def test_detail_query_parser_does_not_force_sterilization_into_finish_without_exact_wording() -> None:
+    alias_map = _db_alias_map()
+    alias_map.pop("finish", None)
+    alias_map.pop("color", None)
+    alias_map.pop("stone", None)
     rules = build_rule_set(
         requested_field_patterns=_db_rules().requested_field_patterns,
         value_extract_patterns=_db_rules().value_extract_patterns,
@@ -142,29 +165,12 @@ def test_detail_query_parser_infers_plain_opal_from_alias_map_even_without_detec
     parsed = DetailQueryParser.parse(
         user_text="Do you have sterilization with opal?",
         nlu_data={},
-        alias_map=_db_alias_map(),
+        alias_map=alias_map,
         parser_rules=rules,
     )
-    assert parsed.attribute_filters.get("finish") is None
-    assert parsed.attribute_filters.get("stone") == "opal"
-    assert parsed.semantic_hints == []
-
-
-def test_detail_query_parser_does_not_force_sterilization_into_finish_without_exact_wording() -> None:
-    alias_map = _db_alias_map()
-    alias_map.pop("finish", None)
-    parsed = DetailQueryParser.parse(
-        user_text="Do you have sterilization with opal?",
-        nlu_data={},
-        alias_map=alias_map,
-        parser_rules=_db_rules(),
-    )
 
     assert parsed.attribute_filters.get("finish") is None
-    assert any(
-        parsed.attribute_filters.get(key) == "opal"
-        for key in ("stone", "color", "opal_color")
-    )
+    assert all(parsed.attribute_filters.get(key) is None for key in ("stone", "color", "opal_color"))
 
 
 def test_detail_query_parser_filter_only_query_is_not_detail_mode() -> None:

@@ -157,16 +157,11 @@ class PipelineSupportMixin:
             store_overview_request: bool,
             llm_cache_key: str,
         ) -> tuple[str, bool]:
-            cached = await self._redis_cache.get_json(llm_cache_key)
-            if isinstance(cached, dict) and str(cached.get("answer", "")).strip():
-                return str(cached.get("answer", "")), True
             if not list(sources or []):
                 answer = self._build_grounded_knowledge_fallback_answer(
                     question=question,
                     sources=sources,
                 )
-                if answer:
-                    await self._redis_cache.set_json(llm_cache_key, {"answer": answer}, ttl_seconds=120)
                 return answer, False
             store_overview_answer = (
                 self._build_store_overview_knowledge_answer(sources=sources) if store_overview_request else ""
@@ -243,6 +238,4 @@ class PipelineSupportMixin:
                     question=question,
                     sources=sources,
                 )
-            if answer:
-                await self._redis_cache.set_json(llm_cache_key, {"answer": answer}, ttl_seconds=120)
             return answer, False

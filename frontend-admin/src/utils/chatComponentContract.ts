@@ -33,12 +33,6 @@ export const normalizeChatComponents = (value: unknown): ChatComponentLike[] => 
         .filter((item): item is ChatComponentLike => item !== null);
 };
 
-export const buildFallbackAssistantComponents = (text: string): ChatComponentLike[] => {
-    const trimmed = String(text || '').trim();
-    if (!trimmed) return [];
-    return [{ type: 'assistant_message', data: { text: trimmed } }];
-};
-
 export const hasAssistantMessageComponent = (components: ChatComponentLike[]): boolean => {
     return components.some((item) => item.type === 'assistant_message' && String(item.data.text || '').trim() !== '');
 };

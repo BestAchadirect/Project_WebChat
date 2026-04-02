@@ -231,3 +231,43 @@ async def test_process_chat_falls_back_to_component_when_agentic_returns_none(
     assert response.debug.get("component_mode") == "primary"
     assert bool((response.debug.get("agentic") or {}).get("fallback_to_component")) is True
 
+
+@pytest.mark.asyncio
+async def test_process_chat_falls_back_to_component_when_agentic_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def failing_agentic_workflow(
+        self,
+        *,
+        user_text: str,
+        conversation_id: int,
+        run_id: str,
+        channel: str,
+        reply_language: str,
+    ):
+        raise RuntimeError("agentic backend unavailable")
+
+    async def fake_component_pipeline(self, *, request, conversation_id, run_id, **kwargs):
+        return build_component_pipeline_result(
+            request=request,
+            conversation_id=conversation_id,
+            reply_text="component fallback after error",
+        )
+
+    patch_chat_service_lifecycle(monkeypatch)
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", True)
+    monkeypatch.setattr(settings, "AGENTIC_ALLOWED_CHANNELS", "widget")
+    monkeypatch.setattr(ChatService, "_run_agentic_workflow", failing_agentic_workflow)
+    monkeypatch.setattr(ChatService, "_run_component_pipeline", fake_component_pipeline)
+
+    service = ChatService(db=object())
+    response = await service.process_chat(
+        ChatRequest(user_id="guest-agent-3", message="stock for ABC-1", locale="en-US"),
+        channel="widget",
+    )
+
+    assert response.reply_text == "component fallback after error"
+    assert response.debug.get("component_mode") == "primary"
+    assert bool((response.debug.get("agentic") or {}).get("fallback_to_component")) is True
+    assert (response.debug.get("agentic") or {}).get("fallback_reason") == "agentic_error"
+

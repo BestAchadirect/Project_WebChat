@@ -233,6 +233,33 @@ async def test_llm_routing_timeout_uses_catalog_guardrail_for_product_like_messa
 
 
 @pytest.mark.asyncio
+async def test_llm_routing_timeout_falls_back_for_knowledge_message_without_structural_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="How can I contact your sales team?",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "fallback"
+    assert decision.route_decision.needs_clarification is True
+    assert decision.execution_mode == "component"
+    assert decision.selection_source == "llm_fallback"
+    assert decision.reason == "routing_error"
+    assert decision.llm_reason == "error:TimeoutError"
+
+
+@pytest.mark.asyncio
 async def test_llm_routing_timeout_retries_with_compact_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, Any] = {"count": 0, "system_prompts": []}
 
@@ -268,8 +295,9 @@ async def test_llm_routing_timeout_retries_with_compact_prompt(monkeypatch: pyte
     )
 
     assert calls["count"] == 2
-    assert "Examples:" in calls["system_prompts"][0]
-    assert "Examples:" not in calls["system_prompts"][1]
+    assert len(calls["system_prompts"][1]) < len(calls["system_prompts"][0])
+    assert "recommendation_mode_requested" in calls["system_prompts"][0]
+    assert "recommendation_mode_requested" in calls["system_prompts"][1]
     assert decision.route_decision.workflow == "knowledge"
     assert decision.execution_mode == "component"
     assert decision.selection_source == "llm_retry"
@@ -350,9 +378,9 @@ async def test_llm_routing_prompt_includes_company_and_recommendation_examples(
     )
 
     system_prompt = captured["system"]
-    assert 'User: "what is your company?"' in system_prompt
-    assert 'User: "Do you have any product suggest?"' in system_prompt
-    assert 'User: "Can you do coding. and who are you? are you an ai?"' in system_prompt
+    assert "Return ONLY strict JSON" in system_prompt
+    assert "recommendation_mode_requested" in system_prompt
+    assert "User:" not in system_prompt
 
 
 @pytest.mark.asyncio
@@ -423,3 +451,37 @@ async def test_llm_routing_keeps_payment_knowledge_query_for_mixed_request(
     assert decision.route_decision.workflow == "catalog"
     assert decision.route_decision.needs_knowledge is True
     assert decision.route_decision.knowledge_query == "what payment methods do you accept"
+
+
+@pytest.mark.asyncio
+async def test_llm_routing_keeps_recommendation_mode_for_complementary_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        return {
+            "workflow": "recommendation",
+            "execution_mode": "component",
+            "needs_products": True,
+            "needs_knowledge": False,
+            "needs_clarification": False,
+            "store_overview_request": False,
+            "recommendation_mode_requested": "complementary_items",
+            "reason": "user asks what goes with a labret",
+            "confidence": 0.94,
+        }
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="What goes with this labret?",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "recommendation"
+    assert decision.route_decision.recommendation_mode_requested == "complementary_items"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -19,6 +20,7 @@ def _default_state() -> Dict[str, Any]:
         "last_attribute_filters": {},
         "last_requested_fields": [],
         "last_query_cache_key": "",
+        "last_query_product_ids": [],
         "last_result_count": 0,
         "last_display_offset": 0,
         "last_display_limit": 0,
@@ -35,6 +37,60 @@ def _default_state() -> Dict[str, Any]:
         "tone_recent": [],
         "updated_at": "",
     }
+
+
+@dataclass(frozen=True)
+class ConversationMemoryState:
+    version: int
+    last_workflow: str = ""
+    last_refined_query: str = ""
+    last_user_query: str = ""
+    last_attribute_filters: Dict[str, str] = field(default_factory=dict)
+    last_requested_fields: List[str] = field(default_factory=list)
+    last_product_ids: List[str] = field(default_factory=list)
+    last_product_skus: List[str] = field(default_factory=list)
+    last_currency: str = ""
+    last_route: str = ""
+    last_answer_source_ids: List[str] = field(default_factory=list)
+    last_inventory_claim: Dict[str, str] = field(default_factory=dict)
+    tone_recent: List[Dict[str, Any]] = field(default_factory=list)
+    updated_at: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "version": int(self.version or CONVERSATION_STATE_VERSION),
+            "last_workflow": self.last_workflow,
+            "last_refined_query": self.last_refined_query,
+            "last_user_query": self.last_user_query,
+            "last_attribute_filters": dict(self.last_attribute_filters or {}),
+            "last_requested_fields": list(self.last_requested_fields or []),
+            "last_product_ids": list(self.last_product_ids or []),
+            "last_product_skus": list(self.last_product_skus or []),
+            "last_currency": self.last_currency,
+            "last_route": self.last_route,
+            "last_answer_source_ids": list(self.last_answer_source_ids or []),
+            "last_inventory_claim": dict(self.last_inventory_claim or {}),
+            "tone_recent": list(self.tone_recent or []),
+            "updated_at": self.updated_at,
+        }
+
+
+@dataclass(frozen=True)
+class ConversationContinuationState:
+    last_query_cache_key: str = ""
+    last_query_product_ids: List[str] = field(default_factory=list)
+    last_result_count: int = 0
+    last_display_offset: int = 0
+    last_display_limit: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "last_query_cache_key": self.last_query_cache_key,
+            "last_query_product_ids": list(self.last_query_product_ids or []),
+            "last_result_count": int(self.last_result_count or 0),
+            "last_display_offset": int(self.last_display_offset or 0),
+            "last_display_limit": int(self.last_display_limit or 0),
+        }
 
 
 def _clean_text(value: Any) -> str:
@@ -92,6 +148,20 @@ def _clean_product_ids(values: Any) -> List[str]:
         ids.append(product_id)
         if len(ids) >= MAX_PRODUCT_IDS:
             break
+    return ids
+
+
+def _clean_query_product_ids(values: Any) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    ids: List[str] = []
+    seen: set[str] = set()
+    for item in values:
+        product_id = _clean_text(item)
+        if not product_id or product_id in seen:
+            continue
+        seen.add(product_id)
+        ids.append(product_id)
     return ids
 
 
@@ -198,6 +268,7 @@ def load_state(raw: Any) -> Dict[str, Any]:
     normalized["last_attribute_filters"] = _clean_attribute_filters(raw.get("last_attribute_filters"))
     normalized["last_requested_fields"] = _clean_requested_fields(raw.get("last_requested_fields"))
     normalized["last_query_cache_key"] = _clean_text(raw.get("last_query_cache_key"))
+    normalized["last_query_product_ids"] = _clean_query_product_ids(raw.get("last_query_product_ids"))
     normalized["last_result_count"] = _clean_int(raw.get("last_result_count"))
     normalized["last_display_offset"] = _clean_int(raw.get("last_display_offset"))
     normalized["last_display_limit"] = _clean_int(raw.get("last_display_limit"))
@@ -215,11 +286,51 @@ def load_state(raw: Any) -> Dict[str, Any]:
     return normalized
 
 
-def merge_filters(current_filters: Any, previous_filters: Any) -> Dict[str, str]:
-    merged = _clean_attribute_filters(previous_filters)
-    merged.update(_clean_attribute_filters(current_filters))
-    return merged
+def load_memory_state(raw: Any) -> ConversationMemoryState:
+    state = load_state(raw)
+    return ConversationMemoryState(
+        version=int(state.get("version", CONVERSATION_STATE_VERSION) or CONVERSATION_STATE_VERSION),
+        last_workflow=_clean_text(state.get("last_workflow")),
+        last_refined_query=_clean_text(state.get("last_refined_query")),
+        last_user_query=_clean_text(state.get("last_user_query")),
+        last_attribute_filters=_clean_attribute_filters(state.get("last_attribute_filters")),
+        last_requested_fields=_clean_requested_fields(state.get("last_requested_fields")),
+        last_product_ids=_clean_product_ids(state.get("last_product_ids")),
+        last_product_skus=_clean_product_skus(state.get("last_product_skus")),
+        last_currency=_clean_currency(state.get("last_currency")),
+        last_route=_clean_text(state.get("last_route")),
+        last_answer_source_ids=_clean_source_ids(state.get("last_answer_source_ids")),
+        last_inventory_claim=_clean_inventory_claim(state.get("last_inventory_claim")),
+        tone_recent=_clean_tone_recent(state.get("tone_recent")),
+        updated_at=_clean_text(state.get("updated_at")),
+    )
 
+
+def load_continuation_state(raw: Any) -> ConversationContinuationState:
+    state = load_state(raw)
+    return ConversationContinuationState(
+        last_query_cache_key=_clean_text(state.get("last_query_cache_key")),
+        last_query_product_ids=_clean_query_product_ids(state.get("last_query_product_ids")),
+        last_result_count=_clean_int(state.get("last_result_count")),
+        last_display_offset=_clean_int(state.get("last_display_offset")),
+        last_display_limit=_clean_int(state.get("last_display_limit")),
+    )
+
+
+def split_state(raw: Any) -> tuple[ConversationMemoryState, ConversationContinuationState]:
+    return load_memory_state(raw), load_continuation_state(raw)
+
+
+def build_state_payload(
+    *,
+    memory: ConversationMemoryState,
+    continuation: ConversationContinuationState,
+) -> Dict[str, Any]:
+    merged = _default_state()
+    merged.update(memory.to_dict())
+    merged.update(continuation.to_dict())
+    merged["version"] = int(memory.version or CONVERSATION_STATE_VERSION)
+    return merged
 
 def apply_workflow_update(
     state: Any,
@@ -228,12 +339,24 @@ def apply_workflow_update(
     refined_query: str,
     attribute_filters: Any,
 ) -> Dict[str, Any]:
-    updated = load_state(state)
-    updated["last_workflow"] = _clean_text(workflow)
-    updated["last_refined_query"] = _clean_text(refined_query)
-    updated["last_user_query"] = _clean_text(refined_query)
-    updated["last_attribute_filters"] = _clean_attribute_filters(attribute_filters)
-    return updated
+    memory, continuation = split_state(state)
+    updated_memory = ConversationMemoryState(
+        version=memory.version,
+        last_workflow=_clean_text(workflow),
+        last_refined_query=_clean_text(refined_query),
+        last_user_query=_clean_text(refined_query),
+        last_attribute_filters=_clean_attribute_filters(attribute_filters),
+        last_requested_fields=list(memory.last_requested_fields or []),
+        last_product_ids=list(memory.last_product_ids or []),
+        last_product_skus=list(memory.last_product_skus or []),
+        last_currency=memory.last_currency,
+        last_route=memory.last_route,
+        last_answer_source_ids=list(memory.last_answer_source_ids or []),
+        last_inventory_claim=dict(memory.last_inventory_claim or {}),
+        tone_recent=list(memory.tone_recent or []),
+        updated_at=memory.updated_at,
+    )
+    return build_state_payload(memory=updated_memory, continuation=continuation)
 
 
 def apply_retrieval_update(
@@ -243,12 +366,24 @@ def apply_retrieval_update(
     product_skus: Any = None,
     route: str,
 ) -> Dict[str, Any]:
-    updated = load_state(state)
-    updated["last_product_ids"] = _clean_product_ids(product_ids)
-    if product_skus is not None:
-        updated["last_product_skus"] = _clean_product_skus(product_skus)
-    updated["last_route"] = _clean_text(route)
-    return updated
+    memory, continuation = split_state(state)
+    updated_memory = ConversationMemoryState(
+        version=memory.version,
+        last_workflow=memory.last_workflow,
+        last_refined_query=memory.last_refined_query,
+        last_user_query=memory.last_user_query,
+        last_attribute_filters=dict(memory.last_attribute_filters or {}),
+        last_requested_fields=list(memory.last_requested_fields or []),
+        last_product_ids=_clean_product_ids(product_ids),
+        last_product_skus=_clean_product_skus(product_skus) if product_skus is not None else list(memory.last_product_skus or []),
+        last_currency=memory.last_currency,
+        last_route=_clean_text(route),
+        last_answer_source_ids=list(memory.last_answer_source_ids or []),
+        last_inventory_claim=dict(memory.last_inventory_claim or {}),
+        tone_recent=list(memory.tone_recent or []),
+        updated_at=memory.updated_at,
+    )
+    return build_state_payload(memory=updated_memory, continuation=continuation)
 
 
 def apply_response_update(
@@ -258,6 +393,7 @@ def apply_response_update(
     currency: str,
     route: str,
     query_cache_key: str = "",
+    query_product_ids: Any = None,
     result_count: Optional[int] = None,
     display_offset: Optional[int] = None,
     display_limit: Optional[int] = None,
@@ -268,30 +404,31 @@ def apply_response_update(
     tone_recent: Any = None,
     updated_at: Optional[str] = None,
 ) -> Dict[str, Any]:
-    updated = load_state(state)
-    updated["last_requested_fields"] = _clean_requested_fields(requested_fields)
-    updated["last_currency"] = _clean_currency(currency)
-    updated["last_route"] = _clean_text(route)
-    if query_cache_key is not None:
-        updated["last_query_cache_key"] = _clean_text(query_cache_key)
-    if result_count is not None:
-        updated["last_result_count"] = _clean_int(result_count)
-    if display_offset is not None:
-        updated["last_display_offset"] = _clean_int(display_offset)
-    if display_limit is not None:
-        updated["last_display_limit"] = _clean_int(display_limit)
-    if product_ids is not None:
-        updated["last_product_ids"] = _clean_product_ids(product_ids)
-    if product_skus is not None:
-        updated["last_product_skus"] = _clean_product_skus(product_skus)
-    if answer_source_ids is not None:
-        updated["last_answer_source_ids"] = _clean_source_ids(answer_source_ids)
-    if inventory_claim is not None:
-        updated["last_inventory_claim"] = _clean_inventory_claim(inventory_claim)
-    if tone_recent is not None:
-        updated["tone_recent"] = _clean_tone_recent(tone_recent)
-    updated["updated_at"] = _clean_text(updated_at) or utc_timestamp()
-    return updated
+    memory, continuation = split_state(state)
+    updated_memory = ConversationMemoryState(
+        version=memory.version,
+        last_workflow=memory.last_workflow,
+        last_refined_query=memory.last_refined_query,
+        last_user_query=memory.last_user_query,
+        last_attribute_filters=dict(memory.last_attribute_filters or {}),
+        last_requested_fields=_clean_requested_fields(requested_fields),
+        last_product_ids=_clean_product_ids(product_ids) if product_ids is not None else list(memory.last_product_ids or []),
+        last_product_skus=_clean_product_skus(product_skus) if product_skus is not None else list(memory.last_product_skus or []),
+        last_currency=_clean_currency(currency),
+        last_route=_clean_text(route),
+        last_answer_source_ids=_clean_source_ids(answer_source_ids) if answer_source_ids is not None else list(memory.last_answer_source_ids or []),
+        last_inventory_claim=_clean_inventory_claim(inventory_claim) if inventory_claim is not None else dict(memory.last_inventory_claim or {}),
+        tone_recent=_clean_tone_recent(tone_recent) if tone_recent is not None else list(memory.tone_recent or []),
+        updated_at=_clean_text(updated_at) or utc_timestamp(),
+    )
+    updated_continuation = ConversationContinuationState(
+        last_query_cache_key=_clean_text(query_cache_key) if query_cache_key is not None else continuation.last_query_cache_key,
+        last_query_product_ids=_clean_query_product_ids(query_product_ids) if query_product_ids is not None else list(continuation.last_query_product_ids or []),
+        last_result_count=_clean_int(result_count) if result_count is not None else continuation.last_result_count,
+        last_display_offset=_clean_int(display_offset) if display_offset is not None else continuation.last_display_offset,
+        last_display_limit=_clean_int(display_limit) if display_limit is not None else continuation.last_display_limit,
+    )
+    return build_state_payload(memory=updated_memory, continuation=updated_continuation)
 
 
 def product_ids_from_cards(cards: Optional[Iterable[Any]]) -> List[str]:

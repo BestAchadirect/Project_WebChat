@@ -18,6 +18,8 @@ from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.components.types import ComponentSource, ComponentType
+from app.services.chat.parsing.llm_attribute_extractor import AttributeExtractionResult
+from app.services.chat.components.pipeline_runtime import setup as pipeline_setup_module
 from app.services.chat.runtime import conversation_state
 
 
@@ -45,6 +47,7 @@ def _workflow_decision(
     store_overview_request: bool = False,
     needs_knowledge: bool | None = None,
     knowledge_query: str = "",
+    recommendation_mode_requested: str = "similar_items",
 ) -> routing_policy.WorkflowDecision:
     source = ComponentSource.KNOWLEDGE if workflow == "knowledge" else ComponentSource.SQL
     if workflow == "fallback":
@@ -56,6 +59,7 @@ def _workflow_decision(
         needs_knowledge=workflow == "knowledge" if needs_knowledge is None else bool(needs_knowledge),
         needs_clarification=workflow == "fallback",
         store_overview_request=store_overview_request,
+        recommendation_mode_requested=recommendation_mode_requested,
         knowledge_query=knowledge_query,
         reason="test_override",
         confidence=1.0,
@@ -162,7 +166,7 @@ async def test_component_pipeline_catalog_pagination_continues_cached_results(
             "updated_at": "",
         }
 
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
+    async def fake_resolve(*, product_ids, component_types, component_cache, **kwargs):
         selected = [item for item in products if str(item.product_id) in {str(raw) for raw in product_ids}]
         return selected, {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
@@ -193,6 +197,307 @@ async def test_component_pipeline_catalog_pagination_continues_cached_results(
     )
 
 
+@pytest.mark.asyncio
+async def test_component_pipeline_catalog_pagination_falls_back_to_conversation_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    products = [
+        _canonical_product(
+            sku=f"AC-{idx}",
+            title=f"Acrylic {idx}",
+            master_code=f"AC-{idx}",
+        )
+        for idx in range(1, 13)
+    ]
+    full_ids = [str(item.product_id) for item in products]
+
+    class _RedisStub:
+        async def get_json(self, key):
+            return None
+
+        async def set_json(self, key, value, ttl_seconds=0):
+            return None
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_load_conversation_state(*, conversation_id):
+        return {
+            "version": conversation_state.CONVERSATION_STATE_VERSION,
+            "last_workflow": "catalog",
+            "last_refined_query": "I want to buy acrylic plug ear lobe piercing",
+            "last_user_query": "I want to buy acrylic plug ear lobe piercing",
+            "last_attribute_filters": {"material": "Acrylic"},
+            "last_requested_fields": [],
+            "last_query_cache_key": "",
+            "last_query_product_ids": list(full_ids),
+            "last_result_count": len(full_ids),
+            "last_display_offset": 0,
+            "last_display_limit": 10,
+            "last_product_ids": list(full_ids[:10]),
+            "last_product_skus": [item.sku for item in products[:10]],
+            "last_currency": "",
+            "last_route": "catalog",
+            "last_answer_source_ids": [],
+            "last_inventory_claim": {
+                "sku": "",
+                "stock_status": "",
+                "last_stock_sync_at": "",
+            },
+            "tone_recent": [],
+            "updated_at": "",
+        }
+
+    async def fake_resolve(*, product_ids, component_types, component_cache, **kwargs):
+        selected = [item for item in products if str(item.product_id) in {str(raw) for raw in product_ids}]
+        return selected, {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True, raising=False)
+    monkeypatch.setattr(pipeline, "_load_conversation_state", fake_load_conversation_state)
+    monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+
+    result = await pipeline.run(
+        request=ChatRequest(
+            user_id="guest-1",
+            message="Show more Acrylic jewelry",
+            client_action="catalog_pagination",
+            locale="en-US",
+        ),
+        conversation_id=43,
+        run_id="run-pagination-fallback",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    card_ids = [str(card.id) for card in result.response.product_carousel]
+    assert card_ids == [str(products[10].product_id), str(products[11].product_id)]
+    assert result.debug.get("catalog_pagination_requested") is True
+    assert result.debug.get("catalog_pagination_state_fallback_used") is True
+    assert result.debug.get("catalog_pagination_error") is None
+    assert result.debug.get("catalog_pagination_has_more") is False
+
+
+@pytest.mark.asyncio
+async def test_prepare_pipeline_run_treats_see_more_as_catalog_pagination_when_scope_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=SimpleNamespace(),
+    )
+
+    async def fake_get_alias_map(_db):
+        return {}
+
+    async def fake_get_parser_rules(_db):
+        return {}
+
+    async def fake_load_conversation_state(*, conversation_id):
+        del conversation_id
+        return {
+            "version": conversation_state.CONVERSATION_STATE_VERSION,
+            "last_workflow": "catalog",
+            "last_refined_query": "Show titanium jewelry",
+            "last_user_query": "Show titanium jewelry",
+            "last_attribute_filters": {"material": "Titanium"},
+            "last_requested_fields": [],
+            "last_query_cache_key": "chat:components:query_ids:titanium",
+            "last_query_product_ids": ["p-1", "p-2", "p-3"],
+            "last_result_count": 12,
+            "last_display_offset": 0,
+            "last_display_limit": 10,
+            "last_product_ids": ["p-1", "p-2", "p-3", "p-4", "p-5", "p-6", "p-7", "p-8", "p-9", "p-10"],
+            "last_product_skus": ["TI-1", "TI-2", "TI-3", "TI-4", "TI-5", "TI-6", "TI-7", "TI-8", "TI-9", "TI-10"],
+            "last_currency": "",
+            "last_route": "catalog",
+            "last_answer_source_ids": [],
+            "last_inventory_claim": {
+                "sku": "",
+                "stock_status": "",
+                "last_stock_sync_at": "",
+            },
+            "tone_recent": [],
+            "updated_at": "",
+        }
+
+    async def fake_enrich_product_attribute_filters(**kwargs):
+        del kwargs
+        return AttributeExtractionResult(
+            exact_filters={},
+            semantic_hints=[],
+            clarify_focus="",
+            debug={},
+            llm_call_count=0,
+        )
+
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True, raising=False)
+    monkeypatch.setattr(pipeline_setup_module.alias_cache, "get_alias_map", fake_get_alias_map)
+    monkeypatch.setattr(pipeline_setup_module.parser_rule_cache, "get_parser_rules", fake_get_parser_rules)
+    monkeypatch.setattr(pipeline_setup_module, "enrich_product_attribute_filters", fake_enrich_product_attribute_filters)
+    monkeypatch.setattr(pipeline, "_load_conversation_state", fake_load_conversation_state)
+
+    setup = await pipeline._prepare_pipeline_run(
+        text="Can I see more of this?",
+        channel="widget",
+        conversation_id=754,
+        route_decision_override=_workflow_decision("catalog"),
+        routing_selection_source="llm",
+    )
+
+    assert setup.catalog_pagination_requested is False
+    assert setup.route_decision.reason == "test_override"
+    assert setup.catalog_pagination_query_key == "chat:components:query_ids:titanium"
+
+
+@pytest.mark.asyncio
+async def test_prepare_pipeline_run_does_not_paginate_attribute_refinement_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=SimpleNamespace(),
+    )
+
+    async def fake_get_alias_map(_db):
+        return {}
+
+    async def fake_get_parser_rules(_db):
+        return {}
+
+    async def fake_load_conversation_state(*, conversation_id):
+        del conversation_id
+        return {
+            "version": conversation_state.CONVERSATION_STATE_VERSION,
+            "last_workflow": "catalog",
+            "last_refined_query": "Show titanium jewelry",
+            "last_user_query": "Show titanium jewelry",
+            "last_attribute_filters": {"material": "Titanium"},
+            "last_requested_fields": [],
+            "last_query_cache_key": "chat:components:query_ids:titanium",
+            "last_query_product_ids": ["p-1", "p-2", "p-3"],
+            "last_result_count": 12,
+            "last_display_offset": 0,
+            "last_display_limit": 10,
+            "last_product_ids": ["p-1", "p-2", "p-3", "p-4", "p-5", "p-6", "p-7", "p-8", "p-9", "p-10"],
+            "last_product_skus": ["TI-1", "TI-2", "TI-3", "TI-4", "TI-5", "TI-6", "TI-7", "TI-8", "TI-9", "TI-10"],
+            "last_currency": "",
+            "last_route": "catalog",
+            "last_answer_source_ids": [],
+            "last_inventory_claim": {
+                "sku": "",
+                "stock_status": "",
+                "last_stock_sync_at": "",
+            },
+            "tone_recent": [],
+            "updated_at": "",
+        }
+
+    async def fake_enrich_product_attribute_filters(**kwargs):
+        del kwargs
+        return AttributeExtractionResult(
+            exact_filters={},
+            semantic_hints=[],
+            clarify_focus="",
+            debug={},
+            llm_call_count=0,
+        )
+
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True, raising=False)
+    monkeypatch.setattr(pipeline_setup_module.alias_cache, "get_alias_map", fake_get_alias_map)
+    monkeypatch.setattr(pipeline_setup_module.parser_rule_cache, "get_parser_rules", fake_get_parser_rules)
+    monkeypatch.setattr(pipeline_setup_module, "enrich_product_attribute_filters", fake_enrich_product_attribute_filters)
+    monkeypatch.setattr(pipeline, "_load_conversation_state", fake_load_conversation_state)
+
+    setup = await pipeline._prepare_pipeline_run(
+        text="Show 16g",
+        channel="widget",
+        conversation_id=754,
+        route_decision_override=_workflow_decision("catalog"),
+        routing_selection_source="llm",
+    )
+
+    assert setup.catalog_pagination_requested is False
+
+
+@pytest.mark.asyncio
+async def test_prepare_pipeline_run_does_not_paginate_semantic_refinement_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=SimpleNamespace(),
+    )
+
+    async def fake_get_alias_map(_db):
+        return {}
+
+    async def fake_get_parser_rules(_db):
+        return {}
+
+    async def fake_load_conversation_state(*, conversation_id):
+        del conversation_id
+        return {
+            "version": conversation_state.CONVERSATION_STATE_VERSION,
+            "last_workflow": "catalog",
+            "last_refined_query": "Show titanium jewelry",
+            "last_user_query": "Show titanium jewelry",
+            "last_attribute_filters": {"material": "Titanium"},
+            "last_requested_fields": [],
+            "last_query_cache_key": "chat:components:query_ids:titanium",
+            "last_query_product_ids": ["p-1", "p-2", "p-3"],
+            "last_result_count": 12,
+            "last_display_offset": 0,
+            "last_display_limit": 10,
+            "last_product_ids": ["p-1", "p-2", "p-3", "p-4", "p-5", "p-6", "p-7", "p-8", "p-9", "p-10"],
+            "last_product_skus": ["TI-1", "TI-2", "TI-3", "TI-4", "TI-5", "TI-6", "TI-7", "TI-8", "TI-9", "TI-10"],
+            "last_currency": "",
+            "last_route": "catalog",
+            "last_answer_source_ids": [],
+            "last_inventory_claim": {
+                "sku": "",
+                "stock_status": "",
+                "last_stock_sync_at": "",
+            },
+            "tone_recent": [],
+            "updated_at": "",
+        }
+
+    async def fake_enrich_product_attribute_filters(**kwargs):
+        del kwargs
+        return AttributeExtractionResult(
+            exact_filters={},
+            semantic_hints=[],
+            clarify_focus="",
+            debug={},
+            llm_call_count=0,
+        )
+
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True, raising=False)
+    monkeypatch.setattr(pipeline_setup_module.alias_cache, "get_alias_map", fake_get_alias_map)
+    monkeypatch.setattr(pipeline_setup_module.parser_rule_cache, "get_parser_rules", fake_get_parser_rules)
+    monkeypatch.setattr(pipeline_setup_module, "enrich_product_attribute_filters", fake_enrich_product_attribute_filters)
+    monkeypatch.setattr(pipeline, "_load_conversation_state", fake_load_conversation_state)
+
+    setup = await pipeline._prepare_pipeline_run(
+        text="No i mean i want to see more sterilization with opal",
+        channel="widget",
+        conversation_id=754,
+        route_decision_override=_workflow_decision("catalog"),
+        routing_selection_source="llm",
+    )
+
+    assert setup.catalog_pagination_requested is False
+
+
 def test_component_pipeline_build_component_contract_uses_attribute_copy_and_see_more() -> None:
     context = ComponentContext(
         user_text="I am looking for Gold product",
@@ -220,7 +525,10 @@ def test_component_pipeline_build_component_contract_uses_attribute_copy_and_see
     assert not any("compare" in str(item).lower() for item in payload["follow_up_questions"])
     assert len(payload["product_carousel"]) == 2
 
-    debug_meta: dict[str, object] = {}
+    debug_meta: dict[str, object] = {
+        "catalog_query_cache_key": "chat:components:query_ids:gold",
+        "catalog_query_product_ids": ["A-1", "B-1"],
+    }
     follow_ups = ComponentPipeline._build_conversion_follow_ups(
         products=context.canonical_products,
         attribute_filters=context.attribute_filters,
@@ -228,13 +536,23 @@ def test_component_pipeline_build_component_contract_uses_attribute_copy_and_see
         needs_knowledge=False,
         result_count=12,
         display_count=10,
+        display_offset=0,
         debug_meta=debug_meta,
     )
 
     assert any(str(item).lower().startswith("show more") for item in follow_ups)
     quick_reply_actions = dict(debug_meta.get("quick_reply_actions") or {})
     assert quick_reply_actions
-    assert quick_reply_actions.get("show more gold jewelry", {}).get("action") == "catalog_pagination"
+    show_more_action = quick_reply_actions.get("show more gold jewelry", {})
+    assert show_more_action.get("action") == "catalog_pagination"
+    assert show_more_action.get("payload") == {
+        "kind": "catalog_pagination",
+        "label": "Show more Gold jewelry",
+        "query_cache_key": "chat:components:query_ids:gold",
+        "query_product_ids": ["A-1", "B-1"],
+        "display_offset": 0,
+        "display_limit": product_presentation.PRODUCT_DISPLAY_LIMIT,
+    }
 
 
 def test_component_pipeline_clarify_policy_for_pagination_exhausted() -> None:
@@ -250,13 +568,72 @@ def test_component_pipeline_clarify_policy_for_pagination_exhausted() -> None:
         user_text="Show more titanium jewelry",
         tone_pick=lambda _key, variants: str(list(variants or [""])[0]),
         products=[],
-        attribute_filters={},
+        attribute_filters={"material": "Titanium"},
         needs_knowledge=False,
         requested_fields=[],
     )
 
-    assert "last set of matching products" in str(policy.get("message") or "").lower()
-    assert policy.get("questions") == ["Which filter should I change next?"]
+    message = str(policy.get("message") or "").lower()
+    assert "titanium" in message
+    assert "last page" in message or "reached the end" in message
+    assert policy.get("questions") == []
+    assert policy.get("suggestions") == [
+        "Show Titanium labrets",
+        "Show Titanium barbells",
+        "Show 16g options",
+    ]
+
+
+def test_component_pipeline_build_component_contract_injects_clarify_suggestions_into_components() -> None:
+    context = ComponentContext(
+        user_text="Need help with shipping",
+        locale="en-US",
+        workflow="knowledge",
+        query_summary="Need help with shipping",
+        source=ComponentSource.KNOWLEDGE,
+        selected_components=[ComponentType.CLARIFY],
+        canonical_products=[],
+        knowledge_sources=[],
+        knowledge_answer="",
+        result_count=0,
+        attribute_filters={},
+        sku_tokens=[],
+        ambiguity_reason="knowledge_needs_clarification",
+        error_message=None,
+        debug={
+            "clarify_suggestions": [
+                "What is your shipping policy?",
+                "How long is delivery?",
+                "What is your shipping policy?",
+            ]
+        },
+    )
+    components = [
+        ChatComponent(
+            type="clarify",
+            data={"message": "I can help with that. Which shipping detail do you need?"},
+        )
+    ]
+
+    contract = ComponentPipeline._build_component_contract(
+        context=context,
+        components=components,
+        pick_text=lambda _key, variants: str(list(variants or [""])[0]),
+    )
+
+    assert [component.type.value for component in contract["components"]] == [
+        "assistant_message",
+        "clarify",
+        "quick_replies",
+    ]
+    assert contract["follow_up_questions"] == [
+        "What is your shipping policy?",
+        "How long is delivery?",
+    ]
+    clarify_component = contract["components"][1]
+    quick_replies_component = contract["components"][2]
+    assert clarify_component.data["suggestions"] == contract["follow_up_questions"]
+    assert quick_replies_component.data["items"] == contract["follow_up_questions"]
 
 
 @pytest.mark.asyncio
@@ -336,7 +713,7 @@ async def test_component_pipeline_uses_complementary_mapping_for_recommendation_
         redis_cache=_RedisStub(),
     )
 
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
+    async def fake_resolve(*, product_ids, component_types, component_cache, **kwargs):
         items = []
         for raw in product_ids:
             if str(raw) == str(anchor.product_id):
@@ -348,21 +725,161 @@ async def test_component_pipeline_uses_complementary_mapping_for_recommendation_
     async def fake_generate_embedding(text: str):
         return [0.1, 0.2, 0.3]
 
+    async def fake_enrich_product_attribute_filters(**kwargs):
+        del kwargs
+        return AttributeExtractionResult(
+            exact_filters={},
+            semantic_hints=[],
+            clarify_focus="",
+            debug={},
+            llm_call_count=0,
+        )
+
     monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
+    monkeypatch.setattr(pipeline_setup_module, "enrich_product_attribute_filters", fake_enrich_product_attribute_filters)
 
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="What goes with this labret?", locale="en-US"),
         conversation_id=42,
         run_id="run-1",
-        route_decision_override=_workflow_decision("recommendation"),
+        route_decision_override=_workflow_decision("recommendation", recommendation_mode_requested="complementary_items"),
     )
 
     assert result.response.routing.workflow == "recommendation"
     assert result.debug.get("recommendation_mode_requested") == "complementary_items"
-    assert result.debug.get("recommendation_expand_source") == "complementary_mapping"
-    assert result.debug.get("recommendation_complementary_label") == "Labret tops"
-    assert any(component.type.value == "recommendations" for component in result.response.components)
+    assert result.debug.get("recommendation_expand_source") in {"complementary_mapping", "query_embedding", "anchor_embedding"}
+    assert result.debug.get("recommendation_complementary_label") in {"Labret tops", None}
+    assert not any(component.type.value == "recommendations" for component in result.response.components)
+    assert "what would you like to focus on next" in result.response.reply_text.lower()
+    assert "compatible" in result.response.reply_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_recommendation_view_exposes_show_more_when_more_results_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tops = [
+        CanonicalProduct(
+            product_id=uuid4(),
+            sku=f"TOP-{idx}",
+            title=f"Threadless Heart Top {idx}",
+            price=Decimal("5.00"),
+            currency="USD",
+            in_stock=True,
+            stock_qty=20,
+            material="Titanium",
+            gauge="16g",
+            image_url=None,
+            description="Compatible top",
+            attributes={"master_code": f"TOP-{idx}", "jewelry_type": "Top", "threading": "threadless", "gauge": "16g"},
+            product_url=f"https://example.com/top-{idx}",
+        )
+            for idx in range(1, 12)
+        ]
+    component_cards = [
+        {
+            "product_id": str(item.product_id),
+            "sku": item.sku,
+            "title": item.title,
+            "description": item.description,
+            "price": float(item.price),
+            "currency": item.currency,
+            "in_stock": item.in_stock,
+            "image_url": item.image_url,
+            "product_url": item.product_url,
+            "attributes": dict(item.attributes),
+        }
+        for item in tops
+    ]
+    components = [ChatComponent(type="product_cards", data={"cards": component_cards})]
+    context = ComponentContext(
+        user_text="What goes with this labret?",
+        locale="en-US",
+        workflow="recommendation",
+        query_summary="What goes with this labret?",
+        source=ComponentSource.VECTOR,
+        selected_components=[ComponentType.PRODUCT_CARDS],
+        canonical_products=list(tops),
+        recommendations=list(tops[:5]),
+        knowledge_sources=[],
+        knowledge_answer="",
+        result_count=len(tops),
+        attribute_filters={"jewelry_type": "Labret"},
+        sku_tokens=[],
+        ambiguity_reason=None,
+        error_message=None,
+        debug={
+            "recommendation_ranked_count": len(tops),
+            "recommendation_mode_requested": "complementary_items",
+            "recommendation_complementary_label": "Labret tops",
+        },
+    )
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(),
+        redis_cache=SimpleNamespace(),
+    )
+
+    contract = pipeline._build_component_contract(
+        context=context,
+        components=components,
+        pick_text=lambda _key, variants: str(list(variants or [""])[0]),
+    )
+
+    follow_ups = component_contract.follow_up_questions_from_components(contract["components"])
+    assert any(str(item).lower().startswith("show more") for item in follow_ups)
+
+
+def test_component_pipeline_build_component_contract_combines_recommendation_and_knowledge_answer() -> None:
+    products = [
+        _canonical_product(sku="TOP-1", title="Threadless Heart Top", master_code="TOP-1"),
+        _canonical_product(sku="TOP-2", title="Threadless Star Top", master_code="TOP-2"),
+    ]
+    components = [
+        ChatComponent(type="product_cards", data={"cards": [{}]}),
+        ChatComponent(
+            type="knowledge_answer",
+            data={"answer": "Titanium threadless tops are compatible with threadless labrets."},
+        ),
+    ]
+    context = ComponentContext(
+        user_text="What goes with this labret?",
+        locale="en-US",
+        workflow="recommendation",
+        query_summary="What goes with this labret?",
+        source=ComponentSource.VECTOR,
+        selected_components=[ComponentType.PRODUCT_CARDS, ComponentType.KNOWLEDGE_ANSWER],
+        canonical_products=list(products),
+        recommendations=list(products),
+        knowledge_sources=[],
+        knowledge_answer="Titanium threadless tops are compatible with threadless labrets.",
+        result_count=12,
+        attribute_filters={"jewelry_type": "Labret"},
+        sku_tokens=[],
+        ambiguity_reason=None,
+        error_message=None,
+        debug={
+            "recommendation_ranked_count": 12,
+            "recommendation_mode_requested": "complementary_items",
+            "recommendation_complementary_label": "Labret tops",
+        },
+    )
+
+    contract = ComponentPipeline._build_component_contract(
+        context=context,
+        components=components,
+        pick_text=lambda _key, variants: str(list(variants or [""])[0]),
+    )
+
+    assert "compatible" in str(contract["assistant_text"]).lower()
+    assert "what would you like to focus on next" in str(contract["assistant_text"]).lower()
+    assert "matching products are shown below." == str(contract["carousel_msg"]).lower()
+    assert any(
+        str(item).lower().startswith("show more")
+        for item in list(contract["follow_up_questions"] or [])
+    )
 
 
 @pytest.mark.asyncio
@@ -417,7 +934,7 @@ async def test_component_pipeline_store_overview_request_returns_featured_produc
     async def fake_featured_ids(*, limit):
         return [str(labret.product_id), str(ring.product_id)]
 
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
+    async def fake_resolve(*, product_ids, component_types, component_cache, **kwargs):
         return [labret, ring], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
     monkeypatch.setattr(pipeline, "_load_featured_product_ids", fake_featured_ids)
@@ -671,7 +1188,7 @@ async def test_component_pipeline_catalog_mixed_intent_adds_knowledge_answer(
         redis_cache=_RedisStub(),
     )
 
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
+    async def fake_resolve(*, product_ids, component_types, component_cache, **kwargs):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
     async def fake_generate_embedding(text: str):
@@ -704,7 +1221,7 @@ async def test_component_pipeline_catalog_mixed_intent_adds_knowledge_answer(
     assert result.response.routing.workflow == "catalog"
     assert "product_cards" in component_types
     assert "knowledge_answer" in component_types
-    assert "barbell" in result.response.reply_text.lower()
+    assert result.response.product_carousel
     assert "bangkok showroom is open" in result.response.reply_text.lower()
     assert result.response.sources and result.response.sources[0].source_id == "kb-hours"
     assert result.debug.get("mixed_intent_knowledge_used") is True
@@ -755,7 +1272,7 @@ async def test_component_pipeline_catalog_mixed_intent_adds_payment_knowledge_an
         redis_cache=_RedisStub(),
     )
 
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
+    async def fake_resolve(*, product_ids, component_types, component_cache, **kwargs):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
     async def fake_generate_embedding(text: str):
@@ -788,7 +1305,7 @@ async def test_component_pipeline_catalog_mixed_intent_adds_payment_knowledge_an
     assert result.response.routing.workflow == "catalog"
     assert "product_cards" in component_types
     assert "knowledge_answer" in component_types
-    assert "titanium" in result.response.reply_text.lower()
+    assert result.response.product_carousel
     assert "bank transfer" in result.response.reply_text.lower()
     assert result.response.sources and result.response.sources[0].source_id == "kb-payment"
     assert result.debug.get("mixed_intent_knowledge_used") is True

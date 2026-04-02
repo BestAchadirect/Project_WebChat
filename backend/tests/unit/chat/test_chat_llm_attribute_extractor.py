@@ -14,7 +14,7 @@ def _rules():
         requested_field_patterns={},
         value_extract_patterns={},
         detection_attribute_order=["finish", "category"],
-        allowed_attribute_filters=["finish", "category", "material", "gauge", "threading"],
+        allowed_attribute_filters=["finish", "category", "material", "gauge", "threading", "jewelry_type"],
     )
 
 
@@ -31,7 +31,10 @@ async def test_enrich_product_attribute_filters_returns_validated_exact_filters_
         return {
             "exact_filters": {
                 "gauge": "16g",
-                "finish": "sterilized",
+            },
+            "soft_filters": {
+                "material": "titanium",
+                "jewelry_type": "barbell",
             },
             "semantic_hints": ["sterilization"],
             "clarify_focus": "sterilization_meaning",
@@ -54,18 +57,20 @@ async def test_enrich_product_attribute_filters_returns_validated_exact_filters_
     )
 
     assert result.exact_filters == {"gauge": "16g"}
+    assert result.soft_filters == {"material": "titanium", "jewelry_type": "barbell"}
     assert result.semantic_hints == ["sterilization"]
     assert result.clarify_focus == "sterilization_meaning"
     assert result.confidence == pytest.approx(0.91)
     assert result.llm_call_count == 1
     assert result.debug["llm_attribute_interpretation_used"] is True
     assert result.debug["llm_exact_filter_keys"] == ["gauge"]
+    assert result.debug["llm_soft_filter_keys"] == ["material", "jewelry_type"]
     assert result.debug["semantic_hint_keys"] == ["sterilization"]
     assert result.debug["semantic_hint_clarify_focus"] == "sterilization_meaning"
 
 
 @pytest.mark.asyncio
-async def test_enrich_product_attribute_filters_uses_heuristic_semantic_hint_when_llm_fails(
+async def test_enrich_product_attribute_filters_returns_empty_outputs_when_llm_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def failing_generate_chat_json(*args, **kwargs):
@@ -83,7 +88,8 @@ async def test_enrich_product_attribute_filters_uses_heuristic_semantic_hint_whe
     )
 
     assert result.exact_filters == {}
-    assert result.semantic_hints == ["sterilization"]
-    assert result.clarify_focus == "sterilization_meaning"
+    assert result.soft_filters == {}
+    assert result.semantic_hints == []
+    assert result.clarify_focus == ""
     assert result.llm_call_count == 0
-    assert result.debug["semantic_hint_source"] == "heuristic"
+    assert result.debug["semantic_hint_source"] == ""

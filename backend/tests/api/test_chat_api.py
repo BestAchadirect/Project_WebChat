@@ -21,7 +21,6 @@ def response_payload() -> ChatResponse:
         reply_text="api response",
         carousel_msg="",
         product_carousel=[],
-        follow_up_questions=[],
         routing=ChatRouting(workflow="catalog", execution_mode="component", needs_products=True),
         sources=[],
         debug={

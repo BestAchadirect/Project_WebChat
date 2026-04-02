@@ -87,29 +87,6 @@ class RecommendationService:
         "outer_diameter",
         "ring_size",
     }
-    _COMPLEMENTARY_TERMS = (
-        "accessor",
-        "accessory",
-        "accessories for",
-        "attachments",
-        "attachment",
-        "attachments for",
-        "pair with",
-        "pairs with",
-        "match with",
-        "matches with",
-        "go with",
-        "goes with",
-        "what goes with",
-        "goes on",
-        "fits this",
-        "fits with",
-        "what fits",
-        "tops for",
-        "ends for",
-        "complete the look",
-        "complement",
-    )
     _COMPLEMENTARY_TYPE_MAP: Dict[str, Dict[str, Any]] = {
         "labret": {
             "label": "Labret tops",
@@ -421,9 +398,44 @@ class RecommendationService:
 
     @classmethod
     def detect_mode(cls, *, user_text: str) -> str:
-        normalized = " ".join(str(user_text or "").strip().lower().split())
-        if any(term in normalized for term in cls._COMPLEMENTARY_TERMS):
-            return "complementary_items"
+        return cls.resolve_mode(user_text=user_text)
+
+    @classmethod
+    def resolve_mode(
+        cls,
+        *,
+        requested_mode: str = "",
+        user_text: str = "",
+        anchor_products: Sequence[Any] = (),
+        attribute_filters: Optional[Dict[str, str]] = None,
+    ) -> str:
+        mode = str(requested_mode or "").strip().lower()
+        if mode in {"similar_items", "complementary_items"}:
+            return mode
+
+        normalized_text = normalize_user_text(user_text)
+        complementary_cues = (
+            "what goes with",
+            "goes with",
+            "compatible",
+            "complementary",
+            "pair",
+            "pairs with",
+            "match",
+            "matches",
+            "accessory",
+            "accessories",
+            "attachment",
+            "attachments",
+        )
+        if normalized_text and any(cue in normalized_text for cue in complementary_cues):
+            profile = cls.build_complementary_profile(
+                anchor_products=anchor_products,
+                attribute_filters=attribute_filters,
+            )
+            if profile is not None or anchor_products:
+                return "complementary_items"
+
         return "similar_items"
 
     @classmethod
@@ -553,6 +565,7 @@ class RecommendationService:
         user_text: str,
         distance_by_id: Optional[Dict[str, float]] = None,
         anchor_products: Optional[Sequence[ProductCard]] = None,
+        recommendation_mode: Optional[str] = None,
         limit: int = 10,
         exclude_product_ids: Optional[Sequence[Any]] = None,
     ) -> RecommendationRankResult:
@@ -562,6 +575,7 @@ class RecommendationService:
             user_text=user_text,
             distance_by_id=distance_by_id,
             anchor_products=list(anchor_products or []),
+            recommendation_mode=recommendation_mode,
             limit=limit,
             exclude_product_ids=exclude_product_ids,
         )
@@ -574,7 +588,8 @@ class RecommendationService:
         user_text: str,
         distance_by_id: Optional[Dict[str, float]] = None,
         anchor_products: Optional[Sequence[Any]] = None,
-        limit: int = 10,
+        recommendation_mode: Optional[str] = None,
+        limit: Optional[int] = 10,
         exclude_product_ids: Optional[Sequence[Any]] = None,
     ) -> RecommendationRankResult:
         return self._rank_candidates(
@@ -583,6 +598,7 @@ class RecommendationService:
             user_text=user_text,
             distance_by_id=distance_by_id,
             anchor_products=list(anchor_products or []),
+            recommendation_mode=recommendation_mode,
             limit=limit,
             exclude_product_ids=exclude_product_ids,
         )
@@ -635,11 +651,18 @@ class RecommendationService:
         user_text: str,
         distance_by_id: Optional[Dict[str, float]],
         anchor_products: Sequence[Any],
+        recommendation_mode: Optional[str],
         limit: int,
         exclude_product_ids: Optional[Sequence[Any]],
     ) -> RecommendationRankResult:
         clean_filters = self._clean_filter_map(attribute_filters)
-        mode = self.detect_mode(user_text=user_text)
+        mode = str(recommendation_mode or "").strip().lower()
+        if mode not in {"similar_items", "complementary_items"}:
+            mode = self.resolve_mode(
+                user_text=user_text,
+                anchor_products=anchor_products,
+                attribute_filters=attribute_filters,
+            )
         exclude_ids = {self._candidate_id(raw) for raw in list(exclude_product_ids or []) if self._candidate_id(raw)}
         anchor_profile = self._build_anchor_profile(anchor_products=anchor_products, clean_filters=clean_filters)
         anchor_price = self._anchor_price(anchor_products)
@@ -756,7 +779,7 @@ class RecommendationService:
                     "distance": None if row["distance"] is None else round(float(row["distance"]), 4),
                 }
             )
-            if len(deduped_items) >= max(1, int(limit or product_presentation.PRODUCT_DISPLAY_LIMIT)):
+            if limit is not None and len(deduped_items) >= max(1, int(limit)):
                 break
 
         return RecommendationRankResult(

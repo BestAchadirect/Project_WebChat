@@ -10,6 +10,7 @@ from app.services.chat.routing import routing_policy
 from app.services.chat.components.cache import stable_cache_key
 from app.services.chat.components.pipeline_runtime.state import PipelineWorkflowState
 from app.services.chat.components.types import ComponentSource, ComponentType
+from app.services.chat.runtime.capabilities import build_chat_runtime_capabilities
 from app.services.chat.text_normalization import normalize_user_text
 
 logger = logging.getLogger(__name__)
@@ -34,10 +35,11 @@ class PipelineWorkflowKnowledgeMixin:
             knowledge_query_normalized = normalize_user_text(knowledge_query) or normalized_text
             knowledge_sources = []
             knowledge_answer = ""
-            high_risk_guard_enabled = bool(getattr(settings, "CHAT_KNOWLEDGE_HIGH_RISK_GUARD_ENABLED", True))
+            capabilities = build_chat_runtime_capabilities()
+            high_risk_guard_enabled = bool(capabilities.chat_knowledge_high_risk_guard_enabled)
             knowledge_is_high_risk = high_risk_guard_enabled and self._is_high_risk_knowledge_request(text=knowledge_query)
-            min_knowledge_relevance = float(getattr(settings, "CHAT_KNOWLEDGE_MIN_RELEVANCE", 0.40))
-            if int(getattr(settings, "CHAT_HARD_MAX_EMBEDDINGS_PER_REQUEST", 1)) > 0:
+            min_knowledge_relevance = float(capabilities.chat_knowledge_min_relevance)
+            if int(capabilities.chat_hard_max_embeddings_per_request) > 0:
                 try:
                     embed_started = time.perf_counter()
                     embedding = await llm_service.generate_embedding(knowledge_query)

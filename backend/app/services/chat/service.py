@@ -25,9 +25,10 @@ from app.schemas.chat import (
 from app.services.catalog.product_search import CatalogProductSearchService
 from app.services.chat.agentic.orchestrator import AgentOrchestrator, AgentRunResult
 from app.services.chat.retrieval.recommendation_service import RecommendationService
-from app.services.chat.components.cache import redis_component_cache
+from app.services.chat.components.cache import component_cache
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.presentation import component_contract, public_response
+from app.services.chat.runtime.capabilities import build_chat_runtime_capabilities
 from app.services.chat.runtime import conversation_state, persistence, unified_chat_runtime
 from app.services.chat.retrieval import follow_up_policy
 from app.services.chat.routing import routing_policy
@@ -54,78 +55,6 @@ class ChatService:
     """Chat orchestration (workflow routing -> retrieval -> response)."""
     _last_cache_stats_log_ts: float = 0.0
 
-    _FOLLOW_UP_STOPWORDS = {
-        "a",
-        "an",
-        "and",
-        "are",
-        "ask",
-        "for",
-        "from",
-        "get",
-        "how",
-        "i",
-        "if",
-        "in",
-        "is",
-        "it",
-        "me",
-        "my",
-        "of",
-        "on",
-        "or",
-        "show",
-        "tell",
-        "the",
-        "to",
-        "try",
-        "we",
-        "with",
-        "you",
-        "your",
-    }
-    _FOLLOW_UP_PRODUCT_TERMS = {
-        "accessories",
-        "attachment",
-        "attachments",
-        "barbell",
-        "browse",
-        "code",
-        "detail",
-        "details",
-        "gauge",
-        "image",
-        "images",
-        "instock",
-        "labret",
-        "material",
-        "price",
-        "product",
-        "products",
-        "ring",
-        "rings",
-        "see",
-        "similar",
-        "sku",
-        "stock",
-    }
-    _FOLLOW_UP_POLICY_TERMS = {
-        "customs",
-        "delivery",
-        "exchange",
-        "minimum",
-        "moq",
-        "order",
-        "payment",
-        "policy",
-        "refund",
-        "return",
-        "sample",
-        "samples",
-        "shipping",
-        "warranty",
-    }
-
     def __init__(self, db: AsyncSession):
         self.db = db
         self._catalog_search = CatalogProductSearchService(db=self.db)
@@ -149,7 +78,8 @@ class ChatService:
     def _trim_history_for_llm(cls, history: List[Dict[str, Any]], max_tokens: int) -> List[Dict[str, Any]]:
         return runtime_metrics.trim_history_for_llm(history=history, max_tokens=max_tokens)
     def _log_cache_stats_if_needed(self, *, run_id: str, debug_meta: Dict[str, Any]) -> None:
-        interval = max(5, int(getattr(settings, "CHAT_CACHE_LOG_INTERVAL_SECONDS", 60)))
+        capabilities = build_chat_runtime_capabilities()
+        interval = max(5, int(capabilities.chat_cache_log_interval_seconds))
         now = time.time()
         if now - float(self.__class__._last_cache_stats_log_ts or 0.0) < interval:
             return
@@ -288,9 +218,6 @@ class ChatService:
     def _normalize_text(text: str) -> str:
         return follow_up_policy.normalize_text(text)
     @classmethod
-    def _keyword_tokens(cls, text: str) -> set[str]:
-        return follow_up_policy.keyword_tokens(text=text, stopwords=cls._FOLLOW_UP_STOPWORDS)
-    @classmethod
     def _is_follow_up_relevant(
         cls,
         *,
@@ -310,9 +237,6 @@ class ChatService:
             use_products=use_products,
             use_knowledge=use_knowledge,
             is_policy_like=is_policy_like,
-            stopwords=cls._FOLLOW_UP_STOPWORDS,
-            product_terms=cls._FOLLOW_UP_PRODUCT_TERMS,
-            policy_terms=cls._FOLLOW_UP_POLICY_TERMS,
         )
     @classmethod
     def _filter_follow_up_questions(
@@ -331,9 +255,6 @@ class ChatService:
             route=route,
             has_products=has_products,
             retrieval_gate=retrieval_gate,
-            stopwords=cls._FOLLOW_UP_STOPWORDS,
-            product_terms=cls._FOLLOW_UP_PRODUCT_TERMS,
-            policy_terms=cls._FOLLOW_UP_POLICY_TERMS,
             limit=limit,
         )
 
@@ -569,7 +490,7 @@ class ChatService:
             db=self.db,
             catalog_search=self._catalog_search,
             knowledge_retrieval=self._knowledge_retrieval,
-            redis_cache=redis_component_cache,
+            component_cache=component_cache,
         )
         return await pipeline.run(
             request=request,

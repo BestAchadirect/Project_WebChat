@@ -3,7 +3,6 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import apiClient from '../../api/client';
 import {
-    buildFallbackAssistantComponents,
     getAssistantMessageText,
     normalizeChatComponents,
 } from '../../utils/chatComponentContract';
@@ -625,9 +624,7 @@ const componentProductToCard = (raw: Record<string, unknown>): ProductCard => {
 const normalizeAssistantMessage = (message: Message): Message => {
     if (message.role !== 'assistant') return message;
     const normalized = normalizeChatComponents(message.components);
-    const components = normalized.length > 0
-        ? normalized
-        : buildFallbackAssistantComponents(message.content);
+    const components = normalized;
     return {
         ...message,
         content: getAssistantMessageText(components) || asString(message.content).trim(),
@@ -765,30 +762,42 @@ const ChatComponentsRenderer: React.FC<{
                     const rawItems = Array.isArray(data.items)
                         ? data.items
                         : Array.isArray(data.questions)
-                            ? data.questions
+                        ? data.questions
                             : [];
                     const items = rawItems
                         .map((item) => {
                             if (item && typeof item === 'object' && !Array.isArray(item)) {
-                                const record = asRecord(item);
+                                const record = asRecord(item) || {};
                                 const label = asString(
-                                    record.label || record.text || record.question || record.message || record.value
+                                    record.label ?? record.text ?? record.question ?? record.message ?? record.value ?? ''
                                 ).trim();
                                 if (!label) return null;
-                                const action = asString(record.action || record.type).trim().toLowerCase();
+                                const inferredAction = label.toLowerCase().startsWith('show more')
+                                    ? 'catalog_pagination'
+                                    : '';
+                                const action = asString(record.action ?? record.type ?? inferredAction).trim().toLowerCase();
                                 const payload = asRecord(record.payload);
+                                const normalizedPayload = action === 'catalog_pagination'
+                                    ? {
+                                        kind: 'catalog_pagination',
+                                        label,
+                                        ...(payload || {}),
+                                    }
+                                    : payload;
                                 return {
                                     label,
                                     action,
-                                    payload,
+                                    payload: normalizedPayload,
                                 };
                             }
                             const label = asString(item).trim();
                             if (!label) return null;
                             return {
                                 label,
-                                action: '',
-                                payload: {},
+                                action: label.toLowerCase().startsWith('show more') ? 'catalog_pagination' : '',
+                                payload: label.toLowerCase().startsWith('show more')
+                                    ? { kind: 'catalog_pagination', label }
+                                    : {},
                             };
                         })
                         .filter((item): item is { label: string; action: string; payload: Record<string, unknown> } => item !== null);

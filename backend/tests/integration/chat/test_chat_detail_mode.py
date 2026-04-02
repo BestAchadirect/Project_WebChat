@@ -98,7 +98,7 @@ async def test_component_pipeline_detail_mode_price_stock_returns_product_detail
         redis_cache=_RedisStub(),
     )
 
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
+    async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
     def fake_parse(*, user_text: str, nlu_data, **_):
@@ -160,7 +160,7 @@ async def test_component_primary_detail_path_runs_even_if_legacy_flags_are_off(
         redis_cache=_RedisStub(),
     )
 
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
+    async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
     def fake_parse(*, user_text: str, nlu_data, **_):
@@ -216,7 +216,7 @@ async def test_component_pipeline_detail_mode_no_match_has_no_follow_up_quick_re
         redis_cache=_RedisStub(),
     )
 
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
+    async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
     def fake_parse(*, user_text: str, nlu_data, **_):
@@ -305,7 +305,7 @@ async def test_component_pipeline_detail_mode_broad_price_query_requests_clarifi
         redis_cache=_RedisStub(),
     )
 
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
+    async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
         ordered = []
         for product_id in product_ids:
             if str(product_id) == str(first.product_id):

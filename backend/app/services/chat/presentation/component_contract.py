@@ -138,17 +138,11 @@ def follow_up_questions_from_components(components: Iterable[Any]) -> List[str]:
 
 
 def assistant_text_from_response(response: ChatResponse) -> str:
-    text = assistant_text_from_components(getattr(response, "components", []))
-    if text:
-        return text
-    return str(getattr(response, "reply_text", "") or "").strip()
+    return assistant_text_from_components(getattr(response, "components", []))
 
 
 def product_cards_from_response(response: ChatResponse) -> List[ProductCard]:
-    cards = product_cards_from_components(getattr(response, "components", []))
-    if cards:
-        return cards
-    return list(getattr(response, "product_carousel", []) or [])
+    return product_cards_from_components(getattr(response, "components", []))
 
 
 def follow_up_questions_from_response(response: ChatResponse) -> List[str]:
@@ -196,6 +190,7 @@ def upsert_quick_replies_component(
         items: List[Any] = []
         for label in clean:
             action = action_lookup.get(label.lower())
+            label_key = label.lower()
             if action and str(action.get("action") or "").strip():
                 payload = action.get("payload")
                 item: Dict[str, Any] = {
@@ -205,6 +200,18 @@ def upsert_quick_replies_component(
                 if isinstance(payload, dict) and payload:
                     item["payload"] = dict(payload)
                 items.append(item)
+                continue
+            if label_key.startswith("show more"):
+                items.append(
+                    {
+                        "label": label,
+                        "action": "catalog_pagination",
+                        "payload": {
+                            "kind": "catalog_pagination",
+                            "label": label,
+                        },
+                    }
+                )
                 continue
             items.append(label)
         updated.append(ChatComponent(type="quick_replies", data={"items": items}))

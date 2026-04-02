@@ -170,10 +170,12 @@ async def test_component_pipeline_structured_no_match_returns_clarify_without_ve
     assert result.debug.get("semantic_search_mode") == "vector_first"
     assert result.debug.get("component_source") == "vector"
     assert result.debug.get("match_tier") == "no_match"
+    assert result.debug.get("retrieval_outcome", {}).get("match_tier") == "no_match"
+    assert result.debug.get("retrieval_outcome", {}).get("needs_clarification") is True
 
 
 @pytest.mark.asyncio
-async def test_component_pipeline_design_discovery_uses_humanized_clarify_prompt(
+async def test_component_pipeline_design_discovery_uses_generic_structured_clarify_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _CatalogStub:
@@ -223,7 +225,7 @@ async def test_component_pipeline_design_discovery_uses_humanized_clarify_prompt
 
     assert result.response.routing.workflow == "catalog"
     assert any(component.type.value == "clarify" for component in result.response.components)
-    assert "style" in result.response.reply_text.lower() or "design" in result.response.reply_text.lower()
+    assert "material" in result.response.reply_text.lower() or "style" in result.response.reply_text.lower() or "gauge" in result.response.reply_text.lower()
     assert result.debug.get("clarify_reason") == "structured_no_match"
     assert result.debug.get("semantic_first_used") is True
 
@@ -260,7 +262,7 @@ async def test_component_pipeline_discovery_query_returns_semantic_suggestion(
         redis_cache=_RedisStub(),
     )
 
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
+    async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
     def fake_parse(*, user_text: str, nlu_data, **kwargs):
@@ -341,7 +343,7 @@ async def test_component_pipeline_product_browse_reply_is_deterministic_without_
         redis_cache=_RedisStub(),
     )
 
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
+    async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
     def fake_parse(*, user_text: str, nlu_data, **kwargs):
@@ -451,7 +453,7 @@ async def test_component_pipeline_semantic_hint_no_match_returns_focused_clarify
 
 
 @pytest.mark.asyncio
-async def test_component_pipeline_semantic_hint_lexical_rescue_returns_products(
+async def test_component_pipeline_semantic_hint_no_match_returns_clarify(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     product = _canonical_product(
@@ -502,7 +504,7 @@ async def test_component_pipeline_semantic_hint_lexical_rescue_returns_products(
         redis_cache=_RedisStub(),
     )
 
-    async def fake_resolve(*, product_ids, component_types, redis_cache):
+    async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
     def fake_parse(*, user_text: str, nlu_data, **kwargs):
@@ -533,11 +535,65 @@ async def test_component_pipeline_semantic_hint_lexical_rescue_returns_products(
     )
 
     assert result.response.routing.workflow == "catalog"
-    assert result.response.product_carousel
-    assert not any(component.type.value == "clarify" for component in result.response.components)
-    assert result.debug.get("lexical_search_used") is True
-    assert result.debug.get("lexical_rescue_used") is True
-    assert result.debug.get("semantic_search_mode") == "vector_lexical_hybrid"
+    assert not result.response.product_carousel
+    assert any(component.type.value == "clarify" for component in result.response.components)
+    assert result.debug.get("lexical_search_used") is None
+    assert result.debug.get("lexical_rescue_used") is None
+    assert result.debug.get("semantic_hint_clarify_used") is True
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_sterilization_with_opal_returns_clarify(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CatalogStub:
+        async def structured_count(self, **kwargs):
+            return 0
+
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(product_ids=[], cards=[], distance_by_id={}, best_distance=None)
+
+        async def lexical_search(self, **kwargs):
+            return SimpleNamespace(product_ids=[], cards=[], distance_by_id={}, best_distance=None)
+
+        async def structured_search(self, **kwargs):
+            return SimpleNamespace(product_ids=[]), {}
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+        return DetailQuery(
+            requested_fields=[],
+            attribute_filters={},
+            semantic_hints=[],
+            clarify_focus="sterilization_meaning",
+            wants_image=False,
+            is_detail_request=False,
+        )
+
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        fake_parse,
+    )
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Can i see sterilization with opal?", locale="en-US"),
+        conversation_id=77,
+        run_id="run-sterilization-opal-clarify",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    assert result.response.routing.workflow == "catalog"
+    assert not result.response.product_carousel
+    assert any(component.type.value == "clarify" for component in result.response.components)
+    assert result.debug.get("clarify_reason") == "semantic_concept_unclear"
+    assert result.debug.get("semantic_guardrail_reason") == "semantic_hint_clarify"
+    assert result.debug.get("semantic_hint_clarify_used") is True
 
 
 @pytest.mark.asyncio
@@ -708,7 +764,7 @@ async def test_component_pipeline_off_topic_uses_tone_composed_reply_without_ret
 
 
 @pytest.mark.asyncio
-async def test_component_pipeline_fallback_too_broad_uses_specific_clarify_message() -> None:
+async def test_component_pipeline_fallback_uncertain_uses_generic_clarify_message() -> None:
     pipeline = ComponentPipeline(
         db=object(),
         catalog_search=SimpleNamespace(),
@@ -724,16 +780,16 @@ async def test_component_pipeline_fallback_too_broad_uses_specific_clarify_messa
     )
 
     fallback_variants = {
-        "I can help quickly. Share one detail like piercing type, material, or SKU and I'll narrow it.",
-        "Happy to help. Tell me one preference such as type, material, or gauge and I'll refine the options.",
-        "Let's narrow this in one step. Give me piercing type, material, or SKU and I'll show the best matches.",
+        "I can help right away. Tell me whether you need products, policy details, or contact info.",
+        "I can assist with products, policy, or contact details. Which one should I focus on?",
+        "Tell me your main goal and I'll route this correctly: products, policy, or contact.",
     }
 
     assert result.response.routing.workflow == "fallback"
     assert any(component.type.value == "clarify" for component in result.response.components)
     assert result.response.reply_text in fallback_variants
-    assert result.debug.get("clarify_reason") == "fallback_too_broad"
-    assert result.debug.get("tone_key") == "clarify:fallback_too_broad"
+    assert result.debug.get("clarify_reason") == "fallback_uncertain"
+    assert result.debug.get("tone_key") == "clarify:fallback_uncertain"
 
 
 @pytest.mark.asyncio

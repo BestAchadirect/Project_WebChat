@@ -11,6 +11,8 @@ from app.services.chat.parsing.search_policy import split_hard_and_soft_filters
 from app.services.chat.components.cache import stable_cache_key
 from app.services.chat.components.pipeline_runtime.state import PipelineWorkflowState
 from app.services.chat.components.types import ComponentSource
+from app.services.chat.retrieval.retrieval_outcome import build_retrieval_outcome
+from app.services.chat.runtime.capabilities import build_chat_runtime_capabilities
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,9 @@ class PipelineCatalogSearchMixin:
             spans: Dict[str, float],
             external_call_counts: Dict[str, int],
         ) -> tuple[bool, List[Any], Optional[List[float]]]:
-        semantic_first_enabled = bool(getattr(settings, "CHAT_SEMANTIC_FIRST_ENABLED", True))
+        capabilities = state.runtime_capabilities or build_chat_runtime_capabilities()
+        state.runtime_capabilities = capabilities
+        semantic_first_enabled = bool(capabilities.chat_semantic_first_enabled)
         debug_meta["semantic_first_enabled"] = semantic_first_enabled
         debug_meta["semantic_search_mode"] = "vector_first" if semantic_first_enabled else "semantic_disabled"
         if not semantic_first_enabled:
@@ -47,13 +51,15 @@ class PipelineCatalogSearchMixin:
             if str(item or "").strip()
         ]
         clarify_focus = str(getattr(detail, "clarify_focus", "") or "").strip().lower()
-        debug_meta["semantic_first_enabled"] = True
-        debug_meta["semantic_search_mode"] = "vector_first"
+        debug_meta["semantic_first_enabled"] = semantic_first_enabled
+        debug_meta["semantic_search_mode"] = "vector_first" if semantic_first_enabled else "semantic_disabled"
         debug_meta["semantic_hard_constraint_keys"] = list(hard_filters.keys())
         debug_meta["semantic_soft_hint_keys"] = list(soft_filters.keys())
         debug_meta["semantic_hint_keys"] = list(semantic_hints)
         debug_meta["semantic_hint_clarify_focus"] = clarify_focus
         debug_meta["semantic_hint_clarify_used"] = False
+        lexical_search_used = False
+        lexical_rescue_used = False
         debug_meta["lexical_search_used"] = False
         debug_meta["lexical_rescue_used"] = False
         debug_meta["lexical_result_count"] = 0
@@ -66,13 +72,14 @@ class PipelineCatalogSearchMixin:
                 "sku_list": [item.lower() for item in unique_sku_tokens[:5]],
                 "filters": detail.attribute_filters,
                 "semantic_hints": semantic_hints,
-                "catalog_version": str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
+                "catalog_version": str(capabilities.chat_catalog_version),
                 "search_mode": "vector_lexical_hybrid_v1",
                 "presentation": "master_dedupe_v1",
                 "fetch_limit": result_fetch_limit,
             },
         )
-        cached_ids_payload = await self._redis_cache.get_json(state.query_cache_key)
+        debug_meta["catalog_query_cache_key"] = state.query_cache_key
+        cached_ids_payload = await self._component_cache.get_json(state.query_cache_key)
         product_ids: List[Any] = []
         retrieval_source = ComponentSource.VECTOR
         query_embedding: Optional[List[float]] = None
@@ -109,10 +116,8 @@ class PipelineCatalogSearchMixin:
             )
         else:
             embedding_error: Optional[str] = None
-            lexical_search_used = False
-            lexical_rescue_used = False
-            if int(getattr(settings, "CHAT_HARD_MAX_EMBEDDINGS_PER_REQUEST", 1)) > 0:
-                retry_max = max(0, int(getattr(settings, "CHAT_EMBEDDING_RETRY_MAX", 1)))
+            if int(capabilities.chat_hard_max_embeddings_per_request) > 0:
+                retry_max = max(0, int(capabilities.chat_embedding_retry_max))
                 for attempt in range(retry_max + 1):
                     try:
                         embed_started = time.perf_counter()
@@ -142,8 +147,8 @@ class PipelineCatalogSearchMixin:
                     sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
                     attribute_filters=hard_filters,
                     limit=result_fetch_limit,
-                    candidate_cap=int(getattr(settings, "CHAT_STRUCTURED_CANDIDATE_CAP", 300)),
-                    catalog_version=str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
+                    candidate_cap=int(capabilities.chat_structured_candidate_cap),
+                    catalog_version=str(capabilities.chat_catalog_version),
                     return_ids_only=True,
                 )
                 spans["db_product_lookup_ms"] += (time.perf_counter() - exact_started) * 1000.0
@@ -208,8 +213,8 @@ class PipelineCatalogSearchMixin:
                         sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
                         attribute_filters=dict(detail.attribute_filters or {}),
                         limit=result_fetch_limit,
-                        candidate_cap=int(getattr(settings, "CHAT_STRUCTURED_CANDIDATE_CAP", 300)),
-                        catalog_version=str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
+                        candidate_cap=int(capabilities.chat_structured_candidate_cap),
+                        catalog_version=str(capabilities.chat_catalog_version),
                         return_ids_only=True,
                     )
                     spans["db_product_lookup_ms"] += (time.perf_counter() - fallback_started) * 1000.0
@@ -244,8 +249,8 @@ class PipelineCatalogSearchMixin:
                         sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
                         attribute_filters=hard_filters,
                         limit=result_fetch_limit,
-                        candidate_cap=int(getattr(settings, "CHAT_STRUCTURED_CANDIDATE_CAP", 300)),
-                        catalog_version=str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
+                        candidate_cap=int(capabilities.chat_structured_candidate_cap),
+                        catalog_version=str(capabilities.chat_catalog_version),
                         return_ids_only=True,
                     )
                     spans["db_product_lookup_ms"] += (time.perf_counter() - verify_started) * 1000.0
@@ -282,7 +287,7 @@ class PipelineCatalogSearchMixin:
                             list(hard_filters.keys()),
                         )
 
-            soft_rerank_enabled = bool(getattr(settings, "CHAT_SEMANTIC_SOFT_FILTER_RERANK_ENABLED", True))
+            soft_rerank_enabled = bool(capabilities.chat_semantic_soft_filter_rerank_enabled)
             if semantic_cards and soft_filters and soft_rerank_enabled and not recommendation_requested:
                 semantic_cards, soft_meta = self._apply_soft_hint_gate(
                     cards=semantic_cards,
@@ -386,45 +391,50 @@ class PipelineCatalogSearchMixin:
                 else:
                     state.ambiguity_reason = "structured_no_match"
 
-            if state.query_cache_key and product_ids:
-                await self._redis_cache.set_json(
-                    state.query_cache_key,
-                    {
-                        "product_ids": [str(item) for item in product_ids],
-                        "source": semantic_result_source.value,
-                        "result_count": len(product_ids),
-                        "semantic_acceptance_score": round(
-                            self._semantic_acceptance_score(semantic_best_distance),
-                            4,
-                        ),
-                        "semantic_hint_score": round(float(debug_meta.get("semantic_hint_score") or 0.0), 4),
-                        "semantic_guardrail_used": semantic_guardrail_used,
-                        "semantic_guardrail_reason": semantic_guardrail_reason,
-                        "lexical_search_used": lexical_search_used,
-                        "lexical_rescue_used": lexical_rescue_used,
-                        "semantic_hard_constraint_rejection_reason": debug_meta.get(
-                            "semantic_hard_constraint_rejection_reason", ""
-                        ),
-                        "semantic_exact_lookup_used": semantic_exact_lookup_used,
-                    },
-                    ttl_seconds=300,
-                )
-            state.result_count = len(product_ids)
-            state.retrieval_source = retrieval_source
-            debug_meta["semantic_acceptance_score"] = round(
-                self._semantic_acceptance_score(semantic_best_distance),
-                4,
+        state.query_product_ids = list(product_ids)
+        debug_meta["catalog_query_product_ids"] = list(product_ids)
+        if state.query_cache_key and product_ids:
+            await self._component_cache.set_json(
+                state.query_cache_key,
+                {
+                    "product_ids": [str(item) for item in product_ids],
+                    "source": semantic_result_source.value,
+                    "result_count": len(product_ids),
+                    "semantic_acceptance_score": round(
+                        self._semantic_acceptance_score(semantic_best_distance),
+                        4,
+                    ),
+                    "semantic_hint_score": round(float(debug_meta.get("semantic_hint_score") or 0.0), 4),
+                    "semantic_guardrail_used": semantic_guardrail_used,
+                    "semantic_guardrail_reason": semantic_guardrail_reason,
+                    "lexical_search_used": lexical_search_used,
+                    "lexical_rescue_used": lexical_rescue_used,
+                    "semantic_hard_constraint_rejection_reason": debug_meta.get(
+                        "semantic_hard_constraint_rejection_reason", ""
+                    ),
+                    "semantic_exact_lookup_used": semantic_exact_lookup_used,
+                },
+                ttl_seconds=300,
             )
-            debug_meta["semantic_guardrail_used"] = semantic_guardrail_used
-            debug_meta["semantic_guardrail_reason"] = semantic_guardrail_reason
-            debug_meta["semantic_exact_lookup_used"] = semantic_exact_lookup_used
-            debug_meta["semantic_search_error"] = embedding_error or ""
-            debug_meta["semantic_result_source"] = retrieval_source.value
-            debug_meta["match_tier"] = result_policy.classify_match_tier(
-                structured_found=retrieval_source == ComponentSource.SQL and bool(product_ids),
-                semantic_found=retrieval_source == ComponentSource.VECTOR and bool(product_ids),
-            )
-            state.semantic_catalog_search_done = True
+        state.result_count = len(product_ids)
+        state.retrieval_source = retrieval_source
+        state.retrieval_outcome = build_retrieval_outcome(
+            retrieval_source=retrieval_source,
+            product_ids=product_ids,
+            ambiguity_reason=str(state.ambiguity_reason or ""),
+        )
+        debug_meta["semantic_acceptance_score"] = round(
+            self._semantic_acceptance_score(semantic_best_distance),
+            4,
+        )
+        debug_meta["semantic_guardrail_used"] = semantic_guardrail_used
+        debug_meta["semantic_guardrail_reason"] = semantic_guardrail_reason
+        debug_meta["semantic_exact_lookup_used"] = semantic_exact_lookup_used
+        debug_meta["semantic_search_error"] = embedding_error or ""
+        debug_meta["semantic_result_source"] = retrieval_source.value
+        debug_meta["match_tier"] = state.retrieval_outcome.match_tier
+        debug_meta["retrieval_outcome"] = state.retrieval_outcome.to_debug_dict()
+        state.semantic_catalog_search_done = True
 
 
         return True, product_ids, query_embedding

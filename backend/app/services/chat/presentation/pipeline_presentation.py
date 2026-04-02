@@ -15,7 +15,15 @@ from app.schemas.chat import (
     ProductCard,
 )
 from app.services.chat.runtime import conversation_state
-from app.services.chat.presentation import component_contract, product_presentation, reply_tone
+from app.services.chat.presentation import (
+    clarify_policy,
+    component_contract_builder,
+    component_contract,
+    follow_up_builder,
+    product_contract_builder,
+    product_presentation,
+    reply_tone,
+)
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.pipeline_runtime.state import (
     ComponentPipelineResult,
@@ -24,6 +32,7 @@ from app.services.chat.components.pipeline_runtime.state import (
 from app.services.chat.components.registry import ComponentRegistry
 from app.services.chat.components.types import ComponentSource, ComponentType
 from app.services.chat.text_normalization import normalize_user_text
+from app.services.chat.retrieval.retrieval_outcome import build_retrieval_outcome
 
 
 
@@ -51,24 +60,11 @@ class PipelinePresentationMixin:
 
     @staticmethod
     def _dedupe_follow_up_questions(items: Sequence[str], *, limit: int = 5) -> List[str]:
-            deduped: List[str] = []
-            seen: set[str] = set()
-            for raw in list(items or []):
-                text = str(raw or "").strip()
-                if not text:
-                    continue
-                key = text.lower()
-                if key in seen:
-                    continue
-                seen.add(key)
-                deduped.append(text)
-                if len(deduped) >= max(1, int(limit)):
-                    break
-            return deduped
+            return clarify_policy.dedupe_follow_up_questions(items, limit=limit)
 
     @staticmethod
     def _product_sku(product: Any) -> str:
-            return str(getattr(product, "sku", "") or "").strip()
+            return clarify_policy.product_sku(product)
 
     @classmethod
     def _build_product_clarify_follow_ups(
@@ -79,19 +75,12 @@ class PipelinePresentationMixin:
             needs_knowledge: bool,
             limit: int = 3,
         ) -> List[str]:
-            follow_ups: List[str] = []
-            for product in list(products or [])[:3]:
-                sku = cls._product_sku(product)
-                if sku:
-                    follow_ups.append(f"Show details for SKU {sku}")
-            if not follow_ups:
-                if "material" not in attribute_filters:
-                    follow_ups.extend(["Show titanium jewelry", "Show gold jewelry"])
-                if "jewelry_type" not in attribute_filters:
-                    follow_ups.append("Show labret")
-            if needs_knowledge:
-                follow_ups.append("How can I contact you?")
-            return cls._dedupe_follow_up_questions(follow_ups, limit=limit)
+            return clarify_policy.build_product_clarify_follow_ups(
+                products=products,
+                attribute_filters=attribute_filters,
+                needs_knowledge=needs_knowledge,
+                limit=limit,
+            )
 
     @classmethod
     def _build_knowledge_clarify_follow_ups(
@@ -100,103 +89,40 @@ class PipelinePresentationMixin:
             user_text: str,
             limit: int = 3,
         ) -> List[str]:
-            focus = cls._knowledge_clarify_focus(user_text=user_text)
-            if focus in {"contact", "location"}:
-                return cls._dedupe_follow_up_questions(
-                    [
-                        "What is your sales email?",
-                        "What is your phone number?",
-                        "What is your showroom address?",
-                    ],
-                    limit=limit,
-                )
-            if focus == "shipping":
-                return cls._dedupe_follow_up_questions(
-                    [
-                        "What is your shipping policy?",
-                        "How long is delivery?",
-                        "Do you ship internationally?",
-                    ],
-                    limit=limit,
-                )
-            if focus == "refund":
-                return cls._dedupe_follow_up_questions(
-                    [
-                        "What is your refund policy?",
-                        "What can I return?",
-                        "How long do refunds take?",
-                    ],
-                    limit=limit,
-                )
-            if focus == "payment":
-                return cls._dedupe_follow_up_questions(
-                    [
-                        "What payment methods do you accept?",
-                        "Can I pay by bank transfer?",
-                        "Do you issue invoices?",
-                    ],
-                    limit=limit,
-                )
-            if focus == "warranty":
-                return cls._dedupe_follow_up_questions(
-                    [
-                        "What is your warranty policy?",
-                        "What does the warranty cover?",
-                        "How do I claim warranty support?",
-                    ],
-                    limit=limit,
-                )
-            normalized = normalize_user_text(user_text)
-            follow_ups: List[str] = []
-            if "shipping" in normalized or "delivery" in normalized:
-                follow_ups.extend(["What is your shipping policy?", "How long is delivery?"])
-            if "refund" in normalized or "return" in normalized:
-                follow_ups.extend(["What is your refund policy?", "What can I return?"])
-            if any(term in normalized for term in {"contact", "support", "sales", "email", "phone", "whatsapp"}):
-                follow_ups.extend(["How can I contact you?", "How can I contact your sales team?"])
-            if not follow_ups:
-                follow_ups.extend(
-                    [
-                        "What is your shipping policy?",
-                        "What is your refund policy?",
-                        "How can I contact you?",
-                    ]
-                )
-            return cls._dedupe_follow_up_questions(follow_ups, limit=limit)
+            return clarify_policy.build_knowledge_clarify_follow_ups(
+                user_text=user_text,
+                location_terms=cls._LOCATION_KNOWLEDGE_TERMS,
+                contact_terms=cls._CONTACT_KNOWLEDGE_TERMS,
+                shipping_terms=cls._SHIPPING_KNOWLEDGE_TERMS,
+                refund_terms=cls._REFUND_KNOWLEDGE_TERMS,
+                payment_terms=cls._PAYMENT_KNOWLEDGE_TERMS,
+                warranty_terms=cls._WARRANTY_KNOWLEDGE_TERMS,
+                limit=limit,
+            )
 
     @classmethod
     def _knowledge_clarify_focus(cls, *, user_text: str) -> str:
-            normalized = normalize_user_text(user_text)
-            if not normalized:
-                return "general"
-            if any(term in normalized for term in cls._LOCATION_KNOWLEDGE_TERMS):
-                return "location"
-            if any(term in normalized for term in cls._CONTACT_KNOWLEDGE_TERMS):
-                return "contact"
-            if any(term in normalized for term in cls._SHIPPING_KNOWLEDGE_TERMS):
-                return "shipping"
-            if any(term in normalized for term in cls._REFUND_KNOWLEDGE_TERMS):
-                return "refund"
-            if any(term in normalized for term in cls._PAYMENT_KNOWLEDGE_TERMS):
-                return "payment"
-            if any(term in normalized for term in cls._WARRANTY_KNOWLEDGE_TERMS):
-                return "warranty"
-            return "general"
+            return clarify_policy.knowledge_clarify_focus(
+                user_text=user_text,
+                location_terms=cls._LOCATION_KNOWLEDGE_TERMS,
+                contact_terms=cls._CONTACT_KNOWLEDGE_TERMS,
+                shipping_terms=cls._SHIPPING_KNOWLEDGE_TERMS,
+                refund_terms=cls._REFUND_KNOWLEDGE_TERMS,
+                payment_terms=cls._PAYMENT_KNOWLEDGE_TERMS,
+                warranty_terms=cls._WARRANTY_KNOWLEDGE_TERMS,
+            )
 
     @classmethod
     def _knowledge_clarify_question(cls, *, user_text: str) -> str:
-            focus = cls._knowledge_clarify_focus(user_text=user_text)
-            if focus in {"contact", "location"}:
-                return "Do you need our sales email, phone number, or showroom address?"
-            if focus == "shipping":
-                return "Do you need shipping cost, delivery time, or destination coverage?"
-            if focus == "refund":
-                return "Do you need return eligibility, refund timing, or exchange terms?"
-            if focus == "payment":
-                return "Do you need accepted payment methods, invoice details, or transfer instructions?"
-            if focus == "warranty":
-                return "Do you need warranty coverage, duration, or claim steps?"
-            return "Which policy detail do you need?"
+            return clarify_policy.knowledge_clarify_question(
+                user_text=user_text,
+                location_terms=cls._LOCATION_KNOWLEDGE_TERMS,
+                contact_terms=cls._CONTACT_KNOWLEDGE_TERMS,
+                shipping_terms=cls._SHIPPING_KNOWLEDGE_TERMS,
+                refund_terms=cls._REFUND_KNOWLEDGE_TERMS,
+                payment_terms=cls._PAYMENT_KNOWLEDGE_TERMS,
+                warranty_terms=cls._WARRANTY_KNOWLEDGE_TERMS,
+            )
 
     @classmethod
     def _build_clarify_policy(
@@ -211,230 +137,24 @@ class PipelinePresentationMixin:
             requested_fields: Sequence[str],
             clarify_focus: str = "",
         ) -> Dict[str, Any]:
-            reason_norm = str(reason or "missing_details").strip() or "missing_details"
-            message = ""
-            questions: List[str] = []
-            suggestions: List[str] = []
-            extra_debug: Dict[str, Any] = {}
-
-            if reason_norm == "attribute_list_no_results":
-                message = tone_pick(
-                    "clarify:attribute_list_no_results",
-                    [
-                        "I couldn't find matching options for that filter. Try a broader filter.",
-                        "No matching attribute options yet. Try removing one filter and search again.",
-                        "That filter is too narrow right now. Try a broader attribute filter.",
-                    ],
-                )
-                questions = ["Which filter do you want to broaden?"]
-            elif reason_norm == "structured_no_match":
-                questions = ["Which item should I narrow down for you?"]
-                if cls._is_design_discovery_query(
-                    user_text=user_text,
-                    attribute_filters=attribute_filters,
-                ):
-                    message = tone_pick(
-                        "clarify:structured_no_match:design_discovery",
-                        [
-                            "Great question. We carry minimalist, opal, and statement body jewelry styles. Tell me your piercing type and preferred style and I'll narrow it down.",
-                            "We have a range of clean, opal, and bold designs. Share your piercing type and style preference and I'll suggest the best matches.",
-                            "We offer both subtle and standout body jewelry designs. Tell me your style and piercing type, and I'll shortlist options.",
-                        ],
-                    )
-                    questions = ["Do you want subtle, bold, or opal-focused designs?"]
-                else:
-                    message = tone_pick(
-                        "clarify:structured_no_match:humanized",
-                        [
-                            "I can still help here. Share one preference like material, style, or gauge and I'll narrow options.",
-                            "No exact match yet, but I can find alternatives. Tell me one preference and I'll refine the search.",
-                            "I can quickly narrow this down. Share one detail like material or style and I'll show the closest options.",
-                        ],
-                    )
-            elif reason_norm == "semantic_concept_unclear":
-                focus = str(clarify_focus or "").strip().lower()
-                if focus == "sterilization_meaning":
-                    message = tone_pick(
-                        "clarify:semantic_concept_unclear:sterilization",
-                        [
-                            "Do you mean pre-sterilized jewelry, surgical steel jewelry, or sterile-packed products?",
-                            "When you say sterilization, do you mean pre-sterilized jewelry, surgical steel, or sterile-packed items?",
-                            "To narrow this down, do you mean pre-sterilized jewelry, surgical steel jewelry, or sterile-packed products?",
-                        ],
-                    )
-                    questions = ["Which sterilization-related option do you mean?"]
-                    suggestions = [
-                        "Show surgical steel jewelry",
-                        "Show pre-sterilized jewelry",
-                        "Show sterile-packed products",
-                    ]
-                else:
-                    message = tone_pick(
-                        "clarify:semantic_concept_unclear",
-                        [
-                            "I need one detail to interpret that product concept correctly. Can you be a bit more specific?",
-                            "That concept can mean a few different things. Tell me which type you want and I'll narrow it down.",
-                            "I can help, but I need one more detail about what you mean before I show products.",
-                        ],
-                    )
-                    questions = ["Which product concept should I focus on?"]
-            elif reason_norm == "detail_no_match":
-                message = tone_pick(
-                    "clarify:detail_no_match",
-                    [
-                        "I couldn't find a product matching those exact details. Try a broader request or share a SKU.",
-                        "I don't see an exact product match yet. Share a SKU or broader details and I'll retry.",
-                        "No exact product match found. Send a SKU or fewer filters and I can narrow it down.",
-                    ],
-                )
-                questions = ["Can you share a SKU or fewer filters?"]
-            elif reason_norm == "pagination_exhausted":
-                message = tone_pick(
-                    "clarify:pagination_exhausted",
-                    [
-                        "That was the last set of matching products I found. Try a different material, gauge, or jewelry type.",
-                        "I reached the end of the matching products. If you want more, change one filter like material or gauge.",
-                        "That was the final page of matches. Adjust your search and I can find more options.",
-                    ],
-                )
-                questions = ["Which filter should I change next?"]
-                suggestions = [
-                    "Show titanium jewelry",
-                    "Show labret options",
-                    "What other materials do you have?",
-                ]
-            elif reason_norm == "detail_request_needs_specific_product":
-                requested = {str(item or "").strip().lower() for item in list(requested_fields or []) if str(item or "").strip()}
-                jewelry_type = str((attribute_filters or {}).get("jewelry_type") or "").strip().lower()
-                subject = jewelry_type or "product"
-                action = "look that up"
-                if "price" in requested and "stock" in requested:
-                    action = "check the price and stock"
-                elif "price" in requested:
-                    action = "check the price"
-                elif "stock" in requested:
-                    action = "check the stock"
-                message = f"I'm not sure which {subject} you mean. Share a SKU or add details like material, gauge, size, or color, and I can {action}."
-                questions = ["Which exact product should I use?"]
-            elif reason_norm in {"knowledge_needs_clarification", "knowledge_unavailable"}:
-                knowledge_focus = cls._knowledge_clarify_focus(user_text=user_text)
-                knowledge_question = cls._knowledge_clarify_question(user_text=user_text)
-                if reason_norm == "knowledge_needs_clarification":
-                    if knowledge_focus in {"contact", "location"}:
-                        message = tone_pick(
-                            "clarify:knowledge_contact_context",
-                            [
-                                "I can share that. Do you need our sales email, phone number, or showroom address?",
-                                "Happy to help with contact details. Should I send email, phone, or showroom address?",
-                                "I can provide contact info now. Do you want email, phone, or showroom address?",
-                            ],
-                        )
-                    else:
-                        message = tone_pick(
-                            "clarify:knowledge_context",
-                            [
-                                f"I can help with that. {knowledge_question}",
-                                f"To answer accurately, I need one detail. {knowledge_question}",
-                                f"Let's narrow this quickly. {knowledge_question}",
-                            ],
-                        )
-                else:
-                    if knowledge_focus in {"contact", "location"}:
-                        message = tone_pick(
-                            "clarify:knowledge_contact_unavailable",
-                            [
-                                "I may be missing the latest contact detail. Do you need email, phone, or showroom address?",
-                                "I can help with contact info. Tell me whether you need email, phone, or address.",
-                                "I need one detail to continue: email, phone, or showroom address?",
-                            ],
-                        )
-                    else:
-                        message = tone_pick(
-                            "clarify:knowledge_unavailable",
-                            [
-                                f"I may be missing the latest policy details. {knowledge_question}",
-                                f"I can still help, but I need a specific policy topic. {knowledge_question}",
-                                f"To avoid guessing, I need one specific detail. {knowledge_question}",
-                            ],
-                        )
-                questions = [knowledge_question]
-                suggestions = cls._build_knowledge_clarify_follow_ups(user_text=user_text, limit=3)
-                extra_debug["knowledge_clarify_focus"] = knowledge_focus
-            elif reason_norm in {"routing_fallback", "fallback_uncertain"}:
-                message = tone_pick(
-                    "clarify:fallback_uncertain",
-                    [
-                        "I can help right away. Tell me whether you need products, policy details, or contact info.",
-                        "I can assist with products, policy, or contact details. Which one should I focus on?",
-                        "Tell me your main goal and I'll route this correctly: products, policy, or contact.",
-                    ],
-                )
-                questions = ["What do you want help with right now?"]
-                suggestions = [
-                    "Show titanium jewelry",
-                    "How can I contact you?",
-                    "What is your shipping policy?",
-                ]
-            elif reason_norm == "fallback_too_broad":
-                message = tone_pick(
-                    "clarify:fallback_too_broad",
-                    [
-                        "I can help quickly. Share one detail like piercing type, material, or SKU and I'll narrow it.",
-                        "Happy to help. Tell me one preference such as type, material, or gauge and I'll refine the options.",
-                        "Let's narrow this in one step. Give me piercing type, material, or SKU and I'll show the best matches.",
-                    ],
-                )
-                questions = ["Which detail should I use first: type, material, or SKU?"]
-                suggestions = [
-                    "Show titanium labrets",
-                    "Show opal designs",
-                    "Show in-stock only",
-                ]
-            elif reason_norm == "fallback_gibberish":
-                message = tone_pick(
-                    "clarify:fallback_gibberish",
-                    [
-                        "I didn't catch that message. Can you rephrase it in a few words?",
-                        "That came through unclear. Please rephrase what you need.",
-                        "I couldn't parse that yet. Can you type it again with what you want help with?",
-                    ],
-                )
-                questions = ["Can you rephrase your request?"]
-                suggestions = [
-                    "Show titanium jewelry",
-                    "How can I contact you?",
-                    "Do you have in-stock products?",
-                ]
-
-            if not message:
-                message = tone_pick(
-                    f"clarify:{reason_norm}:default",
-                    [
-                        "Share a little more detail so I can match the right products.",
-                        "I can help faster if you add one or two more details.",
-                        "Give me a bit more detail and I will narrow this down.",
-                    ],
-                )
-            if not questions:
-                questions = ["Which detail should I use to continue?"]
-            if not suggestions:
-                if reason_norm in {"structured_no_match", "detail_no_match", "detail_request_needs_specific_product", "attribute_list_no_results"}:
-                    suggestions = cls._build_product_clarify_follow_ups(
-                        products=products,
-                        attribute_filters=attribute_filters,
-                        needs_knowledge=bool(needs_knowledge),
-                        limit=3,
-                    )
-                else:
-                    suggestions = cls._build_knowledge_clarify_follow_ups(user_text=user_text, limit=3)
-
-            return {
-                "reason": reason_norm,
-                "message": str(message or "").strip(),
-                "questions": list(questions or []),
-                "suggestions": list(suggestions or []),
-                "extra_debug": dict(extra_debug or {}),
-            }
+            return clarify_policy.build_clarify_policy(
+                reason=reason,
+                user_text=user_text,
+                tone_pick=tone_pick,
+                products=products,
+                attribute_filters=attribute_filters,
+                needs_knowledge=needs_knowledge,
+                requested_fields=requested_fields,
+                clarify_focus=clarify_focus,
+                display_attribute_value=cls._display_attribute_value,
+                build_pagination_exhausted_follow_ups=cls._build_pagination_exhausted_follow_ups,
+                location_terms=cls._LOCATION_KNOWLEDGE_TERMS,
+                contact_terms=cls._CONTACT_KNOWLEDGE_TERMS,
+                shipping_terms=cls._SHIPPING_KNOWLEDGE_TERMS,
+                refund_terms=cls._REFUND_KNOWLEDGE_TERMS,
+                payment_terms=cls._PAYMENT_KNOWLEDGE_TERMS,
+                warranty_terms=cls._WARRANTY_KNOWLEDGE_TERMS,
+            )
 
     @classmethod
     def _build_conversion_follow_ups(
@@ -450,48 +170,47 @@ class PipelinePresentationMixin:
             limit: int = 5,
             debug_meta: Optional[Dict[str, Any]] = None,
         ) -> List[str]:
-            if not bool(getattr(settings, "CHAT_CONVERSION_FOLLOW_UPS_ENABLED", True)):
-                return []
-            follow_ups: List[str] = []
-            if "material" not in attribute_filters:
-                for material in cls._top_product_attributes(products=products, key="material", limit=2):
-                    follow_ups.append(f"Show {material} jewelry")
-            if "jewelry_type" not in attribute_filters:
-                for jewelry_type in cls._top_product_attributes(products=products, key="jewelry_type", limit=2):
-                    follow_ups.append(f"Show {jewelry_type}")
-            has_opal = any(
-                str(dict(getattr(product, "attributes", {}) or {}).get("opal_color") or "").strip()
-                for product in list(products or [])
+            def _show_more_follow_up_adapter(
+                    *,
+                    products: Sequence[Any],
+                    attribute_filters: Dict[str, str],
+                    result_count: int,
+                    display_count: int,
+                    display_offset: int = 0,
+                    pagination_has_more: Optional[bool] = None,
+                ) -> List[str]:
+                try:
+                    return cls._build_show_more_follow_up(
+                        products=products,
+                        attribute_filters=attribute_filters,
+                        result_count=result_count,
+                        display_count=display_count,
+                        display_offset=display_offset,
+                        pagination_has_more=pagination_has_more,
+                    )
+                except TypeError:
+                    return cls._build_show_more_follow_up(
+                        products=products,
+                        attribute_filters=attribute_filters,
+                        result_count=result_count,
+                        display_count=display_count,
+                        display_offset=display_offset,
+                    )
+
+            return follow_up_builder.build_conversion_follow_ups(
+                products=products,
+                attribute_filters=attribute_filters,
+                user_text=user_text,
+                needs_knowledge=needs_knowledge,
+                result_count=result_count,
+                display_count=display_count,
+                display_offset=display_offset,
+                limit=limit,
+                debug_meta=debug_meta,
+                top_product_attributes=cls._top_product_attributes,
+                build_show_more_follow_up=_show_more_follow_up_adapter,
+                dedupe_follow_up_questions=cls._dedupe_follow_up_questions,
             )
-            if has_opal:
-                follow_ups.append("Show opal colors")
-            follow_ups.extend(
-                cls._build_show_more_follow_up(
-                    products=products,
-                    attribute_filters=attribute_filters,
-                    result_count=result_count,
-                    display_count=display_count,
-                    display_offset=int(display_offset or 0),
-                )
-            )
-            if follow_ups and isinstance(debug_meta, dict):
-                quick_reply_actions = dict(debug_meta.get("quick_reply_actions") or {})
-                for label in follow_ups:
-                    label_key = str(label or "").strip().lower()
-                    if not label_key.startswith("show more"):
-                        continue
-                    quick_reply_actions[label_key] = {
-                        "action": "catalog_pagination",
-                        "payload": {
-                            "kind": "catalog_pagination",
-                            "label": str(label or "").strip(),
-                        },
-                    }
-                if quick_reply_actions:
-                    debug_meta["quick_reply_actions"] = quick_reply_actions
-            if needs_knowledge:
-                follow_ups.append("How can I contact you?")
-            return cls._dedupe_follow_up_questions(follow_ups, limit=limit)
 
     @classmethod
     def _build_show_more_follow_up(
@@ -502,37 +221,32 @@ class PipelinePresentationMixin:
             result_count: int,
             display_count: int,
             display_offset: int = 0,
+            pagination_has_more: Optional[bool] = None,
         ) -> List[str]:
-            total_results = max(0, int(result_count or 0))
-            shown_results = max(0, int(display_count or 0))
-            shown_offset = max(0, int(display_offset or 0))
-            if total_results <= shown_results + shown_offset:
-                return []
+            return follow_up_builder.build_show_more_follow_up(
+                products=products,
+                attribute_filters=attribute_filters,
+                result_count=result_count,
+                display_count=display_count,
+                display_offset=display_offset,
+                pagination_has_more=pagination_has_more,
+                display_attribute_value=cls._display_attribute_value,
+                top_product_attributes=cls._top_product_attributes,
+            )
 
-            def _label_from_key(key: str) -> str:
-                raw = str((attribute_filters or {}).get(key) or "").strip()
-                if raw:
-                    return cls._display_attribute_value(raw)
-                values = cls._top_product_attributes(products=products, key=key, limit=1)
-                return values[0] if values else ""
-
-            material = _label_from_key("material")
-            if material:
-                return [f"Show more {material} jewelry"]
-
-            jewelry_type = _label_from_key("jewelry_type")
-            if jewelry_type:
-                return [f"Show more {jewelry_type} options"]
-
-            design = _label_from_key("design")
-            if design:
-                return [f"Show more {design} designs"]
-
-            category = _label_from_key("category")
-            if category:
-                return [f"Show more {category} items"]
-
-            return ["Show more matching items"]
+    @classmethod
+    def _build_pagination_exhausted_follow_ups(
+            cls,
+            *,
+            attribute_filters: Dict[str, str],
+            limit: int = 3,
+        ) -> List[str]:
+            return follow_up_builder.build_pagination_exhausted_follow_ups(
+                attribute_filters=attribute_filters,
+                limit=limit,
+                display_attribute_value=cls._display_attribute_value,
+                dedupe_follow_up_questions=cls._dedupe_follow_up_questions,
+            )
 
     @staticmethod
     def _apply_clarify_debug(
@@ -934,79 +648,20 @@ class PipelinePresentationMixin:
                 carousel_msg = str(context.debug.get("detail_carousel_msg") or "").strip()
                 follow_ups.extend(list(context.debug.get("detail_follow_ups") or []))
             elif has_product_cards:
-                if bool(context.debug.get("detail_reply_text")):
-                    display_products = list(context.canonical_products or [])
-                else:
-                    display_products, _total_unique_products = product_presentation.dedupe_products_by_master_code(
-                        context.canonical_products,
-                        limit=product_presentation.PRODUCT_DISPLAY_LIMIT,
-                    )
-                if bool(context.debug.get("store_overview_request")):
-                    assistant_text = str(context.debug.get("store_overview_reply") or "").strip()
-                    if not assistant_text:
-                        assistant_text = cls._build_store_overview_reply(products=display_products)
-                    follow_ups.extend(list(context.debug.get("store_overview_follow_ups") or []))
-                elif bool(context.debug.get("detail_reply_text")):
-                    assistant_text = str(context.debug.get("detail_reply_text") or "").strip()
-                    carousel_msg = str(context.debug.get("detail_carousel_msg") or "").strip()
-                    follow_ups.extend(list(context.debug.get("detail_follow_ups") or []))
-                elif "recommendations" in mapped or bool(context.debug.get("recommendation_ranked_count")):
-                    assistant_text = product_presentation.build_recommendation_match_reply(
-                        attribute_filters=context.attribute_filters,
-                        user_text=user_text,
-                    )
-                else:
-                    assistant_text = product_presentation.build_product_match_reply(
-                        attribute_filters=context.attribute_filters,
-                        user_text=user_text,
-                    )
-                if not carousel_msg:
-                    carousel_msg = choose(
-                        f"{context.workflow}:carousel",
-                        [
-                            "Matching products are shown below.",
-                            "These are the top matches for your request.",
-                            "Here are the products that best fit your request.",
-                        ],
-                    )
-                if bool(context.debug.get("catalog_pagination_requested")):
-                    assistant_text = choose(
-                        "catalog:pagination",
-                        [
-                            "Here are more matching products from your search.",
-                            "I found more matching products from the same search.",
-                            "Here are more options from your search.",
-                        ],
-                    )
-                if not bool(context.debug.get("store_overview_request")):
-                    follow_ups.extend(
-                        cls._build_conversion_follow_ups(
-                            products=display_products,
-                            attribute_filters=context.attribute_filters,
-                            user_text=user_text,
-                            needs_knowledge=bool(context.debug.get("workflow_needs_knowledge", False)),
-                            result_count=int(context.result_count or 0),
-                            display_count=len(display_products or []),
-                            display_offset=int(context.debug.get("catalog_pagination_offset", 0) or 0),
-                            limit=5,
-                            debug_meta=context.debug,
-                        )
-                    )
+                product_contract = product_contract_builder.build_product_cards_contract(
+                    context=context,
+                    mapped=mapped,
+                    choose=choose,
+                    build_store_overview_reply=cls._build_store_overview_reply,
+                    build_show_more_follow_up=cls._build_show_more_follow_up,
+                    build_conversion_follow_ups=cls._build_conversion_follow_ups,
+                )
+                assistant_text = str(product_contract.get("assistant_text") or "")
+                carousel_msg = str(product_contract.get("carousel_msg") or "")
+                display_products = list(product_contract.get("display_products") or [])
+                follow_ups.extend(list(product_contract.get("follow_ups") or []))
             elif has_knowledge_answer:
                 assistant_text = mixed_knowledge_answer or query_summary
-
-            recommendation_items = list(mapped.get("recommendations", {}).get("items") or [])
-            if recommendation_items:
-                follow_ups.append(
-                    choose(
-                        "recommendations:follow_up",
-                        [
-                            "Show recommendations",
-                            "Show more recommendations",
-                            "Recommend more like this",
-                        ],
-                        )
-                    )
 
             if (has_product_detail or has_product_cards) and mixed_knowledge_answer:
                 assistant_text = cls._combine_mixed_assistant_text(
@@ -1024,47 +679,22 @@ class PipelinePresentationMixin:
                     ],
                 )
 
-            deduped_follow_ups = cls._dedupe_follow_up_questions(follow_ups, limit=5)
-            rebuilt_components: List[ChatComponent] = []
-            for component in component_list:
-                kind = cls._component_type_name(component)
-                if kind in {"assistant_message", "quick_replies"}:
-                    continue
-                if kind == "clarify":
-                    clarify_data = dict(getattr(component, "data", {}) or {})
-                    if deduped_follow_ups:
-                        clarify_data["suggestions"] = list(deduped_follow_ups)
-                    rebuilt_components.append(
-                        ChatComponent(type=ChatComponentType.CLARIFY, data=clarify_data)
-                    )
-                    continue
-                rebuilt_components.append(component)
-            if assistant_text:
-                rebuilt_components.insert(
-                    0,
-                    ChatComponent(
-                        type=ChatComponentType.ASSISTANT_MESSAGE,
-                        data={"text": str(assistant_text)},
-                    ),
-                )
-            if deduped_follow_ups:
-                rebuilt_components.append(
-                    ChatComponent(
-                        type=ChatComponentType.QUICK_REPLIES,
-                        data={"items": list(deduped_follow_ups)},
-                    )
-                )
-
-            product_carousel = component_contract.product_cards_from_components(rebuilt_components)
-            if not product_carousel and list(display_products or []):
-                product_carousel = [cls._to_product_card(item) for item in list(display_products or [])]
+            finalized_contract = component_contract_builder.finalize_contract_components(
+                component_list=component_list,
+                assistant_text=assistant_text,
+                follow_ups=follow_ups,
+                display_products=display_products,
+                dedupe_follow_up_questions=cls._dedupe_follow_up_questions,
+                component_type_name=cls._component_type_name,
+                to_product_card=cls._to_product_card,
+            )
 
             return {
-                "components": rebuilt_components,
+                "components": list(finalized_contract["components"] or []),
                 "assistant_text": str(assistant_text or ""),
                 "carousel_msg": carousel_msg,
-                "product_carousel": product_carousel,
-                "follow_up_questions": list(deduped_follow_ups or []),
+                "product_carousel": list(finalized_contract["product_carousel"] or []),
+                "follow_up_questions": list(finalized_contract["follow_up_questions"] or []),
             }
 
     async def _finalize_pipeline_result(
@@ -1101,6 +731,14 @@ class PipelinePresentationMixin:
             retrieval_source = state.retrieval_source
             ambiguity_reason = state.ambiguity_reason
             knowledge_error_message = state.knowledge_error_message
+            retrieval_outcome = build_retrieval_outcome(
+                retrieval_source=retrieval_source,
+                product_ids=list(state.product_ids or []),
+                ambiguity_reason=str(ambiguity_reason or ""),
+            )
+            state.retrieval_outcome = retrieval_outcome
+            debug_meta["retrieval_outcome"] = retrieval_outcome.to_debug_dict()
+            debug_meta["match_tier"] = retrieval_outcome.match_tier
 
             if ComponentType.CLARIFY in selected_components:
                 clarify_policy = self._build_clarify_policy(
@@ -1223,6 +861,7 @@ class PipelinePresentationMixin:
                     ),
                     route=workflow,
                     query_cache_key=str(state.query_cache_key or ""),
+                    query_product_ids=list(getattr(state, "query_product_ids", []) or getattr(state, "product_ids", []) or []),
                     result_count=int(state.result_count or 0),
                     display_offset=int(debug_meta.get("catalog_pagination_offset") or 0),
                     display_limit=int(debug_meta.get("catalog_pagination_limit") or 0),

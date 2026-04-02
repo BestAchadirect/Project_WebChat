@@ -182,6 +182,81 @@ def build_recommendation_match_reply(*, attribute_filters: Dict[str, str], user_
     )
 
 
+def _product_attribute_values(products: Sequence[Any], key: str, limit: int = 3) -> List[str]:
+    values: List[str] = []
+    seen: set[str] = set()
+    for product in list(products or []):
+        attrs = dict(getattr(product, "attributes", {}) or {})
+        raw_value = attrs.get(key) or getattr(product, key, None)
+        text = _display_text(raw_value)
+        if not text:
+            continue
+        token = text.lower()
+        if token in seen:
+            continue
+        seen.add(token)
+        values.append(text)
+        if len(values) >= max(1, int(limit or 1)):
+            break
+    return values
+
+
+def build_recommendation_summary_reply(
+    *,
+    products: Sequence[Any],
+    attribute_filters: Dict[str, str],
+    recommendation_mode: str = "",
+    recommendation_label: str = "",
+    user_text: str = "",
+) -> str:
+    del user_text
+    product_list = list(products or [])
+    if not product_list:
+        return "I found a few matching options. What would you like to focus on next: gauge, length, color, or threading?"
+
+    anchor_type = _display_text(attribute_filters.get("jewelry_type"))
+    jewelry_types = _product_attribute_values(product_list, "jewelry_type", limit=2)
+    materials = _product_attribute_values(product_list, "material", limit=1)
+    gauges = _product_attribute_values(product_list, "gauge", limit=1)
+    threadings = _product_attribute_values(product_list, "threading", limit=1)
+
+    focus_label = ""
+    recommendation_mode = str(recommendation_mode or "").strip().lower()
+    recommendation_label = _display_text(recommendation_label)
+    if recommendation_mode == "complementary_items" and recommendation_label:
+        focus_label = f"compatible {recommendation_label.lower()}"
+    if jewelry_types:
+        first_type = jewelry_types[0].strip()
+        lowered = first_type.lower()
+        if not focus_label and any(token in lowered for token in ("top", "end", "ball", "attachment")):
+            focus_label = f"compatible {first_type.lower()} options"
+        elif not focus_label:
+            focus_label = f"{first_type.lower()} options"
+    elif anchor_type and not focus_label:
+        focus_label = f"matching options for your {anchor_type.lower()}"
+    elif not focus_label:
+        focus_label = "a few matching options"
+
+    detail_bits: List[str] = []
+    if materials:
+        detail_bits.append(f"mostly in {materials[0]}")
+    if gauges:
+        detail_bits.append(f"around {gauges[0]}")
+    if threadings:
+        detail_bits.append(f"with {threadings[0]} threading")
+
+    summary = f"I found {focus_label}"
+    if anchor_type and anchor_type.lower() not in focus_label.lower():
+        summary = f"{summary} for your {anchor_type.lower()}"
+    if recommendation_mode == "complementary_items" and recommendation_label and recommendation_label.lower() not in summary.lower():
+        summary = f"{summary} ({recommendation_label})"
+    if detail_bits:
+        summary = f"{summary} ({', '.join(detail_bits)})"
+
+    question = "What would you like to focus on next: gauge, length, color, or threading?"
+    return f"{summary}. {question}"
+
+
 def build_see_more_follow_up(*, attribute_filters: Dict[str, str], user_text: str) -> str:
     # Quick-reply UX is currently disabled, so we intentionally suppress this CTA.
     return ""

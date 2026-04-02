@@ -15,6 +15,7 @@ class PipelineWorkflowRecommendationMixin:
             text: str,
             detail: Any,
             recommendation_requested: bool,
+            recommendation_mode_requested: str,
             result_fetch_limit: int,
             query_embedding: Optional[List[float]],
             product_ids: List[Any],
@@ -28,7 +29,12 @@ class PipelineWorkflowRecommendationMixin:
 
             anchor_products = list(state.canonical_products[:3])
             anchor_ids = [item.product_id for item in anchor_products]
-            recommendation_mode = self._recommendation_service.detect_mode(user_text=text)
+            recommendation_mode = self._recommendation_service.resolve_mode(
+                requested_mode=recommendation_mode_requested,
+                user_text=text,
+                anchor_products=anchor_products,
+                attribute_filters=detail.attribute_filters,
+            )
             debug_meta["recommendation_mode_requested"] = recommendation_mode
             expansion_product_ids: List[Any] = []
             recommendation_distance_by_id: Dict[str, float] = {}
@@ -101,7 +107,7 @@ class PipelineWorkflowRecommendationMixin:
                     state.canonical_products, resolver_meta = await self._field_resolver.resolve(
                         product_ids=merged_ids,
                         component_types=state.selected_components,
-                        redis_cache=self._redis_cache,
+                        component_cache=self._component_cache,
                     )
                     spans["db_product_lookup_ms"] += (time.perf_counter() - resolver_started) * 1000.0
                     debug_meta.update(resolver_meta)
@@ -109,19 +115,37 @@ class PipelineWorkflowRecommendationMixin:
                     state.product_ids = list(product_ids)
                     debug_meta["recommendation_expand_added_ids"] = int(len(extra_ids))
 
-            ranked = self._recommendation_service.rank_canonical_products(
-                candidates=state.canonical_products,
-                attribute_filters=detail.attribute_filters,
-                user_text=text,
-                distance_by_id=recommendation_distance_by_id,
-                anchor_products=anchor_products,
-                limit=result_fetch_limit,
-                exclude_product_ids=anchor_ids
-                if (unique_sku_tokens or recommendation_mode == "complementary_items")
-                else None,
-            )
+            try:
+                ranked = self._recommendation_service.rank_canonical_products(
+                    candidates=state.canonical_products,
+                    attribute_filters=detail.attribute_filters,
+                    user_text=text,
+                    distance_by_id=recommendation_distance_by_id,
+                    anchor_products=anchor_products,
+                    limit=None,
+                    recommendation_mode=recommendation_mode,
+                    exclude_product_ids=anchor_ids
+                    if (unique_sku_tokens or recommendation_mode == "complementary_items")
+                    else None,
+                )
+            except TypeError:
+                ranked = self._recommendation_service.rank_canonical_products(
+                    candidates=state.canonical_products,
+                    attribute_filters=detail.attribute_filters,
+                    user_text=text,
+                    distance_by_id=recommendation_distance_by_id,
+                    anchor_products=anchor_products,
+                    limit=None,
+                    exclude_product_ids=anchor_ids
+                    if (unique_sku_tokens or recommendation_mode == "complementary_items")
+                    else None,
+                )
             debug_meta.update(ranked.meta)
             if ranked.items:
                 state.canonical_products = list(ranked.items)
+                ranked_ids = [self._card_identifier(card) for card in list(ranked.items)]
+                state.product_ids = list(ranked_ids)
+                state.query_product_ids = list(ranked_ids)
+                debug_meta["catalog_query_product_ids"] = list(ranked_ids)
             state.recommendations = list(state.canonical_products[:5])
             return product_ids

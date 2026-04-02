@@ -10,6 +10,7 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ChatRequest
+from app.services.ai.llm_service import llm_service
 from app.services.chat.routing import routing_policy
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.pipeline import ComponentPipeline
@@ -51,6 +52,7 @@ def _workflow_decision(
     workflow: str,
     *,
     store_overview_request: bool = False,
+    recommendation_mode_requested: str = "similar_items",
 ) -> routing_policy.WorkflowDecision:
     return routing_policy.WorkflowDecision(
         workflow=workflow,
@@ -59,13 +61,16 @@ def _workflow_decision(
         needs_knowledge=workflow == "knowledge",
         needs_clarification=workflow == "fallback",
         store_overview_request=store_overview_request,
+        recommendation_mode_requested=recommendation_mode_requested,
         reason="test_override",
         confidence=1.0,
     )
 
 
 @pytest.mark.asyncio
-async def test_component_pipeline_recommend_workflow_returns_recommendation_route() -> None:
+async def test_component_pipeline_recommend_workflow_returns_recommendation_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     first = _canonical_product(sku="LAB-1", title="Titanium Labret 1", material="titanium")
     second = _canonical_product(sku="LAB-2", title="Titanium Labret 2", material="titanium")
 
@@ -75,6 +80,14 @@ async def test_component_pipeline_recommend_workflow_returns_recommendation_rout
 
         async def structured_count(self, **kwargs):
             return 2
+
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(
+                cards=[],
+                product_ids=[str(first.product_id), str(second.product_id)],
+                distance_by_id={str(first.product_id): 0.08, str(second.product_id): 0.09},
+                best_distance=0.08,
+            )
 
         async def smart_search(self, **kwargs):
             raise AssertionError("semantic fallback should not run when structured recommendation seeds exist")
@@ -88,6 +101,9 @@ async def test_component_pipeline_recommend_workflow_returns_recommendation_rout
 
     async def fake_resolve(*, product_ids, component_types, redis_cache):
         return [first, second], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    async def fake_generate_embedding(text: str):
+        return [0.1, 0.2, 0.3]
 
     async def fake_expand(*, anchor_product_ids, query_embedding, limit):
         return SimpleNamespace(
@@ -107,6 +123,7 @@ async def test_component_pipeline_recommend_workflow_returns_recommendation_rout
     pipeline._field_resolver.resolve = fake_resolve  # type: ignore[method-assign]
     pipeline._recommendation_service.expand_card_candidates = fake_expand  # type: ignore[method-assign]
     pipeline._recommendation_service.rank_canonical_products = fake_rank  # type: ignore[method-assign]
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
 
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="recommend titanium labrets", locale="en-US"),
@@ -117,6 +134,6 @@ async def test_component_pipeline_recommend_workflow_returns_recommendation_rout
 
     assert result.response.routing.workflow == "recommendation"
     assert len(result.response.product_carousel) == 2
-    assert any(component.type.value == "recommendations" for component in result.response.components)
-    assert "recommend" in result.response.reply_text.lower()
+    assert not any(component.type.value == "recommendations" for component in result.response.components)
+    assert "what would you like to focus on next" in result.response.reply_text.lower()
     assert result.debug.get("recommendation_mode_requested") == "similar_items"

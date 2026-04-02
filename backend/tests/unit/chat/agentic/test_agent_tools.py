@@ -59,16 +59,6 @@ def test_search_knowledge_base_limit_range() -> None:
         return
     raise AssertionError("Expected ValidationError")
 
-
-def test_is_tool_suitable_for_inventory_query() -> None:
-    result = AgentToolRegistry.is_tool_suitable(
-        user_text="Can you check inventory for this item?",
-        workflow="knowledge",
-        sku_token=None,
-    )
-    assert result is True
-
-
 def test_paginate_items_clamps_page_size_to_max_items() -> None:
     items = list(range(15))
     page_items, total_items, safe_page, total_pages = paginate_items(

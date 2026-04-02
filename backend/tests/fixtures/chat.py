@@ -129,7 +129,6 @@ def build_component_pipeline_result(
             reply_text=reply_text,
             carousel_msg="",
             product_carousel=[],
-            follow_up_questions=[],
             routing=ChatRouting(
                 workflow=response_workflow,
                 execution_mode="component",

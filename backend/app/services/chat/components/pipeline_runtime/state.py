@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from app.schemas.chat import ChatResponse, KnowledgeSource
 from app.services.chat.components.types import ComponentSource, ComponentType
+from app.services.chat.retrieval.retrieval_outcome import RetrievalOutcome
+from app.services.chat.runtime.capabilities import ChatRuntimeCapabilities
 
 
 @dataclass
@@ -35,8 +37,11 @@ class PipelineWorkflowState:
     knowledge_answer: str = ""
     result_count: int = 0
     product_ids: List[Any] = field(default_factory=list)
+    query_product_ids: List[Any] = field(default_factory=list)
     query_embedding: Optional[List[float]] = None
     retrieval_source: ComponentSource = ComponentSource.ERROR
+    retrieval_outcome: Optional[RetrievalOutcome] = None
+    runtime_capabilities: Optional[ChatRuntimeCapabilities] = None
     ambiguity_reason: Optional[str] = None
     knowledge_error_message: str = ""
     handled_attribute_list: bool = False

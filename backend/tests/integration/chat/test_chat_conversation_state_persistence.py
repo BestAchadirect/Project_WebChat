@@ -87,7 +87,6 @@ async def test_finalize_response_persists_conversation_state_when_provided() -> 
         reply_text="ok",
         carousel_msg="",
         product_carousel=[],
-        follow_up_questions=[],
         routing=ChatRouting(workflow="fallback", execution_mode="component", needs_clarification=True),
         sources=[],
         debug={},

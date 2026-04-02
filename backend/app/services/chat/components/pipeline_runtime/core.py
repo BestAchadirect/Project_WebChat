@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.prompts.ambiguity import ambiguity_blocks_retrieval
 from app.schemas.chat import (
     ChatRequest,
 )
@@ -12,7 +13,7 @@ from app.services.catalog.product_search import CatalogProductSearchService
 from app.services.chat.runtime import conversation_state
 from app.services.chat.presentation import product_presentation
 from app.services.chat.routing import routing_policy
-from app.services.chat.components.cache import RedisComponentCache
+from app.services.chat.components.cache import ComponentCache
 from app.services.chat.components.field_resolver import FieldDependencyResolver
 from app.services.chat.components.pipeline_runtime.state import (
     ComponentPipelineResult,
@@ -20,7 +21,6 @@ from app.services.chat.components.pipeline_runtime.state import (
 )
 from app.services.chat.components.pipeline_runtime.policy import (
     CONTACT_KNOWLEDGE_TERMS,
-    DESIGN_DISCOVERY_TERMS,
     DETAIL_CLARIFY_FIELDS,
     FALLBACK_VALID_HINTS,
     HIGH_RISK_KNOWLEDGE_TERMS,
@@ -32,6 +32,7 @@ from app.services.chat.components.pipeline_runtime.policy import (
     SHIPPING_KNOWLEDGE_TERMS,
     WARRANTY_KNOWLEDGE_TERMS,
 )
+from app.services.chat.components.types import ComponentType
 from app.services.chat.retrieval.recommendation_service import RecommendationService
 from app.services.knowledge.retrieval import KnowledgeRetrievalService
 from app.services.chat.components.pipeline_runtime.setup import PipelineSetupMixin
@@ -66,8 +67,6 @@ class ComponentPipeline(
 
     _KNOWLEDGE_UNAVAILABLE_MESSAGE = KNOWLEDGE_UNAVAILABLE_MESSAGE
 
-    _DESIGN_DISCOVERY_TERMS = DESIGN_DISCOVERY_TERMS
-
     _FALLBACK_VALID_HINTS = FALLBACK_VALID_HINTS
 
     _OFF_TOPIC_REDIRECT_OPTIONS = OFF_TOPIC_REDIRECT_OPTIONS
@@ -78,12 +77,13 @@ class ComponentPipeline(
             db: AsyncSession,
             catalog_search: CatalogProductSearchService,
             knowledge_retrieval: KnowledgeRetrievalService,
-            redis_cache: RedisComponentCache,
+            component_cache: ComponentCache | None = None,
+            redis_cache: ComponentCache | None = None,
         ):
             self.db = db
             self._catalog_search = catalog_search
             self._knowledge_retrieval = knowledge_retrieval
-            self._redis_cache = redis_cache
+            self._component_cache = component_cache or redis_cache
             self._field_resolver = FieldDependencyResolver(db=db)
             self._recommendation_service = RecommendationService(db=db, catalog_search=catalog_search)
 
@@ -119,11 +119,13 @@ class ComponentPipeline(
             catalog_pagination_offset = setup.catalog_pagination_offset
             catalog_pagination_limit = setup.catalog_pagination_limit
             catalog_pagination_query_key = setup.catalog_pagination_query_key
+            catalog_pagination_query_ids = setup.catalog_pagination_query_ids
             sku_tokens = setup.sku_tokens
             unique_sku_tokens = setup.unique_sku_tokens
             route_decision = setup.route_decision
             workflow = setup.workflow
             recommendation_requested = setup.recommendation_requested
+            recommendation_mode_requested = setup.recommendation_mode_requested
             store_overview_request = setup.store_overview_request
             knowledge_workflow = setup.knowledge_workflow
             fallback_workflow = setup.fallback_workflow
@@ -153,7 +155,19 @@ class ComponentPipeline(
             query_summary = text if text else "Please provide a question."
             display_limit = product_presentation.PRODUCT_DISPLAY_LIMIT
             result_fetch_limit = max(display_limit * 6, 20)
-            state = PipelineWorkflowState(retrieval_source=source)
+            state = PipelineWorkflowState(
+                retrieval_source=source,
+                runtime_capabilities=setup.runtime_capabilities,
+            )
+            if not catalog_pagination_requested and ambiguity_blocks_retrieval(getattr(detail, "clarify_focus", "")):
+                state.ambiguity_reason = "semantic_concept_unclear"
+                state.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                state.canonical_products = []
+                state.recommendations = []
+                state.result_count = 0
+                debug_meta["semantic_guardrail_reason"] = "semantic_hint_clarify"
+                debug_meta["semantic_hint_clarify_used"] = True
+                debug_meta["clarify_reason"] = "semantic_concept_unclear"
             if catalog_pagination_requested:
                 await self._handle_catalog_pagination_workflow(
                     state=state,
@@ -166,6 +180,7 @@ class ComponentPipeline(
                     recommendation_requested=recommendation_requested,
                     display_limit=display_limit,
                     pagination_query_cache_key=catalog_pagination_query_key,
+                    pagination_query_product_ids=catalog_pagination_query_ids,
                     pagination_offset=catalog_pagination_offset,
                     pagination_limit=catalog_pagination_limit,
                     debug_meta=debug_meta,
@@ -207,6 +222,7 @@ class ComponentPipeline(
                         store_overview_request=store_overview_request,
                         unique_sku_tokens=unique_sku_tokens,
                         recommendation_requested=recommendation_requested,
+                        recommendation_mode_requested=recommendation_mode_requested,
                         display_limit=display_limit,
                         result_fetch_limit=result_fetch_limit,
                         normalized_text=normalized_text,

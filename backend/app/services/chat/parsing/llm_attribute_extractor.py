@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 class AttributeExtractionResult:
     exact_filters: Dict[str, str]
     semantic_hints: List[str]
+    soft_filters: Dict[str, str] = field(default_factory=dict)
     clarify_focus: str = ""
     confidence: float = 0.0
     llm_call_count: int = 0
@@ -43,6 +44,32 @@ def _allowed_exact_attributes(rule_set: ParserRuleSet | None) -> List[str]:
     if declared:
         return sorted(declared.intersection(HARD_FILTER_KEYS))
     return sorted(HARD_FILTER_KEYS)
+
+
+def _allowed_soft_attributes(rule_set: ParserRuleSet | None) -> List[str]:
+    active_rules = rule_set or empty_rule_set()
+    declared = {
+        str(item or "").strip().lower()
+        for item in list(active_rules.allowed_attribute_filters or [])
+        if str(item or "").strip()
+    }
+    if declared:
+        return sorted(declared.difference(HARD_FILTER_KEYS))
+    return sorted(
+        {
+            "category",
+            "color",
+            "crystal_color",
+            "design",
+            "finish",
+            "jewelry_type",
+            "material",
+            "opal_color",
+            "pearl_color",
+            "stone",
+            "threading",
+        }
+    )
 
 
 def _normalize_candidate_filters(
@@ -163,30 +190,6 @@ def _normalize_semantic_hints(raw_hints: Any) -> List[str]:
     return hints
 
 
-def _heuristic_semantic_hint_payload(*, user_text: str) -> Dict[str, Any]:
-    normalized = normalize_text(user_text)
-    if not normalized:
-        return {"semantic_hints": [], "clarify_focus": ""}
-    if re.search(r"\b(?:sterilization|sterilisation)\b", normalized):
-        return {
-            "semantic_hints": ["sterilization"],
-            "clarify_focus": "sterilization_meaning",
-        }
-    return {"semantic_hints": [], "clarify_focus": ""}
-
-
-def _merge_semantic_hints(*, primary: Sequence[str], fallback: Sequence[str]) -> List[str]:
-    merged: List[str] = []
-    seen: set[str] = set()
-    for raw in list(primary or []) + list(fallback or []):
-        hint = normalize_text(str(raw or ""))
-        if not hint or hint in seen:
-            continue
-        seen.add(hint)
-        merged.append(hint)
-    return merged
-
-
 async def enrich_product_attribute_filters(
     *,
     db: AsyncSession,
@@ -198,13 +201,12 @@ async def enrich_product_attribute_filters(
 ) -> AttributeExtractionResult:
     clean_workflow = normalize_text(workflow)
     allowed_exact_attributes = _allowed_exact_attributes(parser_rules)
+    allowed_soft_attributes = _allowed_soft_attributes(parser_rules)
     existing_exact_filters = {
         key: value
         for key, value in dict(existing_filters or {}).items()
         if normalize_text(key) in HARD_FILTER_KEYS and str(value or "").strip()
     }
-    heuristic_payload = _heuristic_semantic_hint_payload(user_text=user_text)
-    semantic_hints_enabled = bool(getattr(settings, "CHAT_SEMANTIC_HINTS_ENABLED", True))
     debug: Dict[str, Any] = {
         "llm_attribute_interpretation_enabled": bool(
             getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_ENABLED", True)
@@ -212,30 +214,30 @@ async def enrich_product_attribute_filters(
         "llm_attribute_interpretation_used": False,
         "llm_attribute_interpretation_confidence": 0.0,
         "llm_exact_filter_keys": [],
-        "semantic_hint_keys": list(heuristic_payload.get("semantic_hints") or []) if semantic_hints_enabled else [],
-        "semantic_hint_clarify_focus": str(heuristic_payload.get("clarify_focus") or ""),
-        "semantic_hint_source": "heuristic" if heuristic_payload.get("semantic_hints") else "",
+        "llm_soft_filter_keys": [],
+        "semantic_hint_keys": [],
+        "semantic_hint_clarify_focus": "",
+        "semantic_hint_source": "",
     }
 
     if clean_workflow not in {"catalog", "recommendation"}:
         return AttributeExtractionResult(
             exact_filters={},
             semantic_hints=[],
+            soft_filters={},
             clarify_focus="",
             debug=debug,
         )
 
     llm_enabled = bool(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_ENABLED", True))
-    should_invoke_llm = bool(
-        llm_enabled
-        and heuristic_payload.get("semantic_hints")
-    )
+    should_invoke_llm = bool(llm_enabled)
 
     if not should_invoke_llm:
         return AttributeExtractionResult(
             exact_filters={},
-            semantic_hints=list(debug["semantic_hint_keys"]),
-            clarify_focus=str(debug["semantic_hint_clarify_focus"] or ""),
+            semantic_hints=[],
+            soft_filters={},
+            clarify_focus="",
             debug=debug,
         )
 
@@ -248,9 +250,12 @@ async def enrich_product_attribute_filters(
 
     system_prompt = (
         "You interpret product-search intent for a body jewelry ecommerce assistant. "
-        "Return strict JSON with keys: exact_filters, semantic_hints, clarify_focus, confidence. "
+        "Return strict JSON with keys: exact_filters, soft_filters, semantic_hints, clarify_focus, confidence. "
         "`exact_filters` must be an object using only attributes from the allowed exact attribute list, "
         "and only for clear exact constraints like gauge, threading, or exact size fields. "
+        "`soft_filters` must be an object using only attributes from the allowed soft attribute list, "
+        "and should capture obvious product-family or style constraints such as material, jewelry_type, color, "
+        "finish, design, threading, category, or stone-related cues. "
         "`semantic_hints` must be an array of up to 4 short concept strings for ambiguous or discovery-style concepts "
         "that should influence semantic search instead of structured filters. "
         "If the query says sterilization or a similar ambiguous sterilization concept, do not force it into a facet; "
@@ -262,11 +267,13 @@ async def enrich_product_attribute_filters(
         "workflow": clean_workflow,
         "existing_filters": dict(existing_filters or {}),
         "allowed_exact_attributes": list(allowed_exact_attributes),
+        "allowed_soft_attributes": list(allowed_soft_attributes),
     }
 
     llm_call_count = 0
     llm_confidence = 0.0
     llm_exact_filters: Dict[str, str] = {}
+    llm_soft_filters: Dict[str, str] = {}
     llm_semantic_hints: List[str] = []
     llm_clarify_focus = ""
     try:
@@ -291,6 +298,11 @@ async def enrich_product_attribute_filters(
             alias_map=alias_map,
             allowed_attributes=allowed_exact_attributes,
         )
+        llm_soft_filters = _normalize_candidate_filters(
+            filters=(llm_data or {}).get("soft_filters"),
+            alias_map=alias_map,
+            allowed_attributes=allowed_soft_attributes,
+        )
         llm_semantic_hints = _normalize_semantic_hints((llm_data or {}).get("semantic_hints"))
         llm_clarify_focus = _normalize_focus_key((llm_data or {}).get("clarify_focus"))
     except Exception as exc:
@@ -314,27 +326,24 @@ async def enrich_product_attribute_filters(
             allowed_attributes=allowed_exact_attributes,
         )
 
-    semantic_hints = list(heuristic_payload.get("semantic_hints") or []) if semantic_hints_enabled else []
-    clarify_focus = str(heuristic_payload.get("clarify_focus") or "") if semantic_hints_enabled else ""
-    if trusted_llm_output and semantic_hints_enabled:
-        semantic_hints = _merge_semantic_hints(
-            primary=llm_semantic_hints,
-            fallback=semantic_hints,
-        )
-        clarify_focus = str(llm_clarify_focus or clarify_focus or "")
+    soft_filters: Dict[str, str] = {}
+    if trusted_llm_output and llm_soft_filters:
+        soft_filters = dict(llm_soft_filters)
+
+    semantic_hints = list(llm_semantic_hints) if trusted_llm_output else []
+    clarify_focus = str(llm_clarify_focus or "") if trusted_llm_output else ""
 
     debug["llm_exact_filter_keys"] = list(validated_exact_filters.keys())
+    debug["llm_soft_filter_keys"] = list(soft_filters.keys())
     debug["semantic_hint_keys"] = list(semantic_hints)
     debug["semantic_hint_clarify_focus"] = clarify_focus
     if semantic_hints:
-        if trusted_llm_output and llm_semantic_hints:
-            debug["semantic_hint_source"] = "llm"
-        elif not debug.get("semantic_hint_source"):
-            debug["semantic_hint_source"] = "heuristic"
+        debug["semantic_hint_source"] = "llm"
 
     return AttributeExtractionResult(
         exact_filters=validated_exact_filters,
         semantic_hints=semantic_hints,
+        soft_filters=soft_filters,
         clarify_focus=clarify_focus,
         confidence=llm_confidence if trusted_llm_output else 0.0,
         llm_call_count=llm_call_count,

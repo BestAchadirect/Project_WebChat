@@ -89,6 +89,7 @@ class ChatRouting(BaseModel):
     needs_knowledge: bool = False
     needs_clarification: bool = False
     store_overview_request: bool = False
+    recommendation_mode_requested: Literal["similar_items", "complementary_items"] = "similar_items"
     reason: str = ""
     confidence: float = 0.0
     selection_source: str = ""
@@ -116,7 +117,8 @@ def _component_type_value(component: ChatComponent) -> str:
     return str(getattr(raw_type, "value", raw_type) or "").strip().lower()
 
 
-def _product_card_to_component_payload(card: ProductCard) -> Dict[str, Any]:
+def product_card_to_component_payload(card: ProductCard) -> Dict[str, Any]:
+    attributes = dict(card.attributes or {})
     return {
         "product_id": str(card.id),
         "object_id": card.object_id,
@@ -126,10 +128,59 @@ def _product_card_to_component_payload(card: ProductCard) -> Dict[str, Any]:
         "price": float(card.price),
         "currency": card.currency,
         "in_stock": str(card.stock_status or "").strip().lower() == "in_stock",
+        "stock_qty": getattr(card, "stock_qty", None),
         "image_url": card.image_url,
         "product_url": card.product_url,
-        "attributes": dict(card.attributes or {}),
+        "material": str(attributes.get("material") or "").strip(),
+        "gauge": str(attributes.get("gauge") or "").strip(),
+        "attributes": attributes,
     }
+
+
+def assistant_message_component(reply_text: str) -> Optional["ChatComponent"]:
+    text = str(reply_text or "").strip()
+    if not text:
+        return None
+    return ChatComponent(
+        type=ChatComponentType.ASSISTANT_MESSAGE,
+        data={"text": text},
+    )
+
+
+def product_cards_component(
+    product_carousel: Optional[List[ProductCard]],
+) -> Optional["ChatComponent"]:
+    cards = list(product_carousel or [])
+    if not cards:
+        return None
+    return ChatComponent(
+        type=ChatComponentType.PRODUCT_CARDS,
+        data={"cards": [product_card_to_component_payload(card) for card in cards]},
+    )
+
+
+def quick_replies_component(items: List[Any]) -> Optional["ChatComponent"]:
+    clean_items: List[Any] = []
+    for raw in list(items or []):
+        if isinstance(raw, dict):
+            label = str(
+                raw.get("label") or raw.get("text") or raw.get("question") or raw.get("message") or ""
+            ).strip()
+            if not label:
+                continue
+            item = dict(raw)
+            item["label"] = label
+            clean_items.append(item)
+            continue
+        text = str(raw or "").strip()
+        if text:
+            clean_items.append(text)
+    if not clean_items:
+        return None
+    return ChatComponent(
+        type=ChatComponentType.QUICK_REPLIES,
+        data={"items": clean_items},
+    )
 
 
 def _augment_chat_components(
@@ -143,14 +194,10 @@ def _augment_chat_components(
 
     text = str(reply_text or "").strip()
     if text and ChatComponentType.ASSISTANT_MESSAGE.value not in seen:
-        augmented.insert(
-            0,
-            ChatComponent(
-                type=ChatComponentType.ASSISTANT_MESSAGE,
-                data={"text": text},
-            ),
-        )
-        seen.add(ChatComponentType.ASSISTANT_MESSAGE.value)
+        assistant_component = assistant_message_component(text)
+        if assistant_component is not None:
+            augmented.insert(0, assistant_component)
+            seen.add(ChatComponentType.ASSISTANT_MESSAGE.value)
 
     product_types = {
         ChatComponentType.PRODUCT_CARDS.value,
@@ -159,13 +206,10 @@ def _augment_chat_components(
     }
     cards = list(product_carousel or [])
     if cards and not seen.intersection(product_types):
-        augmented.append(
-            ChatComponent(
-                type=ChatComponentType.PRODUCT_CARDS,
-                data={"cards": [_product_card_to_component_payload(card) for card in cards]},
-            )
-        )
-        seen.add(ChatComponentType.PRODUCT_CARDS.value)
+        product_component = product_cards_component(cards)
+        if product_component is not None:
+            augmented.append(product_component)
+            seen.add(ChatComponentType.PRODUCT_CARDS.value)
 
     return augmented
 
@@ -183,10 +227,21 @@ class ChatResponseMeta(BaseModel):
 
 class ChatResponse(BaseModel):
     conversation_id: int
-    reply_text: str = Field(default="", exclude=True)
-    carousel_msg: Optional[str] = Field(default=None, exclude=True)
-    product_carousel: List[ProductCard] = Field(default_factory=list, exclude=True)
-    follow_up_questions: List[str] = Field(default_factory=list, exclude=True)
+    reply_text: str = Field(
+        default="",
+        exclude=True,
+        json_schema_extra={"deprecated": True, "description": "Legacy compatibility field; use components."},
+    )
+    carousel_msg: Optional[str] = Field(
+        default=None,
+        exclude=True,
+        json_schema_extra={"deprecated": True, "description": "Legacy compatibility field; use components."},
+    )
+    product_carousel: List[ProductCard] = Field(
+        default_factory=list,
+        exclude=True,
+        json_schema_extra={"deprecated": True, "description": "Legacy compatibility field; use components."},
+    )
     routing: ChatRouting = Field(default_factory=ChatRouting)
     sources: List[KnowledgeSource] = []
     debug: Dict[str, Any] = Field(default_factory=dict)

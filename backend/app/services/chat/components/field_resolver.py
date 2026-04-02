@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.product import Product, StockStatus
 from app.models.product_attribute import AttributeDefinition, ProductAttributeValue
-from app.services.chat.components.cache import RedisComponentCache, stable_cache_key
+from app.services.chat.components.cache import ComponentCache, stable_cache_key
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.registry import ComponentRegistry
 from app.services.chat.components.types import ComponentType
@@ -66,7 +66,8 @@ class FieldDependencyResolver:
         *,
         product_ids: Sequence[Any],
         component_types: List[ComponentType],
-        redis_cache: RedisComponentCache | None = None,
+        component_cache: ComponentCache | None = None,
+        redis_cache: ComponentCache | None = None,
         cache_key_prefix: str = "chat:components:canonical",
         cache_ttl_seconds: int = 900,
     ) -> Tuple[List[CanonicalProduct], Dict[str, Any]]:
@@ -85,11 +86,12 @@ class FieldDependencyResolver:
         missing_ids: List[UUID] = []
         redis_hits = 0
         db_round_trips = 0
+        cache = component_cache or redis_cache
 
-        if redis_cache is not None:
+        if cache is not None:
             for uid in ordered_ids:
                 key = stable_cache_key(f"{cache_key_prefix}:item", {"product_id": str(uid)})
-                payload = await redis_cache.get_json(key)
+                payload = await cache.get_json(key)
                 if isinstance(payload, dict):
                     try:
                         by_id[uid] = CanonicalProduct.from_cache_payload(payload)
@@ -110,10 +112,10 @@ class FieldDependencyResolver:
                 canonical = self._build_canonical_from_product(product)
                 by_id[canonical.product_id] = canonical
 
-            if redis_cache is not None:
+            if cache is not None:
                 for canonical in by_id.values():
                     key = stable_cache_key(f"{cache_key_prefix}:item", {"product_id": str(canonical.product_id)})
-                    await redis_cache.set_json(key, canonical.to_cache_payload(), cache_ttl_seconds)
+                    await cache.set_json(key, canonical.to_cache_payload(), cache_ttl_seconds)
 
         needs_full_spec = "full_spec_fields" in union_required_fields
         needs_material = "material" in union_required_fields and any(not c.material for c in by_id.values())
@@ -145,10 +147,10 @@ class FieldDependencyResolver:
                 if name == "gauge" and not canonical.gauge:
                     canonical.gauge = str(value)
 
-            if redis_cache is not None:
+            if cache is not None:
                 for canonical in by_id.values():
                     key = stable_cache_key(f"{cache_key_prefix}:item", {"product_id": str(canonical.product_id)})
-                    await redis_cache.set_json(key, canonical.to_cache_payload(), cache_ttl_seconds)
+                    await cache.set_json(key, canonical.to_cache_payload(), cache_ttl_seconds)
 
         ordered_products = [by_id[uid] for uid in ordered_ids if uid in by_id]
         return ordered_products, {

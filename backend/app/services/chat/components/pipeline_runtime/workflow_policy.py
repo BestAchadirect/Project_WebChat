@@ -172,33 +172,6 @@ class PipelineWorkflowPolicyMixin:
                 parts.extend(str(value or "") for value in attributes.values())
             return normalize_user_text(" ".join(parts))
 
-    @staticmethod
-    def _semantic_hint_terms(hint: str) -> List[str]:
-            normalized = normalize_user_text(hint)
-            if not normalized:
-                return []
-            terms = [normalized]
-            if normalized.startswith("steril"):
-                terms.extend(
-                    [
-                        "steril",
-                        "sterile",
-                        "sterilized",
-                        "sterilised",
-                        "sterilization",
-                        "sterilisation",
-                    ]
-                )
-            deduped: List[str] = []
-            seen: set[str] = set()
-            for raw in terms:
-                term = normalize_user_text(raw)
-                if not term or term in seen:
-                    continue
-                seen.add(term)
-                deduped.append(term)
-            return deduped
-
     @classmethod
     def _apply_semantic_hint_rerank(
             cls,
@@ -230,8 +203,7 @@ class PipelineWorkflowPolicyMixin:
                 haystack = cls._card_semantic_text(card)
                 score = 0.0
                 for hint in clean_hints:
-                    terms = cls._semantic_hint_terms(hint)
-                    if any(term and term in haystack for term in terms):
+                    if hint and hint in haystack:
                         score += 1.0
                 if score > 0:
                     match_count += 1
@@ -266,20 +238,6 @@ class PipelineWorkflowPolicyMixin:
             return top_relevance < float(min_relevance)
 
     @classmethod
-    def _is_design_discovery_query(cls, *, user_text: str, attribute_filters: Dict[str, str]) -> bool:
-            if dict(attribute_filters or {}):
-                return False
-            normalized = normalize_user_text(user_text)
-            if not normalized:
-                return False
-            has_design_term = any(term in normalized for term in cls._DESIGN_DISCOVERY_TERMS)
-            has_discovery_phrase = bool(
-                re.search(r"\b(what|which|show|have|offer|carry|available)\b", normalized)
-                or normalized.endswith("?")
-            )
-            return bool(has_design_term and has_discovery_phrase)
-
-    @classmethod
     def _looks_like_gibberish(cls, *, user_text: str) -> bool:
             normalized = normalize_user_text(user_text)
             if not normalized:
@@ -306,33 +264,6 @@ class PipelineWorkflowPolicyMixin:
             return False
 
     @classmethod
-    def _is_broad_discovery_request(
-            cls,
-            *,
-            user_text: str,
-            attribute_filters: Dict[str, str],
-            sku_tokens: Sequence[str],
-        ) -> bool:
-            if dict(attribute_filters or {}) or list(sku_tokens or []):
-                return False
-            normalized = normalize_user_text(user_text)
-            if not normalized:
-                return False
-            broad_terms = (
-                "help",
-                "something",
-                "anything",
-                "show me",
-                "what do you have",
-                "what can you show",
-                "recommend",
-                "suggest",
-                "design",
-                "style",
-            )
-            return any(term in normalized for term in broad_terms)
-
-    @classmethod
     def _fallback_subtype(
             cls,
             *,
@@ -343,17 +274,6 @@ class PipelineWorkflowPolicyMixin:
         ) -> str:
             if cls._looks_like_gibberish(user_text=user_text):
                 return "fallback_gibberish"
-            if cls._is_design_discovery_query(user_text=user_text, attribute_filters=attribute_filters):
-                return "fallback_too_broad"
-            if cls._is_broad_discovery_request(
-                user_text=user_text,
-                attribute_filters=attribute_filters,
-                sku_tokens=sku_tokens,
-            ):
-                return "fallback_too_broad"
-            normalized_reason = normalize_user_text(route_reason)
-            if any(token in normalized_reason for token in ("timeout", "confidence", "invalid", "error", "unclear")):
-                return "fallback_uncertain"
             return "fallback_uncertain"
 
     @classmethod
@@ -378,8 +298,6 @@ class PipelineWorkflowPolicyMixin:
             if workflow_norm in {"knowledge", "smalltalk"}:
                 return [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
 
-            wants_reco = workflow_norm == "recommendation"
-
             components: List[ComponentType] = [ComponentType.QUERY_SUMMARY]
 
             if workflow_norm in {"catalog", "recommendation"} and product_count <= 0:
@@ -388,9 +306,6 @@ class PipelineWorkflowPolicyMixin:
                 components.append(ComponentType.PRODUCT_DETAIL)
             else:
                 components.append(ComponentType.PRODUCT_CARDS)
-
-            if wants_reco:
-                components.append(ComponentType.RECOMMENDATIONS)
 
             deduped: List[ComponentType] = []
             seen = set()

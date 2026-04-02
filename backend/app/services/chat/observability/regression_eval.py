@@ -86,8 +86,6 @@ def _evaluate_follow_up_generation(*, case: Dict[str, Any], name: str) -> Dict[s
         products=products,
         attribute_filters=dict(inputs.get("attribute_filters") or {}),
         user_text=str(inputs.get("user_text") or ""),
-        stopwords=ChatService._FOLLOW_UP_STOPWORDS,
-        product_terms=ChatService._FOLLOW_UP_PRODUCT_TERMS,
         has_more_results=bool(inputs.get("has_more_results", False)),
         limit=int(inputs.get("limit", 4) or 4),
     )

@@ -12,6 +12,7 @@ from app.services.chat.parsing.detail_query_parser import DetailQueryParser
 from app.services.chat.presentation import reply_tone
 from app.services.chat.presentation import product_presentation
 from app.services.chat.routing import routing_policy
+from app.services.chat.runtime.capabilities import ChatRuntimeCapabilities, build_chat_runtime_capabilities
 from app.services.chat.runtime import alias_cache, conversation_state
 from app.services.chat.text_normalization import normalize_user_text
 
@@ -21,6 +22,7 @@ class PipelineToneController:
     user_text: str
     active: bool
     recent: List[Dict[str, Any]]
+    capabilities: ChatRuntimeCapabilities
     latest_key: str = ""
     latest_variant_id: int = -1
     latest_style: str = ""
@@ -30,25 +32,22 @@ class PipelineToneController:
 
     @classmethod
     def build(
-            cls,
-            *,
-            user_text: str,
-            channel: str,
-            recent: Sequence[Dict[str, Any]],
-        ) -> tuple["PipelineToneController", Dict[str, Any]]:
-            tone_humanizer_enabled = bool(getattr(settings, "CHAT_TONE_HUMANIZER_ENABLED", True))
-            tone_enabled_channels = {
-                str(item or "").strip().lower()
-                for item in str(getattr(settings, "CHAT_TONE_ENABLED_CHANNELS", "widget")).split(",")
-                if str(item or "").strip()
-            }
-            tone_channel_allowed = not tone_enabled_channels or str(channel or "widget").strip().lower() in tone_enabled_channels
+        cls,
+        *,
+        user_text: str,
+        channel: str,
+        recent: Sequence[Dict[str, Any]],
+        capabilities: ChatRuntimeCapabilities,
+    ) -> tuple["PipelineToneController", Dict[str, Any]]:
+            tone_humanizer_enabled = bool(capabilities.chat_tone_humanizer_enabled)
+            tone_channel_allowed = capabilities.is_tone_channel_allowed(channel=channel)
             tone_active = bool(tone_humanizer_enabled and tone_channel_allowed)
             return (
                 cls(
                     user_text=str(user_text or ""),
                     active=tone_active,
                     recent=list(recent or []),
+                    capabilities=capabilities,
                 ),
                 {
                     "tone_humanizer_enabled": tone_humanizer_enabled,
@@ -63,10 +62,10 @@ class PipelineToneController:
                 key=key,
                 variants=variants,
                 recent=self.recent,
-                anti_repeat_window=int(getattr(settings, "CHAT_TONE_ANTI_REPEAT_WINDOW", 4)),
+                anti_repeat_window=int(self.capabilities.chat_tone_anti_repeat_window),
                 humanizer_enabled=self.active,
-                max_sentences=int(getattr(settings, "CHAT_TONE_MAX_SENTENCES", 2)),
-                max_chars=int(getattr(settings, "CHAT_TONE_MAX_CHARS", 220)),
+                max_sentences=int(self.capabilities.chat_tone_max_sentences),
+                max_chars=int(self.capabilities.chat_tone_max_chars),
             )
             self.recent = reply_tone.push_recent(
                 self.recent,
@@ -105,17 +104,22 @@ class PipelineRunSetup:
     catalog_pagination_offset: int
     catalog_pagination_limit: int
     catalog_pagination_query_key: str
+    catalog_pagination_query_ids: List[str]
     sku_tokens: List[str]
     unique_sku_tokens: List[str]
     route_decision: routing_policy.WorkflowDecision
     workflow: str
     recommendation_requested: bool
+    recommendation_mode_requested: str
     store_overview_request: bool
     knowledge_workflow: bool
     fallback_workflow: bool
     source: ComponentSource
     execution_state: PipelineExecutionState
     tone_controller: PipelineToneController
+    runtime_capabilities: ChatRuntimeCapabilities
+    conversation_memory: conversation_state.ConversationMemoryState
+    conversation_continuation: conversation_state.ConversationContinuationState
     llm_call_count: int = 0
 
 
@@ -134,6 +138,7 @@ class PipelineSetupMixin:
             normalized_text = normalize_user_text(text)
             client_action_norm = str(client_action or "").strip().lower()
             client_action_payload = dict(client_action_payload or {})
+            capabilities = build_chat_runtime_capabilities()
 
             alias_map = await alias_cache.get_alias_map(self.db)
             parser_rules = await parser_rule_cache.get_parser_rules(self.db)
@@ -144,28 +149,51 @@ class PipelineSetupMixin:
                 parser_rules=parser_rules,
             )
 
-            conversation_state_enabled = bool(getattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", False))
+            conversation_state_enabled = bool(capabilities.chat_conversation_state_enabled)
             state_working: Optional[Dict[str, Any]] = None
             conversation_state_filter_merge_applied = False
             if conversation_state_enabled:
                 state_working = await self._load_conversation_state(conversation_id=conversation_id)
+            conversation_memory = conversation_state.load_memory_state(state_working)
+            conversation_continuation = conversation_state.load_continuation_state(state_working)
             catalog_pagination_requested = bool(client_action_norm == "catalog_pagination")
-            catalog_pagination_offset = int(state_working.get("last_display_offset") or 0) if state_working else 0
-            catalog_pagination_limit = int(state_working.get("last_display_limit") or product_presentation.PRODUCT_DISPLAY_LIMIT) if state_working else product_presentation.PRODUCT_DISPLAY_LIMIT
-            catalog_pagination_query_key = str(state_working.get("last_query_cache_key") or "") if state_working else ""
+            catalog_pagination_offset = int(conversation_continuation.last_display_offset or 0)
+            catalog_pagination_limit = int(conversation_continuation.last_display_limit or product_presentation.PRODUCT_DISPLAY_LIMIT)
+            catalog_pagination_query_key = str(conversation_continuation.last_query_cache_key or "")
+            catalog_pagination_query_ids = list(conversation_continuation.last_query_product_ids or [])
+            payload_query_key = str(client_action_payload.get("query_cache_key") or "").strip()
+            payload_query_ids = [
+                str(item).strip()
+                for item in list(client_action_payload.get("query_product_ids") or [])
+                if str(item).strip()
+            ]
+            try:
+                payload_offset = int(client_action_payload.get("display_offset"))
+            except Exception:
+                payload_offset = None
+            try:
+                payload_limit = int(client_action_payload.get("display_limit"))
+            except Exception:
+                payload_limit = None
+
+            if payload_query_key:
+                catalog_pagination_query_key = payload_query_key
+            if payload_query_ids:
+                catalog_pagination_query_ids = list(payload_query_ids)
+            if payload_offset is not None and payload_offset >= 0:
+                catalog_pagination_offset = payload_offset
+            if payload_limit is not None and payload_limit > 0:
+                catalog_pagination_limit = payload_limit
 
             sku_tokens = routing_policy.extract_sku_tokens(text)
             unique_sku_tokens = [token for token in dict.fromkeys([str(item).strip() for item in sku_tokens]) if token]
 
             if conversation_state_enabled and state_working is not None and not catalog_pagination_requested:
-                debug_state_version = int(
-                    state_working.get("version", conversation_state.CONVERSATION_STATE_VERSION)
-                )
-                tone_recent = reply_tone.normalize_recent(state_working.get("tone_recent"))
+                debug_state_version = int(conversation_memory.version or conversation_state.CONVERSATION_STATE_VERSION)
+                tone_recent = reply_tone.normalize_recent(conversation_memory.tone_recent)
             else:
                 debug_state_version = conversation_state.CONVERSATION_STATE_VERSION
                 tone_recent = []
-
             route_decision = route_decision_override
             if route_decision is None:
                 route_decision = routing_policy.WorkflowDecision(
@@ -194,10 +222,16 @@ class PipelineSetupMixin:
                 )
 
             workflow = route_decision.workflow
+            recommendation_mode_requested = self._recommendation_service.resolve_mode(
+                requested_mode=str(getattr(route_decision, "recommendation_mode_requested", "similar_items") or "similar_items"),
+                user_text=text,
+                attribute_filters=detail.attribute_filters,
+            )
             if catalog_pagination_requested or list(getattr(detail, "semantic_hints", []) or []) or str(getattr(detail, "clarify_focus", "") or "").strip():
                 attribute_enrichment = AttributeExtractionResult(
                     exact_filters={},
                     semantic_hints=[],
+                    soft_filters={},
                     clarify_focus="",
                     debug={},
                 )
@@ -212,6 +246,8 @@ class PipelineSetupMixin:
                 )
             merged_attribute_filters = dict(detail.attribute_filters or {})
             for key, value in dict(attribute_enrichment.exact_filters or {}).items():
+                merged_attribute_filters.setdefault(str(key), str(value))
+            for key, value in dict(attribute_enrichment.soft_filters or {}).items():
                 merged_attribute_filters.setdefault(str(key), str(value))
             merged_semantic_hints: List[str] = []
             seen_semantic_hints: set[str] = set()
@@ -254,6 +290,7 @@ class PipelineSetupMixin:
                 user_text=text,
                 channel=channel,
                 recent=tone_recent,
+                capabilities=capabilities,
             )
             execution_state.debug_meta.update(tone_debug)
 
@@ -266,16 +303,21 @@ class PipelineSetupMixin:
                 catalog_pagination_offset=catalog_pagination_offset,
                 catalog_pagination_limit=catalog_pagination_limit,
                 catalog_pagination_query_key=catalog_pagination_query_key,
+                catalog_pagination_query_ids=catalog_pagination_query_ids,
                 sku_tokens=list(sku_tokens),
                 unique_sku_tokens=list(unique_sku_tokens),
                 route_decision=route_decision,
                 workflow=workflow,
                 recommendation_requested=workflow == "recommendation",
+                recommendation_mode_requested=recommendation_mode_requested,
                 store_overview_request=bool(route_decision.store_overview_request),
                 knowledge_workflow=workflow == "knowledge",
                 fallback_workflow=workflow == "fallback",
                 source=route_decision.source,
                 execution_state=execution_state,
                 tone_controller=tone_controller,
+                runtime_capabilities=capabilities,
+                conversation_memory=conversation_memory,
+                conversation_continuation=conversation_continuation,
                 llm_call_count=int(attribute_enrichment.llm_call_count or 0),
             )

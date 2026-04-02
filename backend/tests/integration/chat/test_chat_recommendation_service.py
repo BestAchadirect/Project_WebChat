@@ -98,6 +98,39 @@ def test_rank_product_cards_prefers_stock_filter_and_semantic_signal() -> None:
     assert ranked.meta.get("recommendation_ranked_count") == 3
 
 
+def test_rank_product_cards_can_return_full_ranked_order_for_pagination() -> None:
+    first = _card(
+        sku="SKU-1",
+        name="First Product",
+        price=10.0,
+        attributes={"material": "steel", "jewelry_type": "top"},
+    )
+    second = _card(
+        sku="SKU-2",
+        name="Second Product",
+        price=11.0,
+        attributes={"material": "steel", "jewelry_type": "top"},
+    )
+    third = _card(
+        sku="SKU-3",
+        name="Third Product",
+        price=12.0,
+        attributes={"material": "steel", "jewelry_type": "top"},
+    )
+
+    service = RecommendationService(db=_NoopDB(), catalog_search=SimpleNamespace())
+    ranked = service.rank_product_cards(
+        candidates=[first, second, third],
+        attribute_filters={"material": "steel"},
+        user_text="recommend steel tops",
+        anchor_products=[first],
+        limit=None,
+    )
+
+    assert [item.sku for item in ranked.items] == ["SKU-1", "SKU-2", "SKU-3"]
+    assert ranked.meta.get("recommendation_ranked_count") == 3
+
+
 def test_rank_product_cards_excludes_anchor_products_when_requested() -> None:
     anchor = _card(
         sku="SKU-1",
@@ -175,6 +208,7 @@ def test_rank_product_cards_prefers_compatible_complementary_items() -> None:
         user_text="What goes with this labret?",
         anchor_products=[anchor],
         limit=5,
+        recommendation_mode="complementary_items",
     )
 
     assert [item.sku for item in ranked.items[:2]] == ["TOP-1", "BALL-1"]

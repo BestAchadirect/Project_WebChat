@@ -25,6 +25,7 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowR
             recommendation_requested: bool,
             display_limit: int,
             pagination_query_cache_key: str,
+            pagination_query_product_ids: Sequence[str],
             pagination_offset: int,
             pagination_limit: int,
             debug_meta: Dict[str, Any],
@@ -44,36 +45,35 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowR
             state.pagination_limit = page_size
             state.pagination_has_more = False
             state.query_cache_key = cache_key
-            if not cache_key:
-                state.ambiguity_reason = "pagination_unavailable"
-                state.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
-                state.retrieval_source = ComponentSource.ERROR
-                state.result_count = 0
-                debug_meta["catalog_pagination_error"] = "missing_query_cache_key"
-                return
-
-            cached_ids_payload = await self._redis_cache.get_json(cache_key)
+            cached_ids_payload = await self._component_cache.get_json(cache_key) if cache_key else None
             full_product_ids = list(cached_ids_payload.get("product_ids") or []) if isinstance(cached_ids_payload, dict) else []
             cached_source = str(cached_ids_payload.get("source") or "vector") if isinstance(cached_ids_payload, dict) else "vector"
             total_count = max(
                 int(cached_ids_payload.get("result_count") or 0) if isinstance(cached_ids_payload, dict) else 0,
                 len(full_product_ids),
             )
+            if not full_product_ids:
+                full_product_ids = [str(item).strip() for item in list(pagination_query_product_ids or []) if str(item).strip()]
+                total_count = max(total_count, len(full_product_ids))
+                cached_source = "vector"
+                debug_meta["catalog_pagination_state_fallback_used"] = bool(full_product_ids)
             debug_meta["catalog_pagination_cache_hit"] = bool(full_product_ids)
             debug_meta["catalog_pagination_total_count"] = int(total_count)
+            debug_meta["catalog_query_cache_key"] = cache_key
+            debug_meta["catalog_query_product_ids"] = list(full_product_ids)
             if not full_product_ids:
                 state.ambiguity_reason = "pagination_unavailable"
                 state.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
                 state.retrieval_source = ComponentSource.ERROR
                 state.result_count = 0
-                debug_meta["catalog_pagination_error"] = "empty_query_cache"
+                debug_meta["catalog_pagination_error"] = "missing_pagination_state"
                 return
 
             resolver_started = time.perf_counter()
             full_products, resolver_meta = await self._field_resolver.resolve(
                 product_ids=full_product_ids,
                 component_types=[ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS],
-                redis_cache=self._redis_cache,
+                component_cache=self._component_cache,
             )
             spans["db_product_lookup_ms"] += (time.perf_counter() - resolver_started) * 1000.0
             debug_meta.update(resolver_meta)
@@ -86,6 +86,7 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowR
             state.result_count = total_count
             state.canonical_products = list(page_products)
             state.product_ids = [self._card_identifier(card) for card in page_products]
+            state.query_product_ids = list(full_product_ids)
             state.retrieval_source = (
                 ComponentSource(cached_source)
                 if cached_source in {item.value for item in ComponentSource}
@@ -120,6 +121,7 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowR
             store_overview_request: bool,
             unique_sku_tokens: Sequence[str],
             recommendation_requested: bool,
+            recommendation_mode_requested: str,
             display_limit: int,
             result_fetch_limit: int,
             normalized_text: str,
@@ -141,11 +143,24 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowR
 
                 state.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
                 resolver_started = time.perf_counter()
-                state.canonical_products, resolver_meta = await self._field_resolver.resolve(
-                    product_ids=product_ids,
-                    component_types=state.selected_components,
-                    redis_cache=self._redis_cache,
-                )
+                try:
+                    state.canonical_products, resolver_meta = await self._field_resolver.resolve(
+                        product_ids=product_ids,
+                        component_types=state.selected_components,
+                        component_cache=self._component_cache,
+                    )
+                except TypeError:
+                    try:
+                        state.canonical_products, resolver_meta = await self._field_resolver.resolve(
+                            product_ids=product_ids,
+                            component_types=state.selected_components,
+                            redis_cache=self._component_cache,
+                        )
+                    except TypeError:
+                        state.canonical_products, resolver_meta = await self._field_resolver.resolve(
+                            product_ids=product_ids,
+                            component_types=state.selected_components,
+                        )
                 spans["db_product_lookup_ms"] += (time.perf_counter() - resolver_started) * 1000.0
                 debug_meta.update(resolver_meta)
                 state.result_count = max(state.result_count, len(state.canonical_products))
@@ -185,19 +200,25 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowR
                 is_detail_mode=bool(detail.is_detail_request),
                 is_ambiguous=bool(state.ambiguity_reason),
             )
-            if (
-                recommendation_requested
-                and product_ids
-                and ComponentType.RECOMMENDATIONS not in state.selected_components
-            ):
-                state.selected_components.append(ComponentType.RECOMMENDATIONS)
-
             resolver_started = time.perf_counter()
-            state.canonical_products, resolver_meta = await self._field_resolver.resolve(
-                product_ids=product_ids,
-                component_types=state.selected_components,
-                redis_cache=self._redis_cache,
-            )
+            try:
+                state.canonical_products, resolver_meta = await self._field_resolver.resolve(
+                    product_ids=product_ids,
+                    component_types=state.selected_components,
+                    component_cache=self._component_cache,
+                )
+            except TypeError:
+                try:
+                    state.canonical_products, resolver_meta = await self._field_resolver.resolve(
+                        product_ids=product_ids,
+                        component_types=state.selected_components,
+                        redis_cache=self._component_cache,
+                    )
+                except TypeError:
+                    state.canonical_products, resolver_meta = await self._field_resolver.resolve(
+                        product_ids=product_ids,
+                        component_types=state.selected_components,
+                    )
             spans["db_product_lookup_ms"] += (time.perf_counter() - resolver_started) * 1000.0
             debug_meta.update(resolver_meta)
             state.result_count = max(state.result_count, len(state.canonical_products))
@@ -222,6 +243,7 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowR
                 text=text,
                 detail=detail,
                 recommendation_requested=recommendation_requested,
+                recommendation_mode_requested=recommendation_mode_requested,
                 result_fetch_limit=result_fetch_limit,
                 query_embedding=query_embedding,
                 product_ids=product_ids,

@@ -52,7 +52,6 @@ WARRANTY_KNOWLEDGE_TERMS = {"warranty", "guarantee"}
 KNOWLEDGE_UNAVAILABLE_MESSAGE = "I can share a short answer now, but detailed knowledge search is unavailable."
 
 DESIGN_DISCOVERY_TERMS = ("design", "style", "look", "aesthetic")
-
 FALLBACK_VALID_HINTS = (
     "labret",
     "barbell",

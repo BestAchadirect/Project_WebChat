@@ -67,3 +67,24 @@ def test_build_clarify_policy_semantic_concept_unclear_uses_focus_specific_copy(
     assert result["reason"] == "semantic_concept_unclear"
     assert "pre-sterilized jewelry" in result["message"]
     assert "surgical steel jewelry" in result["message"]
+
+
+def test_build_clarify_policy_knowledge_unavailable_uses_contact_focus_followups() -> None:
+    result = ComponentPipeline._build_clarify_policy(
+        reason="knowledge_unavailable",
+        user_text="How can I contact your sales team?",
+        tone_pick=lambda _key, variants: variants[0],
+        products=[],
+        attribute_filters={},
+        needs_knowledge=True,
+        requested_fields=[],
+    )
+
+    assert result["reason"] == "knowledge_unavailable"
+    assert result["questions"] == ["Do you need our sales email, phone number, or showroom address?"]
+    assert result["suggestions"] == [
+        "What is your sales email?",
+        "What is your phone number?",
+        "What is your showroom address?",
+    ]
+    assert result["extra_debug"]["knowledge_clarify_focus"] == "contact"
