@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import case, select
 from app.models.chat import Conversation, Message
@@ -156,6 +156,7 @@ class PipelineSupportMixin:
             locale: str,
             store_overview_request: bool,
             llm_cache_key: str,
+            debug_meta: Optional[Dict[str, Any]] = None,
         ) -> tuple[str, bool]:
             if not list(sources or []):
                 answer = self._build_grounded_knowledge_fallback_answer(
@@ -163,16 +164,6 @@ class PipelineSupportMixin:
                     sources=sources,
                 )
                 return answer, False
-            store_overview_answer = (
-                self._build_store_overview_knowledge_answer(sources=sources) if store_overview_request else ""
-            )
-            if store_overview_answer:
-                store_overview_answer = self._polish_knowledge_answer(
-                    answer=store_overview_answer,
-                    question=question,
-                    max_sentences=3,
-                    max_chars=int(getattr(settings, "CHAT_KNOWLEDGE_ANSWER_MAX_CHARS", 420)),
-                )
 
             snippets = "\n".join(
                 [
@@ -180,24 +171,20 @@ class PipelineSupportMixin:
                     for source in (sources or [])[:5]
                 ]
             )
-            store_overview_prompt = ""
-            if store_overview_request:
-                store_overview_prompt = (
-                    "If the question is about the company, showroom, location, or contact details, "
-                    "prioritize those business details from the context before anything else. "
-                )
-
             messages = [
                 {
                     "role": "system",
                     "content": (
                         "Answer strictly from provided context. "
-                        "Use a professional and warm tone that adapts to the user's phrasing. "
-                        "Start with a direct answer. Do not use filler like 'Here is what I found'. "
-                        "Keep the answer concise and practical, usually 1-2 short sentences. "
+                        "Use a natural, shopper-friendly tone that adapts to the user's phrasing. "
+                        "Start with the direct answer. Do not use filler like 'Here is what I found'. "
+                        "If multiple sources support the same answer, synthesize them into one short summary before replying. "
+                        "Do not answer source-by-source or list snippets separately. "
+                        "Rewrite FAQ bullets or headings into plain prose instead of copying them verbatim. "
+                        "Keep the answer concise and practical, but preserve exact numbers, limits, dates, and conditions. "
                         "Do not invent products, SKUs, or policies not in context. "
                         "If the context is not enough, ask one short clarifying question instead of guessing. "
-                        f"{store_overview_prompt}"
+                        "Prefer one short paragraph over a bullet list unless the user explicitly asks for bullets. "
                         "Return JSON with a single key `reply`."
                     ),
                 },
@@ -206,6 +193,7 @@ class PipelineSupportMixin:
                     "content": (
                         f"Locale: {locale}\n"
                         f"Question: {question}\n"
+                        f"Source count: {len(list(sources or []))}\n"
                         f"Context:\n{snippets}\n\n"
                         "Respond in JSON."
                     ),
@@ -224,17 +212,8 @@ class PipelineSupportMixin:
                 max_sentences=4,
                 max_chars=int(getattr(settings, "CHAT_KNOWLEDGE_ANSWER_MAX_CHARS", 420)),
             )
-            if store_overview_request and store_overview_answer:
-                normalized_answer = normalize_user_text(answer)
-                looks_like_dump = normalized_answer.startswith("here is what i found")
-                misses_store_signals = not any(
-                    token in normalized_answer
-                    for token in ("showroom", "address", "contact", "email", "phone", "bangkok")
-                )
-                if not answer or looks_like_dump or misses_store_signals:
-                    answer = store_overview_answer
             if not answer:
-                answer = store_overview_answer or self._build_grounded_knowledge_fallback_answer(
+                answer = self._build_grounded_knowledge_fallback_answer(
                     question=question,
                     sources=sources,
                 )

@@ -7,6 +7,7 @@ import pytest
 pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ProductCard
+from app.services.chat.presentation import clarify_policy
 from app.services.chat.retrieval import follow_up_policy
 from app.services.chat.presentation import follow_up_builder
 from app.services.chat.service import ChatService
@@ -43,7 +44,7 @@ def test_filter_follow_up_questions_keeps_relevant_product_questions() -> None:
         retrieval_gate={"use_products": True, "use_knowledge": False},
         limit=5,
     )
-    assert kept == ["Show labret options in steel", "What is your return policy?"]
+    assert kept == ["Show labret options in steel"]
 
 
 def test_build_product_follow_up_questions_without_context_uses_attributes() -> None:
@@ -58,7 +59,52 @@ def test_build_product_follow_up_questions_without_context_uses_attributes() -> 
         limit=4,
     )
     assert questions
-    assert any("Show more Labret options" == q for q in questions) or any("Show products in Titanium" == q for q in questions)
+    assert any("Try Titanium pieces" == q for q in questions) or any("See Titanium Labret" == q for q in questions)
+
+
+def test_filter_follow_up_questions_keeps_knowledge_prompts_for_policy_routes() -> None:
+    kept = follow_up_policy.filter_follow_up_questions(
+        questions=[
+            "What is your shipping policy?",
+            "How can I contact you?",
+            "Show titanium jewelry",
+        ],
+        user_text="Need shipping info",
+        route="knowledge",
+        has_products=False,
+        retrieval_gate={"use_products": False, "use_knowledge": True, "is_policy_like": True},
+        limit=5,
+    )
+    assert kept == ["What is your shipping policy?", "How can I contact you?"]
+
+
+def test_build_product_clarify_follow_ups_use_master_code() -> None:
+    product = _card(sku="SKU-1", attrs={"master_code": "MC-1"})
+    follow_ups = clarify_policy.build_product_clarify_follow_ups(
+        products=[product],
+        attribute_filters={},
+        needs_knowledge=False,
+        limit=3,
+    )
+
+    assert follow_ups == ["Show details for MC-1"]
+
+
+def test_filter_follow_up_questions_collapses_near_duplicate_product_phrasing() -> None:
+    kept = follow_up_policy.filter_follow_up_questions(
+        questions=[
+            "Show more titanium jewelry",
+            "Try titanium pieces",
+            "Show products in titanium",
+            "See titanium options",
+        ],
+        user_text="Need titanium",
+        route="catalog",
+        has_products=True,
+        retrieval_gate={"use_products": True, "use_knowledge": False},
+        limit=5,
+    )
+    assert kept == ["Show more titanium jewelry"]
 
 
 def test_chat_service_filter_follow_up_questions_wrapper_compatible() -> None:
@@ -70,7 +116,7 @@ def test_chat_service_filter_follow_up_questions_wrapper_compatible() -> None:
         has_products=True,
         retrieval_gate={"use_products": True, "use_knowledge": False},
     )
-    assert "Show labret options" in kept
+    assert kept == ["Show labret options"]
 
 
 def test_build_product_follow_up_questions_skips_see_more_when_quick_reply_disabled() -> None:
@@ -87,6 +133,24 @@ def test_build_product_follow_up_questions_skips_see_more_when_quick_reply_disab
 
     assert questions
     assert not any(str(item).lower().startswith("see more") for item in questions)
+
+
+def test_build_product_follow_up_questions_uses_varied_refinement_phrases() -> None:
+    products = [
+        _card(sku="A-1", attrs={"jewelry_type": "Labret", "material": "Titanium", "gauge": "16g", "color": "Black", "threading": "Threadless"}),
+        _card(sku="A-2", attrs={"jewelry_type": "Labret", "material": "Steel", "gauge": "18g", "color": "Gold", "threading": "Internally Threaded"}),
+    ]
+
+    questions = follow_up_policy.build_product_follow_up_questions(
+        products=products,
+        attribute_filters={"jewelry_type": "Labret"},
+        user_text="show me labrets",
+        limit=5,
+    )
+
+    assert any(q.startswith("See ") for q in questions)
+    assert any(q.startswith("Focus on ") for q in questions)
+    assert len({q.split(" ", 1)[0] for q in questions}) >= 2
 
 
 def test_build_show_more_follow_up_suppresses_last_page_prompt() -> None:

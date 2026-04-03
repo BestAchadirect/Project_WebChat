@@ -33,10 +33,12 @@ def build_show_more_follow_up(
         return values[0] if values else ""
 
     material = _label_from_key("material")
+    jewelry_type = _label_from_key("jewelry_type")
+    if material and jewelry_type:
+        return [f"Show more {material} {jewelry_type}"]
     if material:
         return [f"Show more {material} jewelry"]
 
-    jewelry_type = _label_from_key("jewelry_type")
     if jewelry_type:
         return [f"Show more {jewelry_type} options"]
 
@@ -154,24 +156,24 @@ def build_pagination_exhausted_follow_ups(
     if material:
         suggestions.extend(
             [
-                f"Show {material} labrets",
-                f"Show {material} barbells",
-                "Show 16g options",
+                f"Try {material} labrets",
+                f"Try {material} barbells",
+                "Focus on 16g options",
             ]
         )
     elif jewelry_type:
         suggestions.extend(
             [
-                f"Show titanium {jewelry_type}",
-                f"Show gold {jewelry_type}",
-                "Show 16g options",
+                f"Try titanium {jewelry_type}",
+                f"Try gold {jewelry_type}",
+                "Focus on 16g options",
             ]
         )
     else:
         suggestions.extend(
             [
-                "Show titanium jewelry",
-                "Show 16g options",
+                "Try titanium jewelry",
+                "Focus on 16g options",
                 "What other materials do you have?",
             ]
         )

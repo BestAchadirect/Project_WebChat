@@ -15,9 +15,12 @@ class RecommendationsComponent(BaseComponent):
     async def build(self, context: ComponentContext) -> ChatComponent:
         items = []
         for product in context.recommendations[:5]:
+            attrs = dict(product.attributes or {})
+            master_code = str(attrs.get("master_code") or product.title or product.sku or "").strip()
             items.append(
                 {
                     "product_id": str(product.product_id),
+                    "master_code": master_code,
                     "sku": product.sku,
                     "title": product.title,
                     "price": float(product.price),

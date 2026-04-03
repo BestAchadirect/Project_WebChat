@@ -58,6 +58,7 @@ def build_product_cards_contract(
         assistant_text = product_presentation.build_product_match_reply(
             attribute_filters=attribute_filters,
             user_text=user_text,
+            products=display_products,
         )
 
     if not carousel_msg:

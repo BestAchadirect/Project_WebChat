@@ -27,11 +27,14 @@ class ProductDetailComponent(BaseComponent):
         product = context.canonical_products[0] if context.canonical_products else None
         if product is None:
             return ChatComponent(type=self.component_type, data={"product": None})
+        attrs = dict(product.attributes or {})
+        master_code = str(attrs.get("master_code") or product.title or product.sku or "").strip()
         return ChatComponent(
             type=self.component_type,
             data={
                 "product": {
                     "product_id": str(product.product_id),
+                    "master_code": master_code,
                     "sku": product.sku,
                     "title": product.title,
                     "description": product.description,
@@ -43,7 +46,7 @@ class ProductDetailComponent(BaseComponent):
                     "gauge": product.gauge,
                     "image_url": product.image_url,
                     "product_url": product.product_url,
-                    "attributes": dict(product.attributes or {}),
+                    "attributes": attrs,
                 }
             },
         )

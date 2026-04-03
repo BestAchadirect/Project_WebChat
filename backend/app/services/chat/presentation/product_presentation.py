@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Sequence, Tuple
 
+from app.prompts.response_copy import pick_response_copy
 import app.services.chat.presentation.reply_tone as reply_tone
 
 PRODUCT_DISPLAY_LIMIT = 10
@@ -128,30 +129,39 @@ def build_attribute_match_phrase(attribute_filters: Dict[str, str]) -> str:
     return " ".join(parts).strip()
 
 
-def build_product_match_reply(*, attribute_filters: Dict[str, str], user_text: str = "") -> str:
+def build_product_match_reply(
+    *,
+    attribute_filters: Dict[str, str],
+    user_text: str = "",
+    products: Sequence[Any] | None = None,
+) -> str:
     phrase = build_attribute_match_phrase(attribute_filters)
+    product_list = list(products or [])
+    if product_list:
+        focus_label = _product_focus_label(products=product_list, attribute_filters=attribute_filters)
+        benefit_text = _product_benefit_text(products=product_list, attribute_filters=attribute_filters)
+        return pick_response_copy(
+            key="product_summary.attribute" if phrase else "product_summary.generic",
+            user_text=user_text or focus_label,
+            values={
+                "focus_label": focus_label,
+                "phrase": phrase,
+                "benefit_text": benefit_text,
+            },
+        )
     if not user_text:
         if phrase:
             return f"I found products that match what you're looking for {phrase}."
         return "I found products that match what you're looking for."
     if phrase:
-        return reply_tone.pick_variant(
+        return pick_response_copy(
+            key="product_match.attribute",
             user_text=user_text,
-            key=f"product_match:{phrase}",
-            variants=[
-                f"I found products that match your request {phrase}.",
-                f"Good choice. I found matching options {phrase}.",
-                f"Nice, these products match your request {phrase}.",
-            ],
+            values={"phrase": phrase},
         )
-    return reply_tone.pick_variant(
+    return pick_response_copy(
+        key="product_match.generic",
         user_text=user_text,
-        key="product_match:generic",
-        variants=[
-            "I found products that match what you're looking for.",
-            "I found matching products for you.",
-            "I found a few options that fit your request.",
-        ],
     )
 
 
@@ -201,6 +211,55 @@ def _product_attribute_values(products: Sequence[Any], key: str, limit: int = 3)
     return values
 
 
+def _product_focus_label(*, products: Sequence[Any], attribute_filters: Dict[str, str]) -> str:
+    product_list = list(products or [])
+    jewelry_types = _product_attribute_values(product_list, "jewelry_type", limit=2)
+    materials = _product_attribute_values(product_list, "material", limit=2)
+    colors = _product_attribute_values(product_list, "color", limit=1)
+    anchor_type = _display_text(attribute_filters.get("jewelry_type"))
+    anchor_material = _display_text(attribute_filters.get("material"))
+    anchor_color = _display_text(attribute_filters.get("color"))
+
+    material = anchor_material or (materials[0] if materials else "")
+    jewelry_type = anchor_type or (jewelry_types[0] if jewelry_types else "")
+    color = anchor_color or (colors[0] if colors else "")
+
+    if material and jewelry_type:
+        return f"{material.lower()} {jewelry_type.lower()} options"
+    if material:
+        return f"{material.lower()} options"
+    if color and jewelry_type:
+        return f"{color.lower()} {jewelry_type.lower()} options"
+    if jewelry_type:
+        return f"{jewelry_type.lower()} options"
+    if color:
+        return f"{color.lower()} options"
+    return "matching options"
+
+
+def _product_benefit_text(*, products: Sequence[Any], attribute_filters: Dict[str, str]) -> str:
+    product_list = list(products or [])
+    materials = [value.lower() for value in _product_attribute_values(product_list, "material", limit=2)]
+    colors = [value.lower() for value in _product_attribute_values(product_list, "color", limit=2)]
+    jewelry_types = [value.lower() for value in _product_attribute_values(product_list, "jewelry_type", limit=2)]
+    attrs = dict(attribute_filters or {})
+    material = _display_text(attrs.get("material")).lower() or (materials[0] if materials else "")
+    color = _display_text(attrs.get("color")).lower() or (colors[0] if colors else "")
+    jewelry_type = _display_text(attrs.get("jewelry_type")).lower() or (jewelry_types[0] if jewelry_types else "")
+
+    if "titanium" in material:
+        return "lightweight and skin-friendly"
+    if "steel" in material:
+        return "durable and versatile"
+    if "gold" in material:
+        return "polished and easy to style"
+    if "black" in color:
+        return "clean, bold, and easy to match"
+    if any(token in jewelry_type for token in ("top", "attachment", "end")):
+        return "easy to mix and match"
+    return "a strong everyday choice"
+
+
 def build_recommendation_summary_reply(
     *,
     products: Sequence[Any],
@@ -245,7 +304,25 @@ def build_recommendation_summary_reply(
     if threadings:
         detail_bits.append(f"with {threadings[0]} threading")
 
-    summary = f"I found {focus_label}"
+    summary = pick_response_copy(
+        key=(
+            "recommendation_summary.complementary"
+            if recommendation_mode == "complementary_items" and recommendation_label
+            else "recommendation_summary.generic"
+        ),
+        user_text=str(recommendation_mode or focus_label or anchor_type or "recommendation"),
+        values={
+            "focus_label": focus_label or "a few matching options",
+            "anchor_type": anchor_type.lower() if anchor_type else "",
+            "recommendation_label": recommendation_label,
+            "benefit_text": _product_benefit_text(products=product_list, attribute_filters=attribute_filters),
+        },
+        fallback_variants=[
+            "I found {focus_label} that are {benefit_text}",
+            "Here are {focus_label} that are {benefit_text}",
+            "I pulled up {focus_label} that are {benefit_text}",
+        ],
+    )
     if anchor_type and anchor_type.lower() not in focus_label.lower():
         summary = f"{summary} for your {anchor_type.lower()}"
     if recommendation_mode == "complementary_items" and recommendation_label and recommendation_label.lower() not in summary.lower():

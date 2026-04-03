@@ -18,6 +18,31 @@ logger = logging.getLogger(__name__)
 
 
 class PipelineCatalogSearchMixin:
+    @staticmethod
+    def _is_precision_retrieval_request(*, detail: Any, unique_sku_tokens: Sequence[str]) -> bool:
+        if bool(unique_sku_tokens):
+            return True
+        if bool(getattr(detail, "is_detail_request", False)):
+            return True
+        requested_fields = {
+            str(item or "").strip().lower()
+            for item in list(getattr(detail, "requested_fields", []) or [])
+            if str(item or "").strip()
+        }
+        return bool(requested_fields.intersection({"price", "stock", "image", "name", "sku"}))
+
+    @classmethod
+    def _should_allow_semantic_rescue(
+        cls,
+        *,
+        workflow: str,
+        detail: Any,
+        unique_sku_tokens: Sequence[str],
+    ) -> bool:
+        if workflow not in {"catalog", "recommendation"}:
+            return False
+        return not cls._is_precision_retrieval_request(detail=detail, unique_sku_tokens=unique_sku_tokens)
+
     async def _run_catalog_retrieval_workflow(
             self,
             *,
@@ -91,6 +116,13 @@ class PipelineCatalogSearchMixin:
         semantic_guardrail_reason = ""
         semantic_hard_constraint_rejection_reason = ""
         semantic_result_source = ComponentSource.VECTOR
+        allow_semantic_rescue = self._should_allow_semantic_rescue(
+            workflow=workflow,
+            detail=detail,
+            unique_sku_tokens=unique_sku_tokens,
+        )
+        debug_meta["semantic_rescue_allowed"] = allow_semantic_rescue
+        debug_meta["semantic_precision_request"] = not allow_semantic_rescue
         if isinstance(cached_ids_payload, dict) and isinstance(cached_ids_payload.get("product_ids"), list):
             product_ids = list(cached_ids_payload.get("product_ids") or [])
             cached_source = str(cached_ids_payload.get("source") or "vector")
@@ -244,48 +276,64 @@ class PipelineCatalogSearchMixin:
                 else:
                     semantic_guardrail_used = True
                     semantic_guardrail_reason = "hard_constraint_verification"
-                    verify_started = time.perf_counter()
-                    verify_result, _verify_meta = await self._catalog_search.structured_search(
-                        sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
-                        attribute_filters=hard_filters,
-                        limit=result_fetch_limit,
-                        candidate_cap=int(capabilities.chat_structured_candidate_cap),
-                        catalog_version=str(capabilities.chat_catalog_version),
-                        return_ids_only=True,
-                    )
-                    spans["db_product_lookup_ms"] += (time.perf_counter() - verify_started) * 1000.0
-                    verified_ids = list(verify_result.product_ids or [])
-                    debug_meta["semantic_guardrail_verification_hit"] = bool(verified_ids)
-                    debug_meta["semantic_guardrail_reason"] = semantic_guardrail_reason
                     semantic_hard_constraint_rejection_reason = (
                         hard_meta.get("semantic_hard_constraint_rejection_reason") or "hard_constraint_no_match"
                     )
                     debug_meta["semantic_hard_constraint_rejection_reason"] = semantic_hard_constraint_rejection_reason
-                    if verified_ids:
-                        product_ids = verified_ids
-                        state.product_ids = list(product_ids)
-                        semantic_cards = []
-                        semantic_result_source = ComponentSource.SQL
-                        retrieval_source = ComponentSource.SQL
-                        semantic_best_distance = 0.0
-                        logger.debug(
-                            "Chat semantic hard constraint verification promoted structured results for filters=%s",
-                            list(hard_filters.keys()),
-                        )
+                    if allow_semantic_rescue:
+                        debug_meta["semantic_approximate_rescue_used"] = True
+                        debug_meta["semantic_rescue_reason"] = "hard_constraint_relaxed"
+                        semantic_guardrail_reason = "hard_constraint_relaxed"
+                        debug_meta["semantic_guardrail_reason"] = semantic_guardrail_reason
+                        if semantic_cards:
+                            product_ids = [self._card_identifier(card) for card in semantic_cards]
+                            state.product_ids = list(product_ids)
+                            state.result_count = len(product_ids)
+                            semantic_result_source = ComponentSource.VECTOR
+                            retrieval_source = ComponentSource.VECTOR if retrieval_source != ComponentSource.SQL else retrieval_source
+                            logger.debug(
+                                "Chat semantic hard constraint relaxed for broad request with filters=%s",
+                                list(hard_filters.keys()),
+                            )
                     else:
-                        product_ids = []
-                        state.product_ids = []
-                        semantic_cards = []
-                        state.result_count = 0
-                        state.ambiguity_reason = "structured_no_match"
-                        debug_meta["match_tier"] = result_policy.classify_match_tier(
-                            structured_found=False,
-                            semantic_found=False,
+                        verify_started = time.perf_counter()
+                        verify_result, _verify_meta = await self._catalog_search.structured_search(
+                            sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
+                            attribute_filters=hard_filters,
+                            limit=result_fetch_limit,
+                            candidate_cap=int(capabilities.chat_structured_candidate_cap),
+                            catalog_version=str(capabilities.chat_catalog_version),
+                            return_ids_only=True,
                         )
-                        logger.debug(
-                            "Chat semantic hard constraint verification found no structured matches for filters=%s",
-                            list(hard_filters.keys()),
-                        )
+                        spans["db_product_lookup_ms"] += (time.perf_counter() - verify_started) * 1000.0
+                        verified_ids = list(verify_result.product_ids or [])
+                        debug_meta["semantic_guardrail_verification_hit"] = bool(verified_ids)
+                        debug_meta["semantic_guardrail_reason"] = semantic_guardrail_reason
+                        if verified_ids:
+                            product_ids = verified_ids
+                            state.product_ids = list(product_ids)
+                            semantic_cards = []
+                            semantic_result_source = ComponentSource.SQL
+                            retrieval_source = ComponentSource.SQL
+                            semantic_best_distance = 0.0
+                            logger.debug(
+                                "Chat semantic hard constraint verification promoted structured results for filters=%s",
+                                list(hard_filters.keys()),
+                            )
+                        else:
+                            product_ids = []
+                            state.product_ids = []
+                            semantic_cards = []
+                            state.result_count = 0
+                            state.ambiguity_reason = "structured_no_match"
+                            debug_meta["match_tier"] = result_policy.classify_match_tier(
+                                structured_found=False,
+                                semantic_found=False,
+                            )
+                            logger.debug(
+                                "Chat semantic hard constraint verification found no structured matches for filters=%s",
+                                list(hard_filters.keys()),
+                            )
 
             soft_rerank_enabled = bool(capabilities.chat_semantic_soft_filter_rerank_enabled)
             if semantic_cards and soft_filters and soft_rerank_enabled and not recommendation_requested:
@@ -307,8 +355,8 @@ class PipelineCatalogSearchMixin:
                     )
 
             lexical_search = getattr(self._catalog_search, "lexical_search", None)
-            if callable(lexical_search) and not hard_filters and workflow in {"catalog", "recommendation"}:
-                should_run_lexical = bool(semantic_hints or not product_ids)
+            if callable(lexical_search) and workflow in {"catalog", "recommendation"}:
+                should_run_lexical = bool(semantic_hints or not product_ids or (allow_semantic_rescue and hard_filters))
                 if should_run_lexical:
                     try:
                         had_vector_candidates = bool(semantic_cards or product_ids)
@@ -433,6 +481,7 @@ class PipelineCatalogSearchMixin:
         debug_meta["semantic_search_error"] = embedding_error or ""
         debug_meta["semantic_result_source"] = retrieval_source.value
         debug_meta["match_tier"] = state.retrieval_outcome.match_tier
+        debug_meta["retrieval_quality"] = state.retrieval_outcome.retrieval_quality
         debug_meta["retrieval_outcome"] = state.retrieval_outcome.to_debug_dict()
         state.semantic_catalog_search_done = True
 

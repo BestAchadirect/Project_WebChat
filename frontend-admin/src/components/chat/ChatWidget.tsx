@@ -95,6 +95,7 @@ interface ActiveConversationResponse {
 interface ProductCard {
     id: string;
     object_id?: string | null;
+    master_code?: string | null;
     sku: string;
     legacy_sku?: string[];
     name: string;
@@ -361,6 +362,7 @@ const ProductCarousel: React.FC<{
     onProductClick,
 }) => {
     if (!items || items.length === 0) return null;
+    const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
     const toBaseImageUrl = (value?: string | null): string => {
         const raw = (typeof value === 'string' ? value : '').trim();
@@ -432,11 +434,21 @@ const ProductCarousel: React.FC<{
     };
 
     const getMasterCode = (p: ProductCard): string => {
+        const fromTopLevel = asString(p.master_code || '').trim();
+        if (fromTopLevel) return fromTopLevel;
         const fromAttr = asString(p.attributes?.master_code || '').trim();
         if (fromAttr) return fromAttr;
         const fromName = asString(p.name || '').trim();
         if (fromName) return fromName;
         return asString(p.sku || '').trim();
+    };
+
+    const toggleExpanded = (masterCode: string) => {
+        const key = masterCode.toLowerCase();
+        setExpandedGroups((prev) => ({
+            ...prev,
+            [key]: !prev[key],
+        }));
     };
 
     const groupedProducts = (() => {
@@ -459,6 +471,7 @@ const ProductCarousel: React.FC<{
             <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-custom">
                 {groupedProducts.map((group, groupIndex) => {
                     const { masterCode } = group;
+                    const isExpanded = !!expandedGroups[masterCode.toLowerCase()];
                     const groupItems = group.items;
                     const totalVariants = groupItems.length;
                     const rep =
@@ -506,7 +519,10 @@ const ProductCarousel: React.FC<{
                                     {totalVariants} variant{totalVariants > 1 ? 's' : ''}
                                 </div>
                                 {rep.description && (
-                                    <div className="text-sm text-gray-600 italic leading-snug mb-3">
+                                    <div
+                                        className={`text-sm text-gray-600 leading-snug mb-3 ${isExpanded ? '' : 'line-clamp-2'}`}
+                                        title={rep.description}
+                                    >
                                         {rep.description}
                                     </div>
                                 )}
@@ -526,7 +542,7 @@ const ProductCarousel: React.FC<{
                                         <div className="font-bold text-gray-700">{inStockCount}/{groupItems.length}</div>
                                     </div>
                                 </div>
-                                {repAttrs.length > 0 && (
+                                {isExpanded && repAttrs.length > 0 && (
                                     <div className="mt-3 flex flex-wrap gap-1.5">
                                         {repAttrs.map(([attrKey, value]) => (
                                             <span key={`${masterCode}-${attrKey}`} className="text-[10px] uppercase font-bold tracking-wide bg-gray-100 text-gray-600 px-2 py-1 rounded-md">
@@ -537,7 +553,19 @@ const ProductCarousel: React.FC<{
                                 )}
                             </div>
 
-                            <div className="px-3 pb-3">
+                            <div className="px-3 pb-3 space-y-2">
+                                <button
+                                    type="button"
+                                    onClick={() => toggleExpanded(masterCode)}
+                                    className="block w-full text-center py-2 rounded-lg text-sm font-bold border transition-all active:scale-95"
+                                    style={{
+                                        borderColor: primaryColor,
+                                        color: primaryColor,
+                                        backgroundColor: isExpanded ? `${primaryColor}10` : 'transparent',
+                                    }}
+                                >
+                                    {isExpanded ? 'Hide details' : 'View more details'}
+                                </button>
                                 {productUrl ? (
                                     <a
                                         href={productUrl}
@@ -601,11 +629,14 @@ const asRecordArray = (value: unknown): Record<string, unknown>[] => {
 
 const componentProductToCard = (raw: Record<string, unknown>): ProductCard => {
     const productId = asString(raw.product_id || raw.id || raw.sku || '');
+    const attributes = asRecord(raw.attributes) || {};
+    const masterCode = asString(raw.master_code || attributes["master_code"] || raw.title || raw.name || raw.sku || '').trim() || null;
     const sku = asString(raw.sku || raw.object_id || productId || '');
     const title = asString(raw.title || raw.name || sku || 'Product');
     return {
         id: productId || sku,
         object_id: asString(raw.object_id || sku),
+        master_code: masterCode,
         sku,
         legacy_sku: [],
         name: title,
@@ -729,13 +760,13 @@ const ChatComponentsRenderer: React.FC<{
                             <div className="text-[11px] uppercase tracking-wider font-bold text-gray-500 mb-1">Recommendations</div>
                             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
                                 {items.map((item, itemIndex) => {
-                                    const sku = asString(item.sku).trim();
-                                    const label = asString(item.title).trim() || sku || `Item ${itemIndex + 1}`;
-                                    if (!sku) return null;
+                                    const displayCode = asString(item.master_code || item.title || item.sku).trim();
+                                    const label = displayCode || asString(item.title).trim() || `Item ${itemIndex + 1}`;
+                                    if (!displayCode) return null;
                                     return (
                                         <button
                                             key={`${type}-item-${itemIndex}`}
-                                            onClick={() => onQuickReply(`Show details for SKU ${sku}`)}
+                                            onClick={() => onQuickReply(`Show details for ${displayCode}`)}
                                             className="whitespace-nowrap flex-shrink-0 px-3 py-2 rounded-full border-2 bg-white text-xs font-bold text-gray-700 hover:bg-gray-50"
                                             style={{ borderColor: primaryColor }}
                                         >

@@ -3,8 +3,6 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Dict, Sequence
 
-from app.core.config import settings
-from app.services.chat.parsing.search_policy import detect_attribute_list_target
 from app.services.chat.components.pipeline_runtime.state import PipelineWorkflowState
 from app.services.chat.components.pipeline_runtime.workflow_catalog import PipelineWorkflowCatalogMixin
 from app.services.chat.components.pipeline_runtime.workflow_knowledge import PipelineWorkflowKnowledgeMixin
@@ -71,32 +69,3 @@ class PipelineWorkflowHandlersMixin(PipelineWorkflowCatalogMixin, PipelineWorkfl
                 state.result_count = len(state.product_ids)
                 state.retrieval_source = ComponentSource.SQL
                 debug_meta["store_overview_candidate_count"] = int(state.result_count)
-
-            if workflow in {"catalog", "recommendation"} and not state.ambiguity_reason and not store_overview_request:
-                state.attribute_list_target = detect_attribute_list_target(text)
-                if state.attribute_list_target and not unique_sku_tokens and not bool(detail.wants_image):
-                    values = await self._load_distinct_attribute_values(
-                        target=state.attribute_list_target,
-                        attribute_filters=detail.attribute_filters,
-                        limit=20,
-                    )
-                    debug_meta["attribute_list_target"] = state.attribute_list_target
-                    debug_meta["attribute_list_values_count"] = int(len(values))
-                    if values:
-                        state.handled_attribute_list = True
-                        state.result_count = len(values)
-                        state.retrieval_source = ComponentSource.SQL
-                        label_map = {
-                            "material": "materials",
-                            "color": "colors",
-                            "gauge": "gauges",
-                            "threading": "threading options",
-                            "jewelry_type": "jewelry types",
-                        }
-                        label = label_map.get(state.attribute_list_target, f"{state.attribute_list_target} options")
-                        preview = ", ".join([str(item) for item in values[:12]])
-                        state.knowledge_answer = f"We currently sell these {label}: {preview}."
-                        state.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
-                        debug_meta["attribute_list_values"] = values
-                    else:
-                        state.ambiguity_reason

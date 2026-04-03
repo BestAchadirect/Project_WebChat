@@ -165,12 +165,14 @@ async def test_component_pipeline_structured_no_match_returns_clarify_without_ve
 
     assert result.response.routing.workflow == "catalog"
     assert any(component.type.value == "clarify" for component in result.response.components)
-    assert "share" in result.response.reply_text.lower() or "narrow" in result.response.reply_text.lower()
+    assert "material" in result.response.reply_text.lower() or "style" in result.response.reply_text.lower() or "gauge" in result.response.reply_text.lower()
     assert result.debug.get("semantic_first_used") is True
     assert result.debug.get("semantic_search_mode") == "vector_first"
     assert result.debug.get("component_source") == "vector"
     assert result.debug.get("match_tier") == "no_match"
     assert result.debug.get("retrieval_outcome", {}).get("match_tier") == "no_match"
+    assert result.debug.get("clarify_mode") == "recoverable_product"
+    assert result.debug.get("clarify_best_effort_help") is True
     assert result.debug.get("retrieval_outcome", {}).get("needs_clarification") is True
 
 
@@ -228,6 +230,8 @@ async def test_component_pipeline_design_discovery_uses_generic_structured_clari
     assert "material" in result.response.reply_text.lower() or "style" in result.response.reply_text.lower() or "gauge" in result.response.reply_text.lower()
     assert result.debug.get("clarify_reason") == "structured_no_match"
     assert result.debug.get("semantic_first_used") is True
+    assert result.debug.get("clarify_mode") == "recoverable_product"
+    assert result.debug.get("clarify_best_effort_help") is True
 
 
 @pytest.mark.asyncio
@@ -295,6 +299,133 @@ async def test_component_pipeline_discovery_query_returns_semantic_suggestion(
     assert result.debug.get("component_source") == "vector"
     assert result.debug.get("match_tier") == "semantic_suggestion"
     assert result.debug.get("semantic_first_used") is True
+    assert result.debug.get("retrieval_quality") == "approximate"
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_broad_discovery_relaxes_hard_filter_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product = _canonical_product(
+        sku="HELIX-16",
+        title="Helix Option",
+        attributes={"master_code": "HELIX-16", "material": "steel", "jewelry_type": "helix", "gauge": "16g"},
+    )
+
+    class _CatalogStub:
+        async def structured_count(self, **kwargs):
+            return 0
+
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(
+                product_ids=[str(product.product_id)],
+                cards=[_product_card(sku=product.sku, material="Steel")],
+                distance_by_id={str(product.product_id): 0.24},
+                best_distance=0.24,
+            )
+
+        async def structured_search(self, **kwargs):
+            raise AssertionError("structured search should not run for relaxed broad discovery")
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
+        return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+        return DetailQuery(
+            requested_fields=[],
+            attribute_filters={"gauge": "14g"},
+            wants_image=False,
+            is_detail_request=False,
+        )
+
+    async def fake_generate_embedding(text: str):
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        fake_parse,
+    )
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
+    pipeline._field_resolver.resolve = fake_resolve  # type: ignore[method-assign]
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="show me something elegant for helix", locale="en-US"),
+        conversation_id=77,
+        run_id="run-broad-discovery-rescue",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    assert result.response.routing.workflow == "catalog"
+    assert len(result.response.product_carousel) == 1
+    assert any(component.type.value == "product_cards" for component in result.response.components)
+    assert not any(component.type.value == "clarify" for component in result.response.components)
+    assert result.debug.get("semantic_approximate_rescue_used") is True
+    assert result.debug.get("retrieval_quality") == "approximate"
+    assert result.debug.get("match_tier") == "semantic_suggestion"
+    assert result.debug.get("semantic_guardrail_reason") == "hard_constraint_relaxed"
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_precision_sku_request_stays_strict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CatalogStub:
+        async def structured_count(self, **kwargs):
+            return 0
+
+        async def smart_search(self, **kwargs):
+            return SimpleNamespace(cards=[], product_ids=[], best_distance=None)
+
+        async def vector_search(self, **kwargs):
+            raise AssertionError("vector search should not run for strict SKU/detail flows")
+
+        async def structured_search(self, **kwargs):
+            return SimpleNamespace(product_ids=[]), {}
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+        return DetailQuery(
+            requested_fields=["price"],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=True,
+        )
+
+    async def fake_generate_embedding(text: str):
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        fake_parse,
+    )
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="price of XYZ-2", locale="en-US"),
+        conversation_id=77,
+        run_id="run-strict-sku",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    assert result.response.routing.workflow == "catalog"
+    assert result.response.product_carousel == []
+    assert any(component.type.value == "clarify" for component in result.response.components)
+    assert result.debug.get("retrieval_quality") == "no_match"
+    assert result.debug.get("match_tier") == "no_match"
+    assert result.debug.get("semantic_approximate_rescue_used") is None
 
 
 @pytest.mark.asyncio
@@ -450,6 +581,8 @@ async def test_component_pipeline_semantic_hint_no_match_returns_focused_clarify
     assert result.debug.get("semantic_guardrail_reason") == "semantic_hint_clarify"
     assert result.debug.get("semantic_hint_clarify_used") is True
     assert "pre-sterilized jewelry" in result.response.reply_text.lower()
+    assert result.debug.get("clarify_mode") == "strict_ambiguity"
+    assert result.debug.get("clarify_best_effort_help") is False
 
 
 @pytest.mark.asyncio
@@ -625,6 +758,8 @@ async def test_component_pipeline_high_risk_knowledge_error_returns_clarify(
     assert result.debug.get("clarify_reason") == "knowledge_unavailable"
     follow_ups = [item.lower() for item in component_contract.follow_up_questions_from_response(result.response)]
     assert "what is your shipping policy?" in follow_ups
+    assert result.debug.get("clarify_mode") == "strict_knowledge"
+    assert result.debug.get("clarify_best_effort_help") is True
 
 
 @pytest.mark.asyncio
@@ -674,6 +809,8 @@ async def test_component_pipeline_high_risk_knowledge_with_weak_sources_returns_
     follow_ups = [item.lower() for item in component_contract.follow_up_questions_from_response(result.response)]
     assert any("sales email" in item for item in follow_ups)
     assert any("phone number" in item for item in follow_ups)
+    assert result.debug.get("clarify_mode") == "strict_knowledge"
+    assert result.debug.get("clarify_best_effort_help") is True
 
 
 @pytest.mark.asyncio
@@ -790,6 +927,8 @@ async def test_component_pipeline_fallback_uncertain_uses_generic_clarify_messag
     assert result.response.reply_text in fallback_variants
     assert result.debug.get("clarify_reason") == "fallback_uncertain"
     assert result.debug.get("tone_key") == "clarify:fallback_uncertain"
+    assert result.debug.get("clarify_mode") == "broad_help"
+    assert result.debug.get("clarify_best_effort_help") is True
 
 
 @pytest.mark.asyncio
@@ -813,3 +952,5 @@ async def test_component_pipeline_fallback_gibberish_asks_rephrase() -> None:
     assert "rephrase" in result.response.reply_text.lower() or "type it again" in result.response.reply_text.lower()
     assert result.debug.get("clarify_reason") == "fallback_gibberish"
     assert result.debug.get("tone_key") == "clarify:fallback_gibberish"
+    assert result.debug.get("clarify_mode") == "gibberish"
+    assert result.debug.get("clarify_best_effort_help") is False

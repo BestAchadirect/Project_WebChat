@@ -27,6 +27,20 @@ def product_sku(product: Any) -> str:
     return str(getattr(product, "sku", "") or "").strip()
 
 
+def product_master_code(product: Any) -> str:
+    attrs = dict(getattr(product, "attributes", {}) or {})
+    for value in (
+        attrs.get("master_code"),
+        getattr(product, "title", None),
+        getattr(product, "name", None),
+        getattr(product, "sku", None),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def build_product_clarify_follow_ups(
     *,
     products: Sequence[Any],
@@ -36,9 +50,9 @@ def build_product_clarify_follow_ups(
 ) -> List[str]:
     follow_ups: List[str] = []
     for product in list(products or [])[:3]:
-        sku = product_sku(product)
-        if sku:
-            follow_ups.append(f"Show details for SKU {sku}")
+        master_code = product_master_code(product)
+        if master_code:
+            follow_ups.append(f"Show details for {master_code}")
     if not follow_ups:
         if "material" not in attribute_filters:
             follow_ups.extend(["Show titanium jewelry", "Show gold jewelry"])
@@ -193,6 +207,23 @@ def build_knowledge_clarify_follow_ups(
     return dedupe_follow_up_questions(follow_ups, limit=limit)
 
 
+def clarify_mode_for_reason(reason: str) -> str:
+    reason_norm = str(reason or "").strip()
+    if reason_norm == "semantic_concept_unclear":
+        return "strict_ambiguity"
+    if reason_norm in {"detail_no_match", "detail_request_needs_specific_product"}:
+        return "strict_product"
+    if reason_norm in {"knowledge_needs_clarification", "knowledge_unavailable"}:
+        return "strict_knowledge"
+    if reason_norm == "pagination_exhausted":
+        return "pagination_exhausted"
+    if reason_norm == "fallback_gibberish":
+        return "gibberish"
+    if reason_norm in {"structured_no_match", "attribute_list_no_results"}:
+        return "recoverable_product"
+    return "broad_help"
+
+
 def build_clarify_policy(
     *,
     reason: str,
@@ -213,30 +244,47 @@ def build_clarify_policy(
     warranty_terms: Sequence[str],
 ) -> Dict[str, Any]:
     reason_norm = str(reason or "missing_details").strip() or "missing_details"
+    clarify_mode = clarify_mode_for_reason(reason_norm)
+    best_effort_help = clarify_mode in {
+        "recoverable_product",
+        "broad_help",
+        "strict_knowledge",
+        "pagination_exhausted",
+    }
     message = ""
     questions: List[str] = []
     suggestions: List[str] = []
-    extra_debug: Dict[str, Any] = {}
+    extra_debug: Dict[str, Any] = {
+        "clarify_mode": clarify_mode,
+        "clarify_best_effort_help": bool(best_effort_help),
+    }
 
-    if reason_norm == "attribute_list_no_results":
-        message = tone_pick(
-            "clarify:attribute_list_no_results",
-            [
-                "I couldn't find matching options for that filter. Try a broader filter.",
-                "No matching attribute options yet. Try removing one filter and search again.",
-                "That filter is too narrow right now. Try a broader attribute filter.",
-            ],
-        )
-        questions = ["Which filter do you want to broaden?"]
-    elif reason_norm == "structured_no_match":
-        questions = ["Which item should I narrow down for you?"]
-        message = tone_pick(
-            "clarify:structured_no_match:humanized",
-            [
-                "I can still help here. Share one preference like material, style, or gauge and I'll narrow options.",
-                "No exact match yet, but I can find alternatives. Tell me one preference and I'll refine the search.",
-                "I can quickly narrow this down. Share one detail like material or style and I'll show the closest options.",
-            ],
+    if reason_norm in {"attribute_list_no_results", "structured_no_match"}:
+        if reason_norm == "attribute_list_no_results":
+            message = tone_pick(
+                "clarify:attribute_list_no_results",
+                [
+                    "I couldn't find that exact filter, but I can still help narrow it down with one detail like material, style, or gauge.",
+                    "That filter is too narrow right now. Share one broader detail and I'll find close options.",
+                    "No matching attribute options yet. Try one broader detail and I'll refine it for you.",
+                ],
+            )
+            questions = ["Which filter should I broaden?"]
+        else:
+            message = tone_pick(
+                "clarify:structured_no_match:humanized",
+                [
+                    "I can still help find something close. Share one detail like material, style, or gauge and I'll narrow the search.",
+                    "No exact match yet, but I can find alternatives. Tell me one preference and I'll refine it.",
+                    "I can help from here. Give me one detail like material, style, or gauge and I'll show the closest options.",
+                ],
+            )
+            questions = ["Which detail should I use to continue?"]
+        suggestions = build_product_clarify_follow_ups(
+            products=products,
+            attribute_filters=attribute_filters,
+            needs_knowledge=bool(needs_knowledge),
+            limit=3,
         )
     elif reason_norm == "semantic_concept_unclear":
         focus = str(clarify_focus or "").strip().lower()
@@ -258,16 +306,26 @@ def build_clarify_policy(
                 ],
             )
             questions = ["Which product concept should I focus on?"]
-    elif reason_norm == "detail_no_match":
+    elif reason_norm in {"detail_no_match", "detail_request_needs_specific_product"}:
+        requested = {str(item or "").strip().lower() for item in list(requested_fields or []) if str(item or "").strip()}
+        jewelry_type = str((attribute_filters or {}).get("jewelry_type") or "").strip().lower()
+        subject = jewelry_type or "product"
+        action = "look that up"
+        if "price" in requested and "stock" in requested:
+            action = "check the price and stock"
+        elif "price" in requested:
+            action = "check the price"
+        elif "stock" in requested:
+            action = "check the stock"
         message = tone_pick(
-            "clarify:detail_no_match",
+            f"clarify:{reason_norm}",
             [
-                "I couldn't find a product matching those exact details. Try a broader request or share a SKU.",
-                "I don't see an exact product match yet. Share a SKU or broader details and I'll retry.",
-                "No exact product match found. Send a SKU or fewer filters and I can narrow it down.",
+                f"I'm not sure which {subject} you mean. Share a SKU or add details like material, gauge, size, or color, and I can {action}.",
+                f"I need one exact product to {action}. Share a SKU or fewer filters so I can continue.",
+                f"Please share a SKU or more specific product details so I can {action}.",
             ],
         )
-        questions = ["Can you share a SKU or fewer filters?"]
+        questions = ["Which exact product should I use?"]
     elif reason_norm == "pagination_exhausted":
         material = display_attribute_value(str((attribute_filters or {}).get("material") or ""))
         jewelry_type = display_attribute_value(str((attribute_filters or {}).get("jewelry_type") or ""))
@@ -281,8 +339,8 @@ def build_clarify_policy(
             "clarify:pagination_exhausted",
             [
                 f"I reached the end of the {scope_label} I found.",
-                f"That was the last page of {scope_label} I found.",
-                f"I've shown all the {scope_label} I found.",
+                f"I've shown the last page of {scope_label} I found.",
+                f"If you want, I can still help narrow by material, style, or gauge.",
             ],
         )
         questions = []
@@ -290,19 +348,6 @@ def build_clarify_policy(
             attribute_filters=attribute_filters,
             limit=3,
         )
-    elif reason_norm == "detail_request_needs_specific_product":
-        requested = {str(item or "").strip().lower() for item in list(requested_fields or []) if str(item or "").strip()}
-        jewelry_type = str((attribute_filters or {}).get("jewelry_type") or "").strip().lower()
-        subject = jewelry_type or "product"
-        action = "look that up"
-        if "price" in requested and "stock" in requested:
-            action = "check the price and stock"
-        elif "price" in requested:
-            action = "check the price"
-        elif "stock" in requested:
-            action = "check the stock"
-        message = f"I'm not sure which {subject} you mean. Share a SKU or add details like material, gauge, size, or color, and I can {action}."
-        questions = ["Which exact product should I use?"]
     elif reason_norm in {"knowledge_needs_clarification", "knowledge_unavailable"}:
         current_focus = knowledge_clarify_focus(
             user_text=user_text,
@@ -322,44 +367,26 @@ def build_clarify_policy(
             payment_terms=payment_terms,
             warranty_terms=warranty_terms,
         )
-        if reason_norm == "knowledge_needs_clarification":
-            if current_focus in {"contact", "location"}:
-                message = tone_pick(
-                    "clarify:knowledge_contact_context",
-                    [
-                        "I can share that. Do you need our sales email, phone number, or showroom address?",
-                        "Happy to help with contact details. Should I send email, phone, or showroom address?",
-                        "I can provide contact info now. Do you want email, phone, or showroom address?",
-                    ],
-                )
-            else:
-                message = tone_pick(
-                    "clarify:knowledge_context",
-                    [
-                        f"I can help with that. {current_question}",
-                        f"To answer accurately, I need one detail. {current_question}",
-                        f"Let's narrow this quickly. {current_question}",
-                    ],
-                )
+        if current_focus in {"contact", "location"}:
+            key = "clarify:knowledge_contact_context" if reason_norm == "knowledge_needs_clarification" else "clarify:knowledge_contact_unavailable"
+            message = tone_pick(
+                key,
+                [
+                    "I can help with contact details. Do you need our sales email, phone number, or showroom address?",
+                    "I can share that. Do you want email, phone, or showroom address?",
+                    "Tell me whether you need email, phone, or showroom address and I will help.",
+                ],
+            )
         else:
-            if current_focus in {"contact", "location"}:
-                message = tone_pick(
-                    "clarify:knowledge_contact_unavailable",
-                    [
-                        "I may be missing the latest contact detail. Do you need email, phone, or showroom address?",
-                        "I can help with contact info. Tell me whether you need email, phone, or address.",
-                        "I need one detail to continue: email, phone, or showroom address?",
-                    ],
-                )
-            else:
-                message = tone_pick(
-                    "clarify:knowledge_unavailable",
-                    [
-                        f"I may be missing the latest policy details. {current_question}",
-                        f"I can still help, but I need a specific policy topic. {current_question}",
-                        f"To avoid guessing, I need one specific detail. {current_question}",
-                    ],
-                )
+            key = "clarify:knowledge_context" if reason_norm == "knowledge_needs_clarification" else "clarify:knowledge_unavailable"
+            message = tone_pick(
+                key,
+                [
+                    f"I can help with that. {current_question}",
+                    f"To answer accurately, I need one detail. {current_question}",
+                    f"Let's narrow this quickly. {current_question}",
+                ],
+            )
         questions = [current_question]
         suggestions = build_knowledge_clarify_follow_ups(
             user_text=user_text,

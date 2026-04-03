@@ -15,6 +15,14 @@ class RetrievalOutcome:
     ambiguity_reason: str = ""
 
     @property
+    def retrieval_quality(self) -> str:
+        if self.is_exact_match:
+            return "exact"
+        if self.is_semantic_fallback:
+            return "approximate"
+        return "no_match"
+
+    @property
     def is_exact_match(self) -> bool:
         return self.match_tier == "exact_match" and not self.needs_clarification
 
@@ -35,6 +43,7 @@ class RetrievalOutcome:
             "is_exact_match": bool(self.is_exact_match),
             "is_semantic_fallback": bool(self.is_semantic_fallback),
             "needs_clarification": bool(self.needs_clarification),
+            "retrieval_quality": self.retrieval_quality,
         }
 
 

@@ -95,6 +95,7 @@ class PipelineWorkflowKnowledgeMixin:
                         locale=locale,
                         store_overview_request=store_overview_request,
                         llm_cache_key=llm_cache_key,
+                        debug_meta=debug_meta,
                     )
                     spans["llm_answer_ms"] += (time.perf_counter() - llm_started) * 1000.0
                     if not from_cache:

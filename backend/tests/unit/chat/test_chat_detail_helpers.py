@@ -250,8 +250,9 @@ def test_detail_response_builder_reports_missing_image() -> None:
         wants_image=True,
         max_matches=3,
     )
-    assert "I found 1 matching product." in payload.reply_text
-    assert "Image: unavailable" in payload.reply_text
+    assert payload.reply_text == "I found 1 matching product."
+    assert "Master code:" not in payload.reply_text
+    assert "Image:" not in payload.reply_text
     assert payload.card_policy_reason == "single_match_text_only"
     assert len(payload.product_carousel) == 1
     assert payload.carousel_msg == "Master code Example Product has 1 variant. Expand to view variant details."
@@ -282,10 +283,11 @@ def test_detail_response_builder_multi_match_followups_use_context() -> None:
     assert payload.card_policy_reason == "multiple_matches"
     assert payload.carousel_msg == "Master code BLK466 has 2 variants. Expand to view variant details."
     assert payload.product_carousel
+    assert payload.reply_text.startswith("I found 2 variants for master code BLK466.")
     assert "Key details:" in payload.reply_text
     assert "[JEWELRY TYPE] Barbell" in payload.reply_text
     assert "Attributes:" not in payload.reply_text
-    assert "Top master code: [MASTER] BLK466" in payload.reply_text
+    assert "Top master code:" not in payload.reply_text
     assert payload.follow_up_questions == []
 
 
@@ -308,11 +310,12 @@ def test_detail_response_builder_attribute_focus_highlights_filters() -> None:
         wants_image=False,
         max_matches=3,
     )
+    assert payload.reply_text.startswith("I found 2 variants for master code BLK466.")
     assert "Key details:" in payload.reply_text
     assert "[MATERIAL] Gold" in payload.reply_text
     assert "[COLOR] Gold" in payload.reply_text
-    assert "Top master code: [MASTER] BLK466" in payload.reply_text
     assert "Attributes:" not in payload.reply_text
+    assert "Top master code:" not in payload.reply_text
     assert payload.carousel_msg == "Master code BLK466 has 2 variants. Expand to view variant details."
 
 
@@ -338,8 +341,7 @@ def test_detail_response_builder_image_focus_groups_master_without_sku_lines() -
         max_matches=3,
     )
 
-    assert "master code BLK466" in payload.reply_text
-    assert "Image: https://example.com/blk466-a.jpg" in payload.reply_text
+    assert payload.reply_text == "I found image links for 2 variants in master code BLK466."
     assert "SKU:" not in payload.reply_text
     assert payload.card_policy_reason == "image_master_grouped"
     assert len(payload.product_carousel) == 1

@@ -98,18 +98,11 @@ class KnowledgePipeline:
         query_text: str,
         store_overview_request: bool,
     ) -> Dict[str, bool]:
-        normalized = cls._normalize_text(query_text)
-        wants_company = bool(
-            store_overview_request
-            or any(term in normalized for term in cls._STORE_PROFILE_COMPANY_TERMS)
-        )
-        wants_contact = bool(any(term in normalized for term in cls._STORE_PROFILE_CONTACT_TERMS))
-        wants_location = bool(any(term in normalized for term in cls._STORE_PROFILE_LOCATION_TERMS))
         return {
-            "active": bool(wants_company or wants_contact or wants_location),
-            "company": wants_company,
-            "contact": wants_contact,
-            "location": wants_location,
+            "active": False,
+            "company": False,
+            "contact": False,
+            "location": False,
         }
 
     @classmethod
@@ -154,22 +147,8 @@ class KnowledgePipeline:
         query_text: str,
         store_overview_request: bool,
     ) -> List[KnowledgeSource]:
-        ranked = list(sources or [])
-        profile = cls._store_query_profile(
-            query_text=query_text,
-            store_overview_request=store_overview_request,
-        )
-        if not profile.get("active"):
-            return ranked
-
-        return sorted(
-            ranked,
-            key=lambda source: (
-                -cls._store_source_priority_score(source=source, profile=profile),
-                float(source.distance) if source.distance is not None else 9999.0,
-                cls._normalize_text(source.title),
-            ),
-        )
+        del query_text, store_overview_request
+        return list(sources or [])
 
     async def search_knowledge(
         self,

@@ -17,6 +17,7 @@ from app.services.chat.presentation import component_contract
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.pipeline import ComponentPipeline
+from app.services.chat.components.pipeline_runtime.state import PipelineWorkflowState
 from app.services.chat.components.types import ComponentSource, ComponentType
 from app.services.chat.parsing.llm_attribute_extractor import AttributeExtractionResult
 from app.services.chat.components.pipeline_runtime import setup as pipeline_setup_module
@@ -578,10 +579,12 @@ def test_component_pipeline_clarify_policy_for_pagination_exhausted() -> None:
     assert "last page" in message or "reached the end" in message
     assert policy.get("questions") == []
     assert policy.get("suggestions") == [
-        "Show Titanium labrets",
-        "Show Titanium barbells",
-        "Show 16g options",
+        "Try Titanium labrets",
+        "Try Titanium barbells",
+        "Focus on 16g options",
     ]
+    assert policy.get("extra_debug", {}).get("clarify_mode") == "pagination_exhausted"
+    assert policy.get("extra_debug", {}).get("clarify_best_effort_help") is True
 
 
 def test_component_pipeline_build_component_contract_injects_clarify_suggestions_into_components() -> None:
@@ -634,6 +637,31 @@ def test_component_pipeline_build_component_contract_injects_clarify_suggestions
     quick_replies_component = contract["components"][2]
     assert clarify_component.data["suggestions"] == contract["follow_up_questions"]
     assert quick_replies_component.data["items"] == contract["follow_up_questions"]
+
+
+def test_component_pipeline_clarify_policy_structured_no_match_is_helpful() -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=SimpleNamespace(),
+    )
+
+    policy = pipeline._build_clarify_policy(
+        reason="structured_no_match",
+        user_text="show me something elegant for helix",
+        tone_pick=lambda _key, variants: str(list(variants or [""])[0]),
+        products=[],
+        attribute_filters={},
+        needs_knowledge=False,
+        requested_fields=[],
+    )
+
+    assert policy.get("reason") == "structured_no_match"
+    assert policy.get("extra_debug", {}).get("clarify_mode") == "recoverable_product"
+    assert policy.get("extra_debug", {}).get("clarify_best_effort_help") is True
+    assert policy.get("questions") == ["Which detail should I use to continue?"]
+    assert "material" in str(policy.get("message") or "").lower() or "style" in str(policy.get("message") or "").lower()
 
 
 @pytest.mark.asyncio
@@ -1005,7 +1033,7 @@ async def test_component_pipeline_knowledge_answer_falls_back_when_llm_reply_emp
 
 
 @pytest.mark.asyncio
-async def test_component_pipeline_store_overview_knowledge_answer_prefers_structured_contact_summary(
+async def test_component_pipeline_knowledge_answer_does_not_force_store_overview_copy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _RedisStub:
@@ -1023,37 +1051,186 @@ async def test_component_pipeline_store_overview_knowledge_answer_prefers_struct
     )
 
     async def fake_generate_chat_json(*args, **kwargs):
-        return {"reply": "Here is what I found: generic summary"}
+        return {
+            "reply": (
+                "Yes, we welcome custom jewelry requests. "
+                "Please email us with detailed information and our team will follow up."
+            )
+        }
 
     monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
 
     answer, from_cache = await pipeline._knowledge_answer_once(
-        question="Where is your company? I want to buy in person.",
+        question="Do you offer custom designs?",
         sources=[
             KnowledgeSource(
-                source_id="src-contact",
-                chunk_id="chunk-contact",
-                title="How can I contact Acha?",
+                source_id="src-custom",
+                chunk_id="chunk-custom",
+                title="Custom Manufactured Items",
                 content_snippet=(
-                    "Address: Acha Co., Ltd. 247-249 Tanao Road, Bavornives, Pranakorn, Bangkok 10200, Thailand. "
-                    "Email: sales@achadirect.com. Tel: +66 (0)2-629-5858."
+                    "We welcome custom jewelry requests. Please email us with detailed information."
                 ),
-                category="Contact",
-                relevance=0.35,
+                category="Custom Orders",
+                relevance=0.55,
                 url="https://www.achadirect.com/faq",
-                distance=0.65,
+                distance=0.45,
             )
         ],
         locale="en-US",
         store_overview_request=True,
-        llm_cache_key="test-store-overview-key",
+        llm_cache_key="test-custom-designs-key",
     )
 
     assert from_cache is False
-    assert "showroom" in answer.lower()
-    assert "bangkok" in answer.lower()
-    assert ("address" in answer.lower()) or ("contact" in answer.lower())
-    assert not answer.lower().startswith("here is what i found:")
+    assert "custom jewelry requests" in answer.lower()
+    assert "showroom" not in answer.lower()
+    assert "bangkok" not in answer.lower()
+    assert "minimum order" not in answer.lower()
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_knowledge_answer_prompt_is_more_conversational(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _RedisStub:
+        async def get_json(self, key):
+            return None
+
+        async def set_json(self, key, value, ttl_seconds=0):
+            return None
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=_RedisStub(),
+    )
+
+    captured: dict[str, object] = {}
+
+    async def fake_generate_chat_json(*args, **kwargs):
+        captured["messages"] = kwargs.get("messages") if "messages" in kwargs else args[0]
+        return {"reply": "Minimum order is USD 150 for standard website orders."}
+
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    answer, from_cache = await pipeline._knowledge_answer_once(
+        question="What is your minimum order?",
+        sources=[
+            KnowledgeSource(
+                source_id="src-min-order",
+                chunk_id="chunk-min-order",
+                title="What is your minimum order?",
+                content_snippet="USD 150 for standard website orders.",
+                category="Ordering",
+                relevance=0.95,
+                url="https://www.achadirect.com/faq",
+                distance=0.05,
+            )
+        ],
+        locale="en-US",
+        store_overview_request=False,
+        llm_cache_key="test-min-order-key",
+        debug_meta={},
+    )
+
+    assert from_cache is False
+    assert "minimum order" in answer.lower()
+
+    messages = list(captured["messages"] or [])
+    system_prompt = str(messages[0]["content"])
+    assert "Rewrite FAQ bullets or headings into plain prose" in system_prompt
+    assert "Prefer one short paragraph over a bullet list" in system_prompt
+    assert "synthesize them into one short summary" in system_prompt
+
+    user_prompt = str(messages[1]["content"])
+    assert "Source count: 1" in user_prompt
+
+
+def test_component_pipeline_polish_knowledge_answer_adds_friendly_intro_for_headings() -> None:
+    polished = ComponentPipeline._polish_knowledge_answer(
+        answer="Minimums: USD 150 for standard website orders.",
+        question="What is your minimum order?",
+        max_sentences=2,
+        max_chars=240,
+    )
+
+    lowered = polished.lower()
+    assert "minimums:" not in lowered
+    assert "usd 150" in lowered
+    assert lowered.startswith(("here’s the practical answer:", "the short answer is:", "in brief:"))
+
+
+def test_component_pipeline_grounded_knowledge_answer_turns_list_snippet_into_prose() -> None:
+    answer = ComponentPipeline._build_grounded_knowledge_fallback_answer(
+        question="What is your minimum order?",
+        sources=[
+            KnowledgeSource(
+                source_id="src-min-order",
+                chunk_id="chunk-min-order",
+                title="What is your minimum order?",
+                content_snippet=(
+                    "● USD 150 (or equivalent) for standard website orders\n"
+                    "● USD 500 (or equivalent) for email orders\n"
+                    "● 5,000 Baht for showroom orders\n"
+                    "For first-time trial orders that fall below these amounts, we may make an exception."
+                ),
+                category="Ordering",
+                relevance=0.95,
+                url="https://www.achadirect.com/faq",
+                distance=0.05,
+            )
+        ],
+    )
+
+    lowered = answer.lower()
+    assert "usd 150" in lowered
+    assert "usd 500" in lowered
+    assert "5,000 baht" in lowered
+    assert "●" not in answer
+    assert lowered.startswith(("here's the practical answer:", "the short answer is:", "in brief:"))
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_material_query_no_longer_uses_attribute_list_shortcut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=SimpleNamespace(),
+    )
+
+    state = PipelineWorkflowState()
+    called = False
+
+    async def fake_load_distinct_attribute_values(*args, **kwargs):
+        nonlocal called
+        called = True
+        return ["Steel", "Titanium", "925 Silver"]
+
+    monkeypatch.setattr(pipeline, "_load_distinct_attribute_values", fake_load_distinct_attribute_values)
+
+    debug_meta: dict[str, object] = {}
+    spans: dict[str, float] = {"db_product_lookup_ms": 0.0}
+
+    await pipeline._handle_pre_catalog_workflows(
+        state=state,
+        text="What materials do you use?",
+        workflow="catalog",
+        detail=SimpleNamespace(attribute_filters={}, wants_image=False),
+        store_overview_request=False,
+        unique_sku_tokens=[],
+        result_fetch_limit=10,
+        debug_meta=debug_meta,
+        spans=spans,
+    )
+
+    assert called is False
+    assert state.handled_attribute_list is False
+    assert state.attribute_list_target == ""
+    assert "attribute_list_target" not in debug_meta
 
 
 @pytest.mark.asyncio
@@ -1140,7 +1317,7 @@ async def test_component_pipeline_builds_contextual_show_more_follow_up(
         display_offset=0,
     )
 
-    assert any(item.lower().startswith("show more titanium jewelry") for item in follow_ups)
+    assert any(item.lower().startswith("show more titanium barbell") for item in follow_ups)
 
 
 @pytest.mark.asyncio

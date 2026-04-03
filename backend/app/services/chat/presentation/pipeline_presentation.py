@@ -400,15 +400,96 @@ class PipelinePresentationMixin:
             top = list(sources or [])[:1]
             if not top:
                 return "I couldn't find enough details yet. Could you clarify what you need?"
-            snippet = cls._clean_knowledge_snippet_text(str(getattr(top[0], "content_snippet", "") or ""))
+            snippet = str(getattr(top[0], "content_snippet", "") or "").strip()
             if not snippet:
                 return "I couldn't find enough details yet. Could you clarify what you need?"
-            return cls._polish_knowledge_answer(
+            return cls._polish_grounded_knowledge_answer(
                 answer=snippet,
                 question=question,
                 max_sentences=2,
                 max_chars=int(getattr(settings, "CHAT_KNOWLEDGE_ANSWER_MAX_CHARS", 420)),
             )
+
+    @classmethod
+    def _polish_grounded_knowledge_answer(
+            cls,
+            *,
+            answer: str,
+            question: str,
+            max_sentences: int = 2,
+            max_chars: int = 240,
+        ) -> str:
+            text = str(answer or "")
+            text = re.sub(r"^\s*here is what i found:\s*", "", text, flags=re.IGNORECASE)
+
+            list_items: List[str] = []
+            trailing_sentences: List[str] = []
+            for raw_line in text.splitlines():
+                line = cls._clean_knowledge_snippet_text(raw_line)
+                if not line:
+                    continue
+                is_bullet = bool(re.match(r"^(?:[•●\-\*]|\d+\.)\s+", line))
+                cleaned_line = re.sub(r"^(?:[•●\-\*]|\d+\.)\s*", "", line).strip(" .;:")
+                if not cleaned_line:
+                    continue
+                if is_bullet:
+                    list_items.append(cleaned_line)
+                else:
+                    trailing_sentences.append(cleaned_line)
+
+            if len(list_items) >= 2:
+                concise = "; ".join(list_items[:3])
+                if len(list_items) > 3:
+                    concise = f"{concise}; and {list_items[3]}"
+                if trailing_sentences:
+                    concise = f"{concise}. {' '.join(trailing_sentences)}"
+            else:
+                concise = cls._clean_knowledge_snippet_text(text)
+                heading_match = re.match(r"^\s*([A-Za-z][A-Za-z\s/&-]{1,32}):\s*(.+)$", concise)
+                if heading_match:
+                    heading = str(heading_match.group(1) or "").strip()
+                    body = str(heading_match.group(2) or "").strip()
+                    if 1 <= len(heading.split()) <= 3 and len(body.split()) >= 4:
+                        concise = body
+                sentences = cls._extract_sentences(concise, limit=max_sentences)
+                concise = " ".join(sentences).strip() if sentences else concise.strip()
+
+            if not concise:
+                return ""
+
+            if len(list_items) >= 2 or re.search(r"^\s*[A-Za-z][A-Za-z\s/&-]{1,32}:\s*", text):
+                opener = reply_tone.pick_variant(
+                    user_text=question,
+                    key="knowledge_answer:intro",
+                    variants=(
+                        "Here's the practical answer",
+                        "The short answer is",
+                        "In brief",
+                    ),
+                )
+                if opener and not concise.lower().startswith(("yes", "no")):
+                    concise = f"{opener}: {concise}"
+
+            if len(concise) > max(1, int(max_chars)):
+                trimmed = concise[: max(1, int(max_chars))]
+                if " " in trimmed:
+                    trimmed = trimmed.rsplit(" ", 1)[0]
+                concise = trimmed.rstrip(" ,;:") + "."
+
+            lower = concise.lower()
+            if cls._looks_like_yes_no_question(question) and not lower.startswith(("yes", "no")):
+                affirmative = (
+                    "certainly",
+                    "sure",
+                    "we welcome",
+                    "we offer",
+                    "we do",
+                    "available",
+                    "happy to",
+                )
+                if any(token in lower for token in affirmative):
+                    concise = f"Yes. {concise}"
+            return concise
 
     @classmethod
     def _compose_off_topic_reply(
@@ -495,6 +576,14 @@ class PipelinePresentationMixin:
         ) -> str:
             text = cls._clean_knowledge_snippet_text(answer)
             text = re.sub(r"^\s*here is what i found:\s*", "", text, flags=re.IGNORECASE)
+            heading_match = re.match(r"^\s*([A-Za-z][A-Za-z\s/&-]{1,32}):\s*(.+)$", text)
+            heading_stripped = False
+            if heading_match:
+                heading = str(heading_match.group(1) or "").strip()
+                body = str(heading_match.group(2) or "").strip()
+                if 1 <= len(heading.split()) <= 3 and len(body.split()) >= 4:
+                    text = body
+                    heading_stripped = True
             looks_like_list = bool(
                 re.search(r"(?:^|[\s;])\d+\.\s+", text)
                 or re.search(r"(?:^|\s)[*-]\s+", text)
@@ -506,6 +595,18 @@ class PipelinePresentationMixin:
                 concise = " ".join(sentences).strip() if sentences else text.strip()
             if not concise:
                 return ""
+            if heading_stripped or (looks_like_list and len(concise) <= max(120, int(max_chars) // 2)):
+                opener = reply_tone.pick_variant(
+                    user_text=question,
+                    key="knowledge_answer:intro",
+                    variants=(
+                        "Here’s the practical answer",
+                        "The short answer is",
+                        "In brief",
+                    ),
+                )
+                if opener and not concise.lower().startswith(("yes", "no")):
+                    concise = f"{opener}: {concise}"
             if len(concise) > max(1, int(max_chars)):
                 trimmed = concise[: max(1, int(max_chars))]
                 if " " in trimmed:

@@ -97,6 +97,12 @@ async def test_builder_outputs_shape(builder_cls, expected_type: ComponentType, 
     component = await builder_cls().build(context)
     assert str(component.type.value) == expected_type.value
     assert expected_key in component.data
+    if expected_key == "cards":
+        assert component.data["cards"][0]["master_code"] == "Ring One"
+    elif expected_key == "product":
+        assert component.data["product"]["master_code"] == "Ring One"
+    elif expected_key == "items":
+        assert component.data["items"][0]["master_code"] == "Ring Two"
 
 
 @pytest.mark.asyncio

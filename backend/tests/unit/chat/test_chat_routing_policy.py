@@ -109,6 +109,179 @@ async def test_llm_routing_returns_off_topic_workflow_when_valid(monkeypatch: py
 
 
 @pytest.mark.asyncio
+async def test_llm_routing_soft_accepts_medium_confidence_catalog_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        return {
+            "workflow": "catalog",
+            "execution_mode": "component",
+            "needs_products": True,
+            "needs_knowledge": False,
+            "needs_clarification": False,
+            "store_overview_request": False,
+            "reason": "broad shopping request for something elegant",
+            "confidence": 0.62,
+        }
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="show me something elegant",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "catalog"
+    assert decision.execution_mode == "component"
+    assert decision.selection_source == "llm_soft"
+    assert decision.confidence_gate_applied is True
+    assert decision.llm_workflow == "catalog"
+
+
+@pytest.mark.asyncio
+async def test_llm_routing_soft_accepts_medium_confidence_knowledge_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        return {
+            "workflow": "knowledge",
+            "execution_mode": "component",
+            "needs_products": False,
+            "needs_knowledge": True,
+            "needs_clarification": False,
+            "store_overview_request": False,
+            "reason": "store policy question",
+            "confidence": 0.63,
+        }
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="what is your shipping policy?",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "knowledge"
+    assert decision.execution_mode == "component"
+    assert decision.selection_source == "llm_soft"
+    assert decision.confidence_gate_applied is True
+    assert decision.llm_workflow == "knowledge"
+
+
+@pytest.mark.asyncio
+async def test_llm_routing_soft_accepts_medium_confidence_recommendation_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        return {
+            "workflow": "recommendation",
+            "execution_mode": "component",
+            "needs_products": True,
+            "needs_knowledge": False,
+            "needs_clarification": False,
+            "store_overview_request": False,
+            "recommendation_mode_requested": "complementary_items",
+            "reason": "recommend helix jewelry",
+            "confidence": 0.64,
+        }
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="recommend helix jewelry",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "recommendation"
+    assert decision.route_decision.recommendation_mode_requested == "complementary_items"
+    assert decision.execution_mode == "component"
+    assert decision.selection_source == "llm_soft"
+    assert decision.confidence_gate_applied is True
+    assert decision.llm_workflow == "recommendation"
+
+
+@pytest.mark.asyncio
+async def test_llm_routing_promotes_directional_fallback_to_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        return {
+            "workflow": "fallback",
+            "execution_mode": "component",
+            "needs_products": True,
+            "needs_knowledge": False,
+            "needs_clarification": True,
+            "store_overview_request": False,
+            "reason": "broad shopping request for titanium jewelry",
+            "confidence": 0.61,
+        }
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="show me something in titanium",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "catalog"
+    assert decision.execution_mode == "component"
+    assert decision.selection_source == "llm_soft"
+    assert decision.confidence_gate_applied is True
+    assert decision.route_decision.needs_clarification is False
+    assert decision.llm_workflow == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_llm_routing_invalid_payload_falls_back_safely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        return ["not", "a", "dict"]
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="Can you help me?",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "fallback"
+    assert decision.route_decision.needs_clarification is True
+    assert decision.execution_mode == "component"
+    assert decision.selection_source == "llm_fallback"
+    assert decision.llm_reason == "invalid_payload"
+
+
+@pytest.mark.asyncio
 async def test_llm_routing_confidence_gate_forces_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_generate_chat_json(**kwargs):
         return {

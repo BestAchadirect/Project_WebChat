@@ -9,7 +9,7 @@ FIELD_LABELS = {
     "image": "Image",
     "attributes": "Attributes",
     "name": "Name",
-    "sku": "SKU",
+    "sku": "Master code",
 }
 
 HIGHLIGHT_ATTRIBUTE_ORDER = (
@@ -79,6 +79,13 @@ class DetailResponseBuilder:
         name_value = str(getattr(card, "name", "") or "").strip()
         if name_value:
             return name_value
+        return str(getattr(card, "sku", "") or "").strip()
+
+    @classmethod
+    def _display_master_code(cls, card: Any) -> str:
+        master_code = cls._extract_master_code(card)
+        if master_code:
+            return master_code
         return str(getattr(card, "sku", "") or "").strip()
 
     @classmethod
@@ -189,40 +196,6 @@ class DetailResponseBuilder:
         return f"{index}. Master code: {master_code}; Image: unavailable"
 
     @classmethod
-    def _render_product_line(
-        cls,
-        *,
-        index: int,
-        card: Any,
-        requested_fields: List[str],
-        missing_fields: List[str],
-    ) -> str:
-        parts: List[str] = []
-        if "name" in requested_fields:
-            parts.append(f"Name: {card.name}")
-        parts.append(f"SKU: {card.sku}")
-        if "price" in requested_fields:
-            if card.price is None:
-                parts.append("Price: unavailable")
-            else:
-                parts.append(f"Price: {card.price} {card.currency}")
-        if "stock" in requested_fields:
-            parts.append(f"Stock: {cls._format_stock(card.stock_status)}")
-        if "image" in requested_fields:
-            parts.append(f"Image: {card.image_url}" if card.image_url else "Image: unavailable")
-        if "attributes" in requested_fields:
-            attrs = cls._truthy_attributes(card)
-            if attrs:
-                rendered = ", ".join([f"{key}={value}" for key, value in sorted(attrs.items())])
-                parts.append(f"Attributes: {rendered}")
-            else:
-                parts.append("Attributes: unavailable")
-        if missing_fields:
-            labels = [FIELD_LABELS.get(field, field) for field in missing_fields]
-            parts.append("Missing: " + ", ".join(labels))
-        return f"{index}. " + "; ".join(parts)
-
-    @classmethod
     def build_detail_reply(
         cls,
         *,
@@ -298,41 +271,6 @@ class DetailResponseBuilder:
             )
             if highlights:
                 lines.append("Key details: " + " | ".join(highlights))
-
-            top_masters = [str(group.get("master_code") or "").strip() for group in master_groups]
-            top_masters = [code for code in top_masters if code]
-            if top_masters:
-                if len(top_masters) == 1:
-                    lines.append(f"Top master code: [MASTER] {top_masters[0]}")
-                else:
-                    lines.append(
-                        "Top master codes: "
-                        + ", ".join([f"[MASTER] {code}" for code in top_masters[:4]])
-                    )
-        elif image_focus_mode:
-            for idx, group in enumerate(master_groups, start=1):
-                master_code = str(group.get("master_code") or "").strip()
-                representative = cls._pick_group_representative(list(group.get("items") or []))
-                if representative is None:
-                    continue
-                lines.append(
-                    cls._render_image_master_line(
-                        index=idx,
-                        master_code=master_code or str(getattr(representative, "name", "") or "").strip(),
-                        representative=representative,
-                    )
-                )
-        else:
-            for idx, card in enumerate(display_items, start=1):
-                missing = missing_fields_by_product.get(str(card.id), [])
-                lines.append(
-                    cls._render_product_line(
-                        index=idx,
-                        card=card,
-                        requested_fields=requested_fields,
-                        missing_fields=missing,
-                    )
-                )
         reply_text = "\n".join(lines)
 
         show_cards = True

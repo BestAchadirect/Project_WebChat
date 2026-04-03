@@ -25,9 +25,12 @@ class ProductCardsComponent(BaseComponent):
     async def build(self, context: ComponentContext) -> ChatComponent:
         cards = []
         for product in context.canonical_products:
+            attrs = dict(product.attributes or {})
+            master_code = str(attrs.get("master_code") or product.title or product.sku or "").strip()
             cards.append(
                 {
                     "product_id": str(product.product_id),
+                    "master_code": master_code,
                     "sku": product.sku,
                     "title": product.title,
                     "description": product.description,
@@ -38,7 +41,7 @@ class ProductCardsComponent(BaseComponent):
                     "image_url": product.image_url,
                     "material": product.material,
                     "gauge": product.gauge,
-                    "attributes": dict(product.attributes or {}),
+                    "attributes": attrs,
                     "product_url": product.product_url,
                 }
             )
