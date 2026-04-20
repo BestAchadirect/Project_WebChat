@@ -13,7 +13,6 @@ REMOVED_LEGACY_MODULES = [
     "app.services.agent_tools",
     "app.services.agent_orchestrator",
     "app.services.llm_service",
-    "app.services.answer_polisher",
     "app.services.response_renderer",
     "app.services.ai.response_renderer",
     "app.services.eav_service",
@@ -31,7 +30,6 @@ CANONICAL_CASES = [
     ("app.services.chat.agentic.tool_registry", ["AgentToolRegistry"]),
     ("app.services.chat.agentic.orchestrator", ["AgentOrchestrator"]),
     ("app.services.ai.llm_service", ["LLMService", "llm_service"]),
-    ("app.services.ai.answer_polisher", ["answer_polisher"]),
     ("app.services.catalog.attributes_service", ["EAVService", "eav_service"]),
     (
         "app.services.catalog.attribute_sync_service",

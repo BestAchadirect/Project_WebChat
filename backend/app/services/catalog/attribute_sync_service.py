@@ -9,8 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.product import Product
 from app.services.catalog.attributes_service import eav_service
+from app.utils.synonym_rules import SEARCH_SYNONYMS, normalize_family_value
 
 ATTRIBUTE_FIELDS: List[str] = [
+    "body_part",
+    "feature",
     "jewelry_type",
     "material",
     "length",
@@ -31,9 +34,13 @@ ATTRIBUTE_FIELDS: List[str] = [
     "threading",
     "outer_diameter",
     "pearl_color",
+    "presentation_type",
+    "theme",
 ]
 
 SEARCH_KEYWORD_FIELDS: List[str] = [
+    "body_part",
+    "feature",
     "jewelry_type",
     "material",
     "gauge",
@@ -41,52 +48,9 @@ SEARCH_KEYWORD_FIELDS: List[str] = [
     "length",
     "size",
     "color",
+    "presentation_type",
+    "theme",
 ]
-
-SEARCH_SYNONYMS = {
-    "titanium g23": ["g23", "implant grade", "implant-grade", "implant"],
-    "steel": ["surgical steel", "stainless steel", "316l"],
-    "gold": ["14k gold", "18k gold"],
-    "silver": ["sterling silver"],
-    "internal": ["internally threaded"],
-    "external": ["externally threaded"],
-}
-
-MATERIAL_SYNONYMS = {
-    "g23": "Titanium G23",
-    "titanium g23": "Titanium G23",
-    "implant grade": "Titanium G23",
-    "implant-grade": "Titanium G23",
-    "implant": "Titanium G23",
-    "titanium": "Titanium",
-    "surgical steel": "Steel",
-    "stainless steel": "Steel",
-    "316l": "Steel",
-    "316l steel": "Steel",
-    "steel": "Steel",
-    "gold": "Gold",
-    "silver": "Silver",
-    "niobium": "Niobium",
-}
-
-THREADING_SYNONYMS = {
-    "internal": "Internal",
-    "internally threaded": "Internal",
-    "external": "External",
-    "externally threaded": "External",
-    "threadless": "Threadless",
-}
-
-JEWELRY_TYPE_SYNONYMS = {
-    "labret stud": "Labret",
-    "labrets": "Labret",
-    "barbells": "Barbell",
-    "rings": "Ring",
-    "studs": "Stud",
-    "tunnels": "Tunnel",
-    "plugs": "Plug",
-}
-
 
 class ProductAttributeSyncService:
     @staticmethod
@@ -108,10 +72,7 @@ class ProductAttributeSyncService:
 
     @staticmethod
     def _normalize_material(value: str) -> str:
-        lowered = value.strip().lower()
-        if "g23" in lowered:
-            return "Titanium G23"
-        return MATERIAL_SYNONYMS.get(lowered, value.strip())
+        return normalize_family_value(family="material", value=value) or value.strip()
 
     @staticmethod
     def _normalize_gauge(value: str) -> str:
@@ -125,13 +86,27 @@ class ProductAttributeSyncService:
 
     @staticmethod
     def _normalize_threading(value: str) -> str:
-        lowered = value.strip().lower()
-        return THREADING_SYNONYMS.get(lowered, value.strip())
+        return normalize_family_value(family="threading", value=value) or value.strip()
+
+    @staticmethod
+    def _normalize_presentation_type(value: str) -> str:
+        return normalize_family_value(family="presentation_type", value=value) or value.strip()
+
+    @staticmethod
+    def _normalize_body_part(value: str) -> str:
+        return normalize_family_value(family="body_part", value=value) or value.strip()
+
+    @staticmethod
+    def _normalize_theme(value: str) -> str:
+        return normalize_family_value(family="theme", value=value) or value.strip()
+
+    @staticmethod
+    def _normalize_feature(value: str) -> str:
+        return normalize_family_value(family="feature", value=value) or value.strip()
 
     @staticmethod
     def _normalize_jewelry_type(value: str) -> str:
-        lowered = value.strip().lower()
-        return JEWELRY_TYPE_SYNONYMS.get(lowered, value.strip())
+        return normalize_family_value(family="jewelry_type", value=value) or value.strip()
 
     def normalize_attribute_value(self, key: str, value: Any) -> Any:
         if value is None:
@@ -146,6 +121,14 @@ class ProductAttributeSyncService:
                 return self._normalize_gauge(text)
             if key == "threading":
                 return self._normalize_threading(text)
+            if key == "presentation_type":
+                return self._normalize_presentation_type(text)
+            if key == "body_part":
+                return self._normalize_body_part(text)
+            if key == "theme":
+                return self._normalize_theme(text)
+            if key == "feature":
+                return self._normalize_feature(text)
             if key == "jewelry_type":
                 return self._normalize_jewelry_type(text)
             return text

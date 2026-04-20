@@ -26,6 +26,7 @@ class KnowledgeSource(BaseModel):
     source_id: str
     chunk_id: Optional[str] = None
     title: str
+    summary: Optional[str] = None
     content_snippet: str
     category: Optional[str] = None
     relevance: float
@@ -81,7 +82,12 @@ class ChatContext(BaseModel):
 
 
 class ChatRouting(BaseModel):
-    workflow: Literal["catalog", "knowledge", "recommendation", "smalltalk", "off_topic", "fallback"] = (
+    workflow: Literal[
+        "catalog",
+        "knowledge",
+        "off_topic",
+        "fallback",
+    ] = (
         "fallback"
     )
     execution_mode: Literal["component", "agentic"] = "component"
@@ -89,7 +95,6 @@ class ChatRouting(BaseModel):
     needs_knowledge: bool = False
     needs_clarification: bool = False
     store_overview_request: bool = False
-    recommendation_mode_requested: Literal["similar_items", "complementary_items"] = "similar_items"
     reason: str = ""
     confidence: float = 0.0
     selection_source: str = ""
@@ -99,7 +104,6 @@ class ChatComponentType(str, Enum):
     QUERY_SUMMARY = "query_summary"
     PRODUCT_CARDS = "product_cards"
     PRODUCT_DETAIL = "product_detail"
-    RECOMMENDATIONS = "recommendations"
     CLARIFY = "clarify"
     KNOWLEDGE_ANSWER = "knowledge_answer"
     ERROR = "error"
@@ -202,7 +206,6 @@ def _augment_chat_components(
     product_types = {
         ChatComponentType.PRODUCT_CARDS.value,
         ChatComponentType.PRODUCT_DETAIL.value,
-        ChatComponentType.RECOMMENDATIONS.value,
     }
     cards = list(product_carousel or [])
     if cards and not seen.intersection(product_types):

@@ -222,3 +222,11 @@ def test_catalog_eav_partial_match_keys_use_runtime_config(monkeypatch: pytest.M
     assert catalog_eav_partial_match_keys() == frozenset({"material", "finish"})
     assert uses_eav_partial_match("material") is True
     assert uses_eav_partial_match("threading") is False
+
+
+def test_catalog_eav_partial_match_keys_default_includes_new_facets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "CATALOG_EAV_PARTIAL_MATCH_KEYS", "")
+
+    keys = catalog_eav_partial_match_keys()
+
+    assert {"body_part", "feature", "presentation_type", "theme"}.issubset(keys)

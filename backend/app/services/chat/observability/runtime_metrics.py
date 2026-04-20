@@ -75,9 +75,6 @@ def routing_snapshot(*, route_decision: Any, execution_decision: Any) -> Dict[st
         "needs_knowledge": bool(getattr(route_decision, "needs_knowledge", False)),
         "needs_clarification": bool(getattr(route_decision, "needs_clarification", False)),
         "store_overview_request": bool(getattr(route_decision, "store_overview_request", False)),
-        "recommendation_mode_requested": str(
-            getattr(route_decision, "recommendation_mode_requested", "") or ""
-        ),
         "llm_reason": str(getattr(execution_decision, "llm_reason", "") or ""),
         "llm_confidence": round(float(getattr(execution_decision, "llm_confidence", 0.0) or 0.0), 3),
         "llm_workflow": str(getattr(execution_decision, "llm_workflow", "") or ""),

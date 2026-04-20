@@ -39,8 +39,9 @@ class Settings(BaseSettings):
     PRODUCT_EMBEDDING_RETRY_BASE_MS: int = 500
     PRODUCT_EMBEDDING_PROGRESS_INTERVAL_SECONDS: int = 5
     CATALOG_EAV_PARTIAL_MATCH_KEYS: str = (
-        "category,color,crystal_color,cz_color,design,finish,jewelry_type,"
-        "material,opal_color,packing_option,pearl_color,rack,threading"
+        "body_part,category,color,crystal_color,cz_color,design,feature,finish,"
+        "jewelry_type,material,opal_color,packing_option,pearl_color,presentation_type,"
+        "rack,theme,threading"
     )
     PRICE_DISPLAY_CURRENCY: str = "USD"
     THB_TO_USD_RATE: float = 1.0
@@ -76,11 +77,6 @@ class Settings(BaseSettings):
     CONVERSATION_IDLE_TIMEOUT_MINUTES: int = 30
     CONVERSATION_HARD_CAP_HOURS: int = 24
 
-    # Answer polishing (rewrite-only, optional)
-    ANSWER_POLISHER_ENABLED: bool = False
-    ANSWER_POLISHER_MODEL: str = "gpt-5-mini"
-    ANSWER_POLISHER_MAX_TOKENS: int = 200
-
     # RAG pipeline (routing should not depend on distance thresholds)
     RAG_RETRIEVE_TOPK_KNOWLEDGE: int = 30
     RAG_MAX_CHUNK_CHARS_FOR_CONTEXT: int = 1200
@@ -109,7 +105,7 @@ class Settings(BaseSettings):
     CHAT_ATTRIBUTE_INTERPRETATION_MAX_TOKENS: int = 220
     CHAT_ATTRIBUTE_INTERPRETATION_MIN_CONFIDENCE: float = 0.55
     CHAT_SEMANTIC_HINTS_ENABLED: bool = True
-    CHAT_CONTEXTUAL_COMPONENT_COPY_ENABLED: bool = False
+    CHAT_CONTEXTUAL_COMPONENT_COPY_ENABLED: bool = True
     CHAT_CONTEXTUAL_COMPONENT_COPY_MODEL: str = ""
     CHAT_CONTEXTUAL_COMPONENT_COPY_MAX_TOKENS: int = 100
     CHAT_CONTEXTUAL_COMPONENT_COPY_TEMPERATURE: float = 0.2

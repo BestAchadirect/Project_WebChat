@@ -166,18 +166,6 @@ def compose_variant(
     )
 
 
-def pick_variant(*, user_text: str, key: str, variants: Sequence[str]) -> str:
-    return compose_variant(
-        user_text=user_text,
-        key=key,
-        variants=variants,
-        humanizer_enabled=False,
-        anti_repeat_window=0,
-        max_sentences=4,
-        max_chars=480,
-    ).text
-
-
 def strip_filler(text: str) -> str:
     cleaned = normalize_text(text)
     patterns = (

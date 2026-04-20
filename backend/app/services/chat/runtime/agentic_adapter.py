@@ -76,8 +76,14 @@ def apply_agentic_success_debug(*, debug_meta: Dict[str, Any], agentic_result: A
 
 
 def apply_agentic_fallback_debug(*, debug_meta: Dict[str, Any], fallback_reason: str) -> None:
+    failure_reason = str(debug_meta.get("agentic_failure_reason") or "")
+    if not failure_reason and str(fallback_reason or "") == "no_tool_usage":
+        failure_reason = "agentic_failed:no_tool_usage"
+    elif not failure_reason and str(fallback_reason or "") == "empty_result":
+        failure_reason = "agentic_failed:empty_result"
     debug_meta["agentic"] = {
         **dict(debug_meta.get("agentic") or {}),
         "fallback_to_component": True,
         "fallback_reason": str(fallback_reason or "empty_result"),
+        "failure_reason": failure_reason,
     }

@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
 from app.services.chat.components.pipeline_runtime.state import PipelineExecutionState
 from app.services.chat.components.types import ComponentSource
-from app.services.chat.parsing.llm_attribute_extractor import AttributeExtractionResult, enrich_product_attribute_filters
 from app.services.chat.parsing import parser_rule_cache
 from app.services.chat.parsing.detail_query_parser import DetailQueryParser
 from app.services.chat.presentation import reply_tone
 from app.services.chat.presentation import product_presentation
 from app.services.chat.routing import routing_policy
+from app.services.chat.routing.contracts import DecisionState
 from app.services.chat.runtime.capabilities import ChatRuntimeCapabilities, build_chat_runtime_capabilities
 from app.services.chat.runtime import alias_cache, conversation_state
 from app.services.chat.text_normalization import normalize_user_text
@@ -19,79 +19,13 @@ from app.services.chat.text_normalization import normalize_user_text
 
 @dataclass
 class PipelineToneController:
-    user_text: str
-    active: bool
     recent: List[Dict[str, Any]]
-    capabilities: ChatRuntimeCapabilities
     latest_key: str = ""
     latest_variant_id: int = -1
     latest_style: str = ""
     latest_anti_repeat: bool = False
     repeat_hit_count: int = 0
     filler_stripped_count: int = 0
-
-    @classmethod
-    def build(
-        cls,
-        *,
-        user_text: str,
-        channel: str,
-        recent: Sequence[Dict[str, Any]],
-        capabilities: ChatRuntimeCapabilities,
-    ) -> tuple["PipelineToneController", Dict[str, Any]]:
-            tone_humanizer_enabled = bool(capabilities.chat_tone_humanizer_enabled)
-            tone_channel_allowed = capabilities.is_tone_channel_allowed(channel=channel)
-            tone_active = bool(tone_humanizer_enabled and tone_channel_allowed)
-            return (
-                cls(
-                    user_text=str(user_text or ""),
-                    active=tone_active,
-                    recent=list(recent or []),
-                    capabilities=capabilities,
-                ),
-                {
-                    "tone_humanizer_enabled": tone_humanizer_enabled,
-                    "tone_channel_allowed": tone_channel_allowed,
-                    "tone_active": tone_active,
-                },
-            )
-
-    def pick(self, key: str, variants: Sequence[str], *, user_text_override: Optional[str] = None) -> str:
-            decision = reply_tone.compose_variant(
-                user_text=str(user_text_override if user_text_override is not None else self.user_text),
-                key=key,
-                variants=variants,
-                recent=self.recent,
-                anti_repeat_window=int(self.capabilities.chat_tone_anti_repeat_window),
-                humanizer_enabled=self.active,
-                max_sentences=int(self.capabilities.chat_tone_max_sentences),
-                max_chars=int(self.capabilities.chat_tone_max_chars),
-            )
-            self.recent = reply_tone.push_recent(
-                self.recent,
-                decision=decision,
-                max_items=conversation_state.MAX_TONE_RECENT,
-            )
-            self.latest_key = str(decision.key or "")
-            self.latest_variant_id = int(decision.variant_id)
-            self.latest_style = str(decision.style or "")
-            self.latest_anti_repeat = bool(decision.anti_repeat_applied)
-            if decision.anti_repeat_applied:
-                self.repeat_hit_count += 1
-            if decision.filler_stripped:
-                self.filler_stripped_count += 1
-            return str(decision.text or "")
-
-    def snapshot(self) -> Dict[str, Any]:
-            return {
-                "recent": list(self.recent),
-                "key": self.latest_key,
-                "variant_id": self.latest_variant_id,
-                "style": self.latest_style,
-                "anti_repeat_applied": bool(self.latest_anti_repeat),
-                "repeat_hit": int(self.repeat_hit_count),
-                "filler_stripped": int(self.filler_stripped_count),
-            }
 
 
 @dataclass
@@ -101,7 +35,9 @@ class PipelineRunSetup:
     conversation_state_enabled: bool
     state_working: Optional[Dict[str, Any]]
     catalog_pagination_requested: bool
+    catalog_pagination_stale_requested: bool
     catalog_pagination_offset: int
+    catalog_pagination_state_offset: int
     catalog_pagination_limit: int
     catalog_pagination_query_key: str
     catalog_pagination_query_ids: List[str]
@@ -109,8 +45,6 @@ class PipelineRunSetup:
     unique_sku_tokens: List[str]
     route_decision: routing_policy.WorkflowDecision
     workflow: str
-    recommendation_requested: bool
-    recommendation_mode_requested: str
     store_overview_request: bool
     knowledge_workflow: bool
     fallback_workflow: bool
@@ -118,9 +52,9 @@ class PipelineRunSetup:
     execution_state: PipelineExecutionState
     tone_controller: PipelineToneController
     runtime_capabilities: ChatRuntimeCapabilities
-    conversation_memory: conversation_state.ConversationMemoryState
-    conversation_continuation: conversation_state.ConversationContinuationState
     llm_call_count: int = 0
+    internal_workflow: str = ""
+    decision_state: Optional[DecisionState] = None
 
 
 class PipelineSetupMixin:
@@ -131,7 +65,11 @@ class PipelineSetupMixin:
             channel: str,
             conversation_id: int,
             route_decision_override: Optional[routing_policy.WorkflowDecision],
+            detail_override: Any | None = None,
+            llm_call_count_override: int = 0,
             routing_selection_source: str,
+            internal_workflow_override: str = "",
+            decision_state_override: Optional[DecisionState] = None,
             client_action: str = "",
             client_action_payload: Optional[Dict[str, Any]] = None,
         ) -> PipelineRunSetup:
@@ -142,12 +80,17 @@ class PipelineSetupMixin:
 
             alias_map = await alias_cache.get_alias_map(self.db)
             parser_rules = await parser_rule_cache.get_parser_rules(self.db)
-            detail = DetailQueryParser.parse(
-                user_text=text,
-                nlu_data={},
-                alias_map=alias_map,
-                parser_rules=parser_rules,
-            )
+            if detail_override is None:
+                detail = await DetailQueryParser.parse_async(
+                    user_text=text,
+                    nlu_data={"workflow": "catalog"},
+                    alias_map=alias_map,
+                    parser_rules=parser_rules,
+                )
+                llm_call_count = 1
+            else:
+                detail = detail_override
+                llm_call_count = max(0, int(llm_call_count_override or 0))
 
             conversation_state_enabled = bool(capabilities.chat_conversation_state_enabled)
             state_working: Optional[Dict[str, Any]] = None
@@ -157,7 +100,9 @@ class PipelineSetupMixin:
             conversation_memory = conversation_state.load_memory_state(state_working)
             conversation_continuation = conversation_state.load_continuation_state(state_working)
             catalog_pagination_requested = bool(client_action_norm == "catalog_pagination")
+            catalog_pagination_stale_requested = False
             catalog_pagination_offset = int(conversation_continuation.last_display_offset or 0)
+            catalog_pagination_state_offset = int(conversation_continuation.last_display_offset or 0)
             catalog_pagination_limit = int(conversation_continuation.last_display_limit or product_presentation.PRODUCT_DISPLAY_LIMIT)
             catalog_pagination_query_key = str(conversation_continuation.last_query_cache_key or "")
             catalog_pagination_query_ids = list(conversation_continuation.last_query_product_ids or [])
@@ -181,7 +126,10 @@ class PipelineSetupMixin:
             if payload_query_ids:
                 catalog_pagination_query_ids = list(payload_query_ids)
             if payload_offset is not None and payload_offset >= 0:
-                catalog_pagination_offset = payload_offset
+                if catalog_pagination_requested and payload_offset < catalog_pagination_state_offset:
+                    catalog_pagination_stale_requested = True
+                else:
+                    catalog_pagination_offset = payload_offset
             if payload_limit is not None and payload_limit > 0:
                 catalog_pagination_limit = payload_limit
 
@@ -222,76 +170,49 @@ class PipelineSetupMixin:
                 )
 
             workflow = route_decision.workflow
-            recommendation_mode_requested = self._recommendation_service.resolve_mode(
-                requested_mode=str(getattr(route_decision, "recommendation_mode_requested", "similar_items") or "similar_items"),
-                user_text=text,
-                attribute_filters=detail.attribute_filters,
+            internal_workflow = str(internal_workflow_override or getattr(decision_state_override, "internal_workflow", "") or workflow)
+            execution_state = PipelineExecutionState(
+                debug_meta={
+                    "component_pipeline_enabled": True,
+                    "component_workflow": workflow,
+                    "internal_workflow": internal_workflow,
+                    "workflow_needs_products": bool(route_decision.needs_products),
+                    "workflow_needs_knowledge": bool(route_decision.needs_knowledge),
+                    "workflow_needs_clarification": bool(route_decision.needs_clarification),
+                    "path_kind": "component_pipeline",
+                    "route_override_used": bool(route_decision_override is not None),
+                    "routing_selection_source": str(routing_selection_source or "component_pipeline"),
+                    "store_overview_request": bool(route_decision.store_overview_request),
+                    "conversation_state_enabled": conversation_state_enabled,
+                    "conversation_state_filter_merge_applied": bool(conversation_state_filter_merge_applied),
+                    "conversation_state_loaded_version": int(debug_state_version),
+                    "conversation_state_written": False,
+                    "detail_requested_fields": list(detail.requested_fields or []),
+                    "intent_confidence": float(getattr(decision_state_override, "intent_confidence", 0.0) or 0.0),
+                    "decision_answerability": str(getattr(decision_state_override, "answerability", "none") or "none"),
+                },
+                spans={
+                    "workflow_routing_ms": 0.0,
+                    "db_product_lookup_ms": 0.0,
+                    "vector_search_ms": 0.0,
+                    "llm_answer_ms": 0.0,
+                    "response_build_ms": 0.0,
+                },
+                external_call_counts={},
             )
-            if catalog_pagination_requested or list(getattr(detail, "semantic_hints", []) or []) or str(getattr(detail, "clarify_focus", "") or "").strip():
-                attribute_enrichment = AttributeExtractionResult(
-                    exact_filters={},
-                    semantic_hints=[],
-                    soft_filters={},
-                    clarify_focus="",
-                    debug={},
-                )
-            else:
-                attribute_enrichment = await enrich_product_attribute_filters(
-                    db=self.db,
-                    user_text=text,
-                    workflow=workflow,
-                    existing_filters=detail.attribute_filters,
-                    alias_map=alias_map,
-                    parser_rules=parser_rules,
-                )
-            merged_attribute_filters = dict(detail.attribute_filters or {})
-            for key, value in dict(attribute_enrichment.exact_filters or {}).items():
-                merged_attribute_filters.setdefault(str(key), str(value))
-            for key, value in dict(attribute_enrichment.soft_filters or {}).items():
-                merged_attribute_filters.setdefault(str(key), str(value))
-            merged_semantic_hints: List[str] = []
-            seen_semantic_hints: set[str] = set()
-            for raw in list(getattr(detail, "semantic_hints", []) or []) + list(attribute_enrichment.semantic_hints or []):
-                hint = str(raw or "").strip()
-                if not hint or hint in seen_semantic_hints:
-                    continue
-                seen_semantic_hints.add(hint)
-                merged_semantic_hints.append(hint)
-            if (
-                merged_attribute_filters != dict(detail.attribute_filters or {})
-                or merged_semantic_hints != list(getattr(detail, "semantic_hints", []) or [])
-                or str(attribute_enrichment.clarify_focus or "") != str(getattr(detail, "clarify_focus", "") or "")
-            ):
-                detail = replace(
-                    detail,
-                    attribute_filters=merged_attribute_filters,
-                    semantic_hints=merged_semantic_hints,
-                    clarify_focus=str(attribute_enrichment.clarify_focus or getattr(detail, "clarify_focus", "") or ""),
-                )
-            execution_state = self._build_execution_state(
-                workflow=workflow,
-                needs_products=bool(route_decision.needs_products),
-                needs_knowledge=bool(route_decision.needs_knowledge),
-                needs_clarification=bool(route_decision.needs_clarification),
-                route_override_used=route_decision_override is not None,
-                routing_selection_source=routing_selection_source,
-                conversation_state_enabled=conversation_state_enabled,
-                conversation_state_filter_merge_applied=conversation_state_filter_merge_applied,
-                debug_state_version=debug_state_version,
-                detail_requested_fields=detail.requested_fields,
-                store_overview_request=route_decision.store_overview_request,
-            )
-            execution_state.debug_meta.update(dict(attribute_enrichment.debug or {}))
+            execution_state.debug_meta["detail_extraction_mode"] = "llm"
             if str(route_decision.knowledge_query or "").strip():
                 execution_state.debug_meta["knowledge_query_from_router"] = str(route_decision.knowledge_query or "").strip()
-            if int(attribute_enrichment.llm_call_count or 0) > 0:
-                execution_state.external_call_counts["llm_attribute_interpretation"] = int(attribute_enrichment.llm_call_count or 0)
-            tone_controller, tone_debug = PipelineToneController.build(
-                user_text=text,
-                channel=channel,
-                recent=tone_recent,
-                capabilities=capabilities,
+            if llm_call_count > 0:
+                execution_state.external_call_counts["llm_detail_extraction"] = llm_call_count
+            tone_controller = PipelineToneController(
+                recent=list(tone_recent or []),
             )
+            tone_debug = {
+                "tone_humanizer_enabled": bool(capabilities.chat_tone_humanizer_enabled),
+                "tone_channel_allowed": bool(capabilities.is_tone_channel_allowed(channel=channel)),
+                "tone_active": bool(capabilities.chat_tone_humanizer_enabled and capabilities.is_tone_channel_allowed(channel=channel)),
+            }
             execution_state.debug_meta.update(tone_debug)
 
             return PipelineRunSetup(
@@ -300,7 +221,9 @@ class PipelineSetupMixin:
                 conversation_state_enabled=conversation_state_enabled,
                 state_working=state_working,
                 catalog_pagination_requested=catalog_pagination_requested,
+                catalog_pagination_stale_requested=catalog_pagination_stale_requested,
                 catalog_pagination_offset=catalog_pagination_offset,
+                catalog_pagination_state_offset=catalog_pagination_state_offset,
                 catalog_pagination_limit=catalog_pagination_limit,
                 catalog_pagination_query_key=catalog_pagination_query_key,
                 catalog_pagination_query_ids=catalog_pagination_query_ids,
@@ -308,8 +231,6 @@ class PipelineSetupMixin:
                 unique_sku_tokens=list(unique_sku_tokens),
                 route_decision=route_decision,
                 workflow=workflow,
-                recommendation_requested=workflow == "recommendation",
-                recommendation_mode_requested=recommendation_mode_requested,
                 store_overview_request=bool(route_decision.store_overview_request),
                 knowledge_workflow=workflow == "knowledge",
                 fallback_workflow=workflow == "fallback",
@@ -317,7 +238,7 @@ class PipelineSetupMixin:
                 execution_state=execution_state,
                 tone_controller=tone_controller,
                 runtime_capabilities=capabilities,
-                conversation_memory=conversation_memory,
-                conversation_continuation=conversation_continuation,
-                llm_call_count=int(attribute_enrichment.llm_call_count or 0),
+                llm_call_count=llm_call_count,
+                internal_workflow=internal_workflow,
+                decision_state=decision_state_override,
             )

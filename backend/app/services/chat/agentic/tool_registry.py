@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.services.catalog.product_search import CatalogProductSearchService
 from app.services.chat.routing import routing_policy
-from app.services.chat.parsing.search_policy import ALLOWED_PRODUCT_FILTERS
 from app.services.chat.agentic.tool_handlers import (
     normalize_product_filters,
     paginate_items,
@@ -30,11 +29,54 @@ SUPPORTED_TOOLS = {
     TOOL_CHECK_INVENTORY_DB,
 }
 
+class SearchProductFilters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    min_price: Optional[float] = Field(default=None, ge=0)
+    max_price: Optional[float] = Field(default=None, ge=0)
+    stock_status: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    category: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    body_part: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    feature: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    presentation_type: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    material: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    jewelry_type: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    color: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    theme: Optional[str] = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator(
+        "stock_status",
+        "category",
+        "body_part",
+        "feature",
+        "presentation_type",
+        "material",
+        "jewelry_type",
+        "color",
+        "theme",
+    )
+    @classmethod
+    def validate_text_filter(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        clean = value.strip()
+        return clean or None
+
+    @model_validator(mode="after")
+    def validate_price_range(self) -> "SearchProductFilters":
+        if self.min_price is not None and self.max_price is not None and self.min_price > self.max_price:
+            raise ValueError("min_price cannot be greater than max_price")
+        return self
+
+    def to_filter_map(self) -> Dict[str, Any]:
+        return self.model_dump(mode="python", exclude_none=True)
+
+
 class SearchProductsArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     query: str = Field(min_length=2, max_length=200)
-    filters: Optional[Dict[str, Any]] = None
+    filters: Optional[SearchProductFilters] = None
     page: int = Field(default=1, ge=1, le=20)
     page_size: int = Field(default=10, alias="pageSize", ge=1, le=20)
 
@@ -45,16 +87,6 @@ class SearchProductsArgs(BaseModel):
         if not clean:
             raise ValueError("query cannot be empty")
         return clean
-
-    @field_validator("filters")
-    @classmethod
-    def validate_filters(cls, value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        if value is None:
-            return None
-        invalid = [key for key in value.keys() if key not in ALLOWED_PRODUCT_FILTERS]
-        if invalid:
-            raise ValueError(f"unsupported filter keys: {', '.join(sorted(invalid))}")
-        return value
 
 
 class GetProductDetailsArgs(BaseModel):
@@ -129,7 +161,23 @@ class AgentToolRegistry:
                         "type": "object",
                         "properties": {
                             "query": {"type": "string", "minLength": 2, "maxLength": 200},
-                            "filters": {"type": "object"},
+                            "filters": {
+                                "type": "object",
+                                "properties": {
+                                    "min_price": {"type": "number", "minimum": 0},
+                                    "max_price": {"type": "number", "minimum": 0},
+                                    "stock_status": {"type": "string", "maxLength": 64},
+                                    "category": {"type": "string", "maxLength": 128},
+                                    "body_part": {"type": "string", "maxLength": 128},
+                                    "feature": {"type": "string", "maxLength": 128},
+                                    "presentation_type": {"type": "string", "maxLength": 128},
+                                    "material": {"type": "string", "maxLength": 128},
+                                    "jewelry_type": {"type": "string", "maxLength": 128},
+                                    "color": {"type": "string", "maxLength": 128},
+                                    "theme": {"type": "string", "maxLength": 128},
+                                },
+                                "additionalProperties": False,
+                            },
                             "page": {"type": "integer", "minimum": 1, "maximum": 20},
                             "pageSize": {"type": "integer", "minimum": 1, "maximum": 20},
                         },
@@ -191,11 +239,40 @@ class AgentToolRegistry:
     def _normalize_filters(filters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return normalize_product_filters(filters)
 
+    @staticmethod
+    def _tool_envelope(*, tool_name: str, status: str, source: str) -> Dict[str, Any]:
+        return {
+            "tool": tool_name,
+            "status": status,
+            "source": source,
+        }
+
+    @staticmethod
+    def _product_payload(card: Any) -> Dict[str, Any]:
+        if hasattr(card, "model_dump"):
+            return card.model_dump(mode="json")
+        return dict(card or {})
+
+    @classmethod
+    def _candidate_payload(cls, card: Any) -> Dict[str, Any]:
+        return cls._product_payload(card)
+
+    @staticmethod
+    def _knowledge_payload(source: Any) -> Dict[str, Any]:
+        return {
+            "source_id": getattr(source, "source_id", None),
+            "title": getattr(source, "title", None),
+            "snippet": getattr(source, "content_snippet", None),
+            "url": getattr(source, "url", None),
+            "category": str(getattr(source, "category", "") or "").strip() or None,
+            "relevance": getattr(source, "relevance", 0.0),
+        }
+
     async def search_products(self, args: SearchProductsArgs) -> Dict[str, Any]:
         max_items = max(1, int(getattr(settings, "AGENTIC_MAX_TOOL_RESULT_ITEMS", 10)))
         page_size = min(args.page_size, max_items)
         page = args.page
-        filters = self._normalize_filters(args.filters)
+        filters = self._normalize_filters(args.filters.to_filter_map() if args.filters is not None else None)
 
         query_embedding = await llm_service.generate_embedding(args.query)
         candidate_limit = min(400, max(max_items * 6, page * page_size * 4, 40))
@@ -206,6 +283,13 @@ class AgentToolRegistry:
         )
         if not search_result.cards:
             return {
+                **self._tool_envelope(
+                    tool_name=TOOL_SEARCH_PRODUCTS,
+                    status="empty",
+                    source="catalog_db",
+                ),
+                "query": args.query,
+                "filters": dict(filters),
                 "items": [],
                 "totalItems": 0,
                 "page": page,
@@ -222,7 +306,14 @@ class AgentToolRegistry:
         )
 
         return {
-            "items": [item.model_dump(mode="json") for item in page_items],
+            **self._tool_envelope(
+                tool_name=TOOL_SEARCH_PRODUCTS,
+                status="ok" if total_items > 0 else "empty",
+                source="catalog_db",
+            ),
+            "query": args.query,
+            "filters": dict(filters),
+            "items": [self._product_payload(item) for item in page_items],
             "totalItems": total_items,
             "page": safe_page,
             "pageSize": page_size,
@@ -230,18 +321,57 @@ class AgentToolRegistry:
         }
 
     async def get_product_details(self, args: GetProductDetailsArgs) -> Dict[str, Any]:
-        card = await self._catalog_search.get_product_by_sku(args.sku)
-        if not card:
-            return {"found": False, "sku": args.sku}
+        resolved = await self._catalog_search.resolve_product_reference(args.sku)
+        status = str(resolved.get("status") or "")
+        if status == "ambiguous":
+            return {
+                **self._tool_envelope(
+                    tool_name=TOOL_GET_PRODUCT_DETAILS,
+                    status="ambiguous",
+                    source="catalog_db",
+                ),
+                "found": False,
+                "ambiguous": True,
+                "sku": args.sku,
+                "matched_by": str(resolved.get("matched_by") or ""),
+                "candidates": [
+                    self._candidate_payload(card)
+                    for card in list(resolved.get("candidates") or [])[:3]
+                ],
+            }
+        card = resolved.get("product")
+        if status != "resolved" or card is None:
+            return {
+                **self._tool_envelope(
+                    tool_name=TOOL_GET_PRODUCT_DETAILS,
+                    status="not_found",
+                    source="catalog_db",
+                ),
+                "found": False,
+                "ambiguous": False,
+                "sku": args.sku,
+                "matched_by": "",
+                "candidates": [],
+            }
 
         return {
+            **self._tool_envelope(
+                tool_name=TOOL_GET_PRODUCT_DETAILS,
+                status="ok",
+                source="catalog_db",
+            ),
             "found": True,
-            "product": card.model_dump(mode="json"),
+            "ambiguous": False,
+            "sku": args.sku,
+            "matched_by": str(resolved.get("matched_by") or "direct_reference"),
+            "product": self._product_payload(card),
+            "candidates": [],
         }
 
     async def search_knowledge_base(self, args: SearchKnowledgeBaseArgs) -> Dict[str, Any]:
         query_embedding = await llm_service.generate_embedding(args.query)
         search_limit = max(args.limit, int(getattr(settings, "AGENTIC_MAX_TOOL_RESULT_ITEMS", 10)))
+        clean_category = str(args.category or "").strip() or None
         sources = await self._knowledge_retrieval.search(
             query_text=args.query,
             query_embedding=query_embedding,
@@ -251,27 +381,84 @@ class AgentToolRegistry:
         )
         items: List[Dict[str, Any]] = []
         for source in sources:
-            items.append(
-                {
-                    "source_id": source.source_id,
-                    "title": source.title,
-                    "snippet": source.content_snippet,
-                    "url": source.url,
-                    "category": source.category,
-                    "relevance": source.relevance,
-                }
-            )
+            items.append(self._knowledge_payload(source))
             if len(items) >= args.limit:
                 break
         return {
+            **self._tool_envelope(
+                tool_name=TOOL_SEARCH_KNOWLEDGE_BASE,
+                status="ok" if items else "empty",
+                source="knowledge_db",
+            ),
             "items": items,
             "totalItems": len(items),
             "query": args.query,
-            "category": args.category,
+            "category": clean_category,
+            "limit": args.limit,
         }
 
     async def check_inventory_db(self, args: CheckInventoryArgs) -> Dict[str, Any]:
-        return await self._catalog_search.get_inventory_snapshot(args.sku)
+        exact = await self._catalog_search.get_inventory_snapshot(args.sku)
+        if bool(exact.get("found")):
+            return {
+                **self._tool_envelope(
+                    tool_name=TOOL_CHECK_INVENTORY_DB,
+                    status="ok",
+                    source=str(exact.get("source") or "db"),
+                ),
+                "ambiguous": False,
+                "requested_sku": args.sku,
+                "matched_by": "",
+                "candidates": [],
+                **dict(exact),
+            }
+
+        resolved = await self._catalog_search.resolve_product_reference(args.sku)
+        status = str(resolved.get("status") or "")
+        if status == "ambiguous":
+            return {
+                **self._tool_envelope(
+                    tool_name=TOOL_CHECK_INVENTORY_DB,
+                    status="ambiguous",
+                    source="db",
+                ),
+                "found": False,
+                "ambiguous": True,
+                "sku": args.sku,
+                "requested_sku": args.sku,
+                "matched_by": str(resolved.get("matched_by") or ""),
+                "candidates": [
+                    self._candidate_payload(card)
+                    for card in list(resolved.get("candidates") or [])[:3]
+                ],
+            }
+        card = resolved.get("product")
+        if status == "resolved" and card is not None:
+            snapshot = await self._catalog_search.get_inventory_snapshot(str(getattr(card, "sku", "") or args.sku))
+            return {
+                **self._tool_envelope(
+                    tool_name=TOOL_CHECK_INVENTORY_DB,
+                    status="ok" if bool(snapshot.get("found")) else "not_found",
+                    source=str(snapshot.get("source") or "db"),
+                ),
+                "ambiguous": False,
+                "matched_by": str(resolved.get("matched_by") or ""),
+                "requested_sku": args.sku,
+                "candidates": [],
+                **dict(snapshot),
+            }
+        return {
+            **self._tool_envelope(
+                tool_name=TOOL_CHECK_INVENTORY_DB,
+                status="not_found",
+                source=str(exact.get("source") or "db"),
+            ),
+            "ambiguous": False,
+            "requested_sku": args.sku,
+            "matched_by": "",
+            "candidates": [],
+            **dict(exact),
+        }
 
     async def execute_tool(self, tool_name: str, raw_arguments: Dict[str, Any]) -> Dict[str, Any]:
         if tool_name == TOOL_SEARCH_PRODUCTS:

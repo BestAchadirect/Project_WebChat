@@ -4,7 +4,11 @@ import html
 import re
 from typing import Any, Dict, List, Sequence
 
+from app.utils.synonym_rules import SEARCH_SYNONYMS, normalize_family_value
+
 DEFAULT_ATTRIBUTE_COLUMNS = [
+    "body_part",
+    "feature",
     "jewelry_type",
     "material",
     "length",
@@ -25,9 +29,13 @@ DEFAULT_ATTRIBUTE_COLUMNS = [
     "threading",
     "outer_diameter",
     "pearl_color",
+    "presentation_type",
+    "theme",
 ]
 
 DEFAULT_SEARCH_KEYWORD_COLUMNS = [
+    "body_part",
+    "feature",
     "jewelry_type",
     "material",
     "gauge",
@@ -35,51 +43,9 @@ DEFAULT_SEARCH_KEYWORD_COLUMNS = [
     "length",
     "size",
     "color",
+    "presentation_type",
+    "theme",
 ]
-
-MATERIAL_SYNONYMS = {
-    "g23": "Titanium G23",
-    "titanium g23": "Titanium G23",
-    "implant grade": "Titanium G23",
-    "implant-grade": "Titanium G23",
-    "implant": "Titanium G23",
-    "titanium": "Titanium",
-    "surgical steel": "Steel",
-    "stainless steel": "Steel",
-    "316l": "Steel",
-    "316l steel": "Steel",
-    "steel": "Steel",
-    "gold": "Gold",
-    "silver": "Silver",
-    "niobium": "Niobium",
-}
-
-THREADING_SYNONYMS = {
-    "internal": "Internal",
-    "internally threaded": "Internal",
-    "external": "External",
-    "externally threaded": "External",
-    "threadless": "Threadless",
-}
-
-JEWELRY_TYPE_SYNONYMS = {
-    "labret stud": "Labret",
-    "labrets": "Labret",
-    "barbells": "Barbell",
-    "rings": "Ring",
-    "studs": "Stud",
-    "tunnels": "Tunnel",
-    "plugs": "Plug",
-}
-
-SEARCH_SYNONYMS = {
-    "titanium g23": ["g23", "implant grade", "implant-grade", "implant"],
-    "steel": ["surgical steel", "stainless steel", "316l"],
-    "gold": ["14k gold", "18k gold"],
-    "silver": ["sterling silver"],
-    "internal": ["internally threaded"],
-    "external": ["externally threaded"],
-}
 
 
 def normalize_search_text(text: str) -> str:
@@ -101,12 +67,7 @@ def normalize_keyword(value: Any) -> str:
 
 
 def normalize_material(value: str) -> str:
-    lower = value.strip().lower()
-    if "g23" in lower:
-        return "Titanium G23"
-    if lower in MATERIAL_SYNONYMS:
-        return MATERIAL_SYNONYMS[lower]
-    return value.strip()
+    return normalize_family_value(family="material", value=value) or value.strip()
 
 
 def normalize_gauge(value: str) -> str:
@@ -120,17 +81,27 @@ def normalize_gauge(value: str) -> str:
 
 
 def normalize_threading(value: str) -> str:
-    lower = value.strip().lower()
-    if lower in THREADING_SYNONYMS:
-        return THREADING_SYNONYMS[lower]
-    return value.strip()
+    return normalize_family_value(family="threading", value=value) or value.strip()
+
+
+def normalize_presentation_type(value: str) -> str:
+    return normalize_family_value(family="presentation_type", value=value) or value.strip()
+
+
+def normalize_body_part(value: str) -> str:
+    return normalize_family_value(family="body_part", value=value) or value.strip()
+
+
+def normalize_theme(value: str) -> str:
+    return normalize_family_value(family="theme", value=value) or value.strip()
+
+
+def normalize_feature(value: str) -> str:
+    return normalize_family_value(family="feature", value=value) or value.strip()
 
 
 def normalize_jewelry_type(value: str) -> str:
-    lower = value.strip().lower()
-    if lower in JEWELRY_TYPE_SYNONYMS:
-        return JEWELRY_TYPE_SYNONYMS[lower]
-    return value.strip()
+    return normalize_family_value(family="jewelry_type", value=value) or value.strip()
 
 
 def normalize_attribute_value(key: str, value: Any) -> Any:
@@ -147,6 +118,14 @@ def normalize_attribute_value(key: str, value: Any) -> Any:
         return normalize_gauge(text)
     if key == "threading":
         return normalize_threading(text)
+    if key == "presentation_type":
+        return normalize_presentation_type(text)
+    if key == "body_part":
+        return normalize_body_part(text)
+    if key == "theme":
+        return normalize_theme(text)
+    if key == "feature":
+        return normalize_feature(text)
     if key == "jewelry_type":
         return normalize_jewelry_type(text)
     return text

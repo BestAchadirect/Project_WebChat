@@ -56,6 +56,9 @@ FALLBACK_VALID_HINTS = (
     "labret",
     "barbell",
     "ring",
+    "body part",
+    "presentation",
+    "feature",
     "opal",
     "titanium",
     "steel",
@@ -71,6 +74,7 @@ FALLBACK_VALID_HINTS = (
 
 OFF_TOPIC_REDIRECT_OPTIONS = (
     "If you want, tell me what jewelry type or material you're looking for.",
+    "If you want, tell me what body part or presentation type you're looking for.",
     "If you want, ask me about products, stock, or store policies.",
     "If you want, share your preferred style and I can suggest products.",
 )

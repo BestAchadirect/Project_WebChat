@@ -1,0 +1,196 @@
+[
+  {
+    "id": "product_response_contract_gold_match",
+    "name": "product_response_contract_gold_match",
+    "suite": "response",
+    "bucket": "product_contract",
+    "kind": "response_contract",
+    "inputs": {
+      "message": "Show me gold jewelry made of gold.",
+      "locale": "en-US"
+    },
+    "actual_response": {
+      "routing": {
+        "workflow": "catalog"
+      },
+      "reply_text": "I found products that match what you're looking for in Gold color with Gold material.",
+      "follow_up_questions": [
+        "Try gold pieces"
+      ],
+      "sources": [],
+      "product_carousel": [
+        {
+          "sku": "DGM12-000000"
+        },
+        {
+          "sku": "DGSC4-000000"
+        }
+      ],
+      "debug": {
+        "reply_mode": "deterministic_product"
+      }
+    },
+    "expected": {
+      "workflow": "catalog",
+      "reply_must_include": [
+        "match what you're looking for",
+        "gold color",
+        "gold material"
+      ],
+      "reply_must_not_include": [
+        "20 matching product(s)"
+      ],
+      "follow_ups_include": [
+        "Try gold pieces"
+      ],
+      "product_count_min": 1,
+      "product_count_max": 10,
+      "top_product_skus_include_any": [
+        "DGM12-000000",
+        "DGSC4-000000"
+      ],
+      "debug_equals": {
+        "reply_mode": "deterministic_product"
+      }
+    }
+  },
+  {
+    "id": "faq_response_contract_return_policy",
+    "name": "faq_response_contract_return_policy",
+    "suite": "response",
+    "bucket": "policy_contract",
+    "kind": "response_contract",
+    "inputs": {
+      "message": "What is your return policy?",
+      "locale": "en-US"
+    },
+    "actual_response": {
+      "routing": {
+        "workflow": "knowledge"
+      },
+      "reply_text": "You can return eligible items within 30 days. Items need to meet the return conditions, and our team will guide you through the return process.",
+      "follow_up_questions": [
+        "How do I start a return?"
+      ],
+      "sources": [
+        {
+          "title": "Returns Policy"
+        }
+      ],
+      "product_carousel": [],
+      "debug": {
+        "reply_mode": "llm"
+      }
+    },
+    "expected": {
+      "workflow": "knowledge",
+      "reply_must_include": [
+        "return",
+        "30 days",
+        "conditions",
+        "return process"
+      ],
+      "reply_must_not_include": [
+        "free lifetime returns",
+        "90 days no questions asked"
+      ],
+      "follow_ups_include": [
+        "How do I start a return?"
+      ],
+      "source_count_min": 1,
+      "product_count_max": 0
+    }
+  },
+  {
+    "id": "faq_response_contract_shipping_policy",
+    "name": "faq_response_contract_shipping_policy",
+    "suite": "response",
+    "bucket": "policy_contract",
+    "kind": "response_contract",
+    "inputs": {
+      "message": "What is your shipping policy?",
+      "locale": "en-US"
+    },
+    "actual_response": {
+      "routing": {
+        "workflow": "knowledge"
+      },
+      "reply_text": "Shipping options depend on the destination and service level. We can confirm shipping methods, timing, and customs details before dispatch.",
+      "follow_up_questions": [
+        "Do you ship internationally?"
+      ],
+      "sources": [
+        {
+          "title": "Shipping Policy"
+        }
+      ],
+      "product_carousel": [],
+      "debug": {
+        "reply_mode": "llm"
+      }
+    },
+    "expected": {
+      "workflow": "knowledge",
+      "reply_must_include": [
+        "shipping",
+        "destination",
+        "service level",
+        "customs"
+      ],
+      "reply_must_not_include": [
+        "free worldwide express shipping on every order"
+      ],
+      "follow_ups_include": [
+        "Do you ship internationally?"
+      ],
+      "source_count_min": 1,
+      "product_count_max": 0
+    }
+  },
+  {
+    "id": "faq_response_contract_warranty_policy",
+    "name": "faq_response_contract_warranty_policy",
+    "suite": "response",
+    "bucket": "policy_contract",
+    "kind": "response_contract",
+    "inputs": {
+      "message": "What is your warranty policy?",
+      "locale": "en-US"
+    },
+    "actual_response": {
+      "routing": {
+        "workflow": "knowledge"
+      },
+      "reply_text": "Our warranty policy covers eligible manufacturing issues. The support team can confirm coverage terms and the claim process for your order.",
+      "follow_up_questions": [
+        "How do I make a warranty claim?"
+      ],
+      "sources": [
+        {
+          "title": "Warranty Policy"
+        }
+      ],
+      "product_carousel": [],
+      "debug": {
+        "reply_mode": "llm"
+      }
+    },
+    "expected": {
+      "workflow": "knowledge",
+      "reply_must_include": [
+        "warranty",
+        "manufacturing",
+        "coverage",
+        "claim process"
+      ],
+      "reply_must_not_include": [
+        "lifetime no-questions-asked replacement"
+      ],
+      "follow_ups_include": [
+        "How do I make a warranty claim?"
+      ],
+      "source_count_min": 1,
+      "product_count_max": 0
+    }
+  }
+]

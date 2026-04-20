@@ -184,6 +184,11 @@ class KlevuMappingMixin:
     def _extract_attributes(record: Mapping[str, Any]) -> Dict[str, Any]:
         attrs: Dict[str, Any] = {}
         source_map = {
+            "body_part": "body_part",
+            "bodyPart": "body_part",
+            "feature": "feature",
+            "presentation_type": "presentation_type",
+            "presentationType": "presentation_type",
             "material": "material",
             "material_name": "material",
             "materialName": "material",
@@ -193,6 +198,7 @@ class KlevuMappingMixin:
             "color": "color",
             "colour": "color",
             "gauge": "gauge",
+            "theme": "theme",
             "threading": "threading",
             "length": "length",
             "size": "size",

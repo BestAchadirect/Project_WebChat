@@ -9,9 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.models.knowledge import KnowledgeArticle, KnowledgeChunk, KnowledgeChunkTag, KnowledgeEmbedding
+from app.models.knowledge import KnowledgeArticle, KnowledgeChunk, KnowledgeChunkEnrichment, KnowledgeChunkTag, KnowledgeEmbedding
 from app.schemas.chat import ChatContext, KnowledgeSource
 from app.services.ai.llm_service import llm_service
+from app.services.knowledge.tagging import build_knowledge_query_tags
 from app.utils.debug_log import debug_log as _debug_log
 
 LogEventFn = Callable[..., None]
@@ -160,7 +161,11 @@ class KnowledgePipeline:
         store_overview_request: bool = False,
         run_id: Optional[str] = None,
     ) -> Tuple[List[KnowledgeSource], Optional[float]]:
-        tag_join_needed = bool(must_tags or boost_tags)
+        query_tags = build_knowledge_query_tags(query_text)
+        if store_overview_request and "store_overview" not in query_tags:
+            query_tags = list(query_tags) + ["store_overview"]
+        effective_boost_tags = list(dict.fromkeys(list(boost_tags or []) + list(query_tags)))
+        tag_join_needed = bool(must_tags or effective_boost_tags)
 
         distance_col = KnowledgeEmbedding.embedding.cosine_distance(query_embedding).label("distance")
         model = getattr(settings, "KNOWLEDGE_EMBEDDING_MODEL", settings.EMBEDDING_MODEL)
@@ -174,10 +179,12 @@ class KnowledgePipeline:
                 KnowledgeArticle.title,
                 KnowledgeArticle.category,
                 KnowledgeArticle.url,
+                KnowledgeChunkEnrichment.summary_text,
                 distance_col,
             )
             .join(KnowledgeArticle, KnowledgeEmbedding.article_id == KnowledgeArticle.id)
             .join(KnowledgeChunk, KnowledgeEmbedding.chunk_id == KnowledgeChunk.id)
+            .outerjoin(KnowledgeChunkEnrichment, KnowledgeChunkEnrichment.chunk_id == KnowledgeChunk.id)
         )
         stmt = stmt.where(or_(KnowledgeEmbedding.model.is_(None), KnowledgeEmbedding.model == model))
         stmt = stmt.where(
@@ -199,6 +206,7 @@ class KnowledgePipeline:
                 KnowledgeArticle.title,
                 KnowledgeArticle.category,
                 KnowledgeArticle.url,
+                KnowledgeChunkEnrichment.summary_text,
                 distance_col,
             )
 
@@ -209,8 +217,8 @@ class KnowledgePipeline:
                 == required_count
             )
 
-        if boost_tags:
-            boost_case = func.max(case((KnowledgeChunkTag.tag.in_(boost_tags), 1), else_=0)).label("boost_match")
+        if effective_boost_tags:
+            boost_case = func.max(case((KnowledgeChunkTag.tag.in_(effective_boost_tags), 1), else_=0)).label("boost_match")
             stmt = stmt.add_columns(boost_case).order_by(distance_col, boost_case.desc())
         else:
             stmt = stmt.order_by(distance_col)
@@ -236,6 +244,7 @@ class KnowledgePipeline:
                 title,
                 category,
                 url,
+                summary_text,
                 distance,
                 *maybe_boost,
             ) = row
@@ -253,6 +262,7 @@ class KnowledgePipeline:
                     source_id=str(emb_id),
                     chunk_id=str(chunk_id) if chunk_id else None,
                     title=title,
+                    summary=str(summary_text or "").strip() or None,
                     content_snippet=(chunk_text or "")[: settings.RAG_MAX_CHUNK_CHARS_FOR_CONTEXT],
                     category=category,
                     relevance=similarity,

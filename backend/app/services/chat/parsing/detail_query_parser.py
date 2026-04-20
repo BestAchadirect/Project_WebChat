@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -8,11 +7,14 @@ from app.services.chat.parsing.attribute_normalization import (
     clean_attribute_filters as shared_clean_attribute_filters,
     normalize_attribute_value as shared_normalize_attribute_value,
     normalize_gauge_token as shared_normalize_gauge_token,
-    normalize_lexical_alias_map as shared_normalize_lexical_alias_map,
     normalize_measurement_token as shared_normalize_measurement_token,
-    normalize_text as shared_normalize_text,
+)
+from app.services.chat.parsing.llm_attribute_extractor import (
+    DetailQueryInferenceResult,
+    infer_detail_query,
 )
 from app.services.chat.parsing.parser_rule_types import ParserRuleSet, empty_rule_set
+from app.utils.synonym_rules import resolve_attribute_conflicts
 
 ALLOWED_DETAIL_FIELDS = ("price", "stock", "image", "attributes", "name", "sku")
 ALLOWED_DETAIL_FIELD_SET = set(ALLOWED_DETAIL_FIELDS)
@@ -31,10 +33,6 @@ class DetailQuery:
 
 class DetailQueryParser:
     _EMPTY_RULE_SET = empty_rule_set()
-
-    @staticmethod
-    def _normalize_text(value: str) -> str:
-        return shared_normalize_text(value)
 
     @staticmethod
     def normalize_gauge_token(value: str) -> str:
@@ -69,95 +67,61 @@ class DetailQueryParser:
         )
 
     @staticmethod
-    def _clean_nlu_fields(raw_fields: Any) -> List[str]:
-        if not isinstance(raw_fields, list):
-            return []
-        clean: List[str] = []
-        for item in raw_fields:
-            field = str(item or "").strip().lower()
-            if field in ALLOWED_DETAIL_FIELD_SET and field not in clean:
-                clean.append(field)
-        return clean
-
-    @staticmethod
-    def _clean_nlu_filters(
-        raw_filters: Any,
+    def _finalize_parsed_detail(
         *,
-        alias_map: Optional[Dict[str, Dict[str, str]]] = None,
-        allowed_attribute_filters: Optional[Sequence[str]] = None,
-    ) -> Dict[str, str]:
-        return DetailQueryParser.clean_attribute_filters(
-            raw_filters,
-            alias_map=alias_map,
+        requested_fields: List[str],
+        attribute_filters: Dict[str, str],
+        wants_image: bool,
+        semantic_hints: List[str],
+        clarify_focus: str,
+        confidence: float,
+        allowed_attribute_filters: Sequence[str] | None = None,
+    ) -> DetailQuery:
+        filtered_fields: List[str] = []
+        for raw in list(requested_fields or []):
+            field = str(raw or "").strip().lower()
+            if field in ALLOWED_DETAIL_FIELD_SET and field not in filtered_fields:
+                filtered_fields.append(field)
+        clean_filters = DetailQueryParser.clean_attribute_filters(
+            attribute_filters,
             allowed_attribute_filters=allowed_attribute_filters,
+        )
+        clean_filters = resolve_attribute_conflicts(clean_filters)
+        if confidence < 0.55:
+            filtered_fields = []
+            clean_filters = {}
+            semantic_hints = []
+            wants_image = False
+            clarify_focus = clarify_focus or "detail_request_needs_specific_product"
+        is_detail_request = bool(filtered_fields or wants_image)
+        return DetailQuery(
+            requested_fields=filtered_fields,
+            attribute_filters=clean_filters,
+            wants_image=wants_image,
+            is_detail_request=is_detail_request,
+            semantic_hints=list(semantic_hints or []),
+            clarify_focus=str(clarify_focus or ""),
         )
 
     @classmethod
-    def _build_detection_alias_map(
-        cls,
-        alias_map: Optional[Dict[str, Dict[str, str]]],
-    ) -> Dict[str, Dict[str, str]]:
-        return shared_normalize_lexical_alias_map(dict(alias_map or {}))
-
-    @classmethod
-    def _extract_alias_match(
+    def build_from_inference(
         cls,
         *,
-        text: str,
-        attribute: str,
-        alias_map: Dict[str, Dict[str, str]],
-    ) -> str:
-        bucket = dict(alias_map.get(attribute, {}) or {})
-        if not bucket:
-            return ""
-        terms = sorted(bucket.keys(), key=lambda value: (-len(value), value))
-        for term in terms:
-            normalized_term = cls._normalize_text(term)
-            if not normalized_term or len(normalized_term) < 2:
-                continue
-            if re.search(rf"\b{re.escape(normalized_term)}\b", text):
-                canonical = str(bucket.get(term) or "").strip().lower()
-                if canonical:
-                    return canonical
-        return ""
+        inference: DetailQueryInferenceResult,
+        parser_rules: Optional[ParserRuleSet] = None,
+    ) -> DetailQuery:
+        return cls._finalize_parsed_detail(
+            requested_fields=list(inference.requested_fields or []),
+            attribute_filters=dict(inference.attribute_filters or {}),
+            wants_image=bool(inference.wants_image),
+            semantic_hints=list(inference.semantic_hints or []),
+            clarify_focus=str(inference.clarify_focus or ""),
+            confidence=float(inference.confidence or 0.0),
+            allowed_attribute_filters=list((parser_rules or cls._EMPTY_RULE_SET).allowed_attribute_filters),
+        )
 
     @classmethod
-    def _extract_pattern_value(
-        cls,
-        *,
-        text: str,
-        key: str,
-        patterns: Sequence[str],
-        alias_map: Optional[Dict[str, Dict[str, str]]] = None,
-    ) -> str:
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if not match:
-                continue
-            value = cls.normalize_attribute_value(
-                key=key,
-                value=match.group("value"),
-                alias_map=alias_map,
-            )
-            if value:
-                return value
-        return ""
-
-    @staticmethod
-    def _append_requested_field_if_matched(
-        *,
-        text: str,
-        patterns: Sequence[str],
-        field: str,
-        requested_fields: List[str],
-    ) -> None:
-        for pattern in patterns:
-            if re.search(pattern, text):
-                requested_fields.append(field)
-                break
-
-    @classmethod
-    def parse(
+    async def parse_async(
         cls,
         *,
         user_text: str,
@@ -165,90 +129,11 @@ class DetailQueryParser:
         alias_map: Optional[Dict[str, Dict[str, str]]] = None,
         parser_rules: Optional[ParserRuleSet] = None,
     ) -> DetailQuery:
-        active_rules = parser_rules or cls._EMPTY_RULE_SET
-        detection_alias_map = cls._build_detection_alias_map(alias_map)
-        text = cls._normalize_text(user_text or "")
-        requested_fields = cls._clean_nlu_fields((nlu_data or {}).get("requested_fields"))
-        attribute_filters = cls._clean_nlu_filters(
-            (nlu_data or {}).get("attribute_filters"),
-            alias_map=detection_alias_map,
-            allowed_attribute_filters=list(active_rules.allowed_attribute_filters),
+        inference = await infer_detail_query(
+            user_text=user_text,
+            workflow=str((nlu_data or {}).get("workflow") or "catalog"),
+            alias_map=alias_map,
+            parser_rules=parser_rules,
+            existing_filters=(nlu_data or {}).get("attribute_filters"),
         )
-        wants_image = bool((nlu_data or {}).get("wants_image", False))
-
-        requested_patterns = dict(active_rules.requested_field_patterns or {})
-        cls._append_requested_field_if_matched(
-            text=text,
-            patterns=list(requested_patterns.get("price", [])),
-            field="price",
-            requested_fields=requested_fields,
-        )
-        cls._append_requested_field_if_matched(
-            text=text,
-            patterns=list(requested_patterns.get("stock", [])),
-            field="stock",
-            requested_fields=requested_fields,
-        )
-        before_image_count = len(requested_fields)
-        cls._append_requested_field_if_matched(
-            text=text,
-            patterns=list(requested_patterns.get("image", [])),
-            field="image",
-            requested_fields=requested_fields,
-        )
-        if len(requested_fields) > before_image_count:
-            wants_image = True
-        cls._append_requested_field_if_matched(
-            text=text,
-            patterns=list(requested_patterns.get("attributes", [])),
-            field="attributes",
-            requested_fields=requested_fields,
-        )
-
-        gauge = cls.normalize_gauge_token(text)
-        if gauge and (gauge.endswith("g") or gauge.endswith("mm")):
-            attribute_filters.setdefault("gauge", gauge)
-
-        for attribute in list(active_rules.detection_attribute_order or []):
-            if attribute in attribute_filters:
-                continue
-            matched = cls._extract_alias_match(
-                text=text,
-                attribute=attribute,
-                alias_map=detection_alias_map,
-            )
-            if matched:
-                attribute_filters.setdefault(attribute, matched)
-
-        for key, patterns in dict(active_rules.value_extract_patterns or {}).items():
-            if key in attribute_filters:
-                continue
-            extracted = cls._extract_pattern_value(
-                text=text,
-                key=key,
-                patterns=list(patterns or []),
-                alias_map=detection_alias_map,
-            )
-            if extracted:
-                attribute_filters[key] = extracted
-
-        if attribute_filters.get("opal_color") and attribute_filters.get("color") == "opal":
-            attribute_filters.pop("color", None)
-
-        if "ring_size" in attribute_filters and attribute_filters.get("size") == attribute_filters["ring_size"]:
-            attribute_filters.pop("size", None)
-        if "size_in_pack" in attribute_filters and attribute_filters.get("size") == attribute_filters["size_in_pack"]:
-            attribute_filters.pop("size", None)
-        if "pincher_size" in attribute_filters and attribute_filters.get("size") == attribute_filters["pincher_size"]:
-            attribute_filters.pop("size", None)
-
-        deduped_fields = sorted(set(requested_fields), key=lambda field: FIELD_ORDER.get(field, 999))
-        is_detail_request = bool(deduped_fields or wants_image)
-        return DetailQuery(
-            requested_fields=deduped_fields,
-            attribute_filters=attribute_filters,
-            wants_image=wants_image,
-            is_detail_request=is_detail_request,
-            semantic_hints=[],
-            clarify_focus="",
-        )
+        return cls.build_from_inference(inference=inference, parser_rules=parser_rules)

@@ -1,0 +1,121 @@
+[
+  {
+    "id": "detail_parse_gold_heart_shape",
+    "name": "detail_parse_gold_heart_shape",
+    "suite": "parser",
+    "bucket": "attribute_browse",
+    "kind": "detail_parse",
+    "user_text": "Can i see gold with a heart shape?",
+    "llm_response": {
+      "requested_fields": [],
+      "attribute_filters": {
+        "material": "gold",
+        "color": "gold",
+        "design": "heart"
+      },
+      "wants_image": false,
+      "semantic_hints": [],
+      "clarify_focus": "",
+      "confidence": 0.91
+    },
+    "expected": {
+      "attribute_filters": {
+        "material": "gold",
+        "color": "gold",
+        "design": "heart"
+      }
+    }
+  },
+  {
+    "id": "detail_parse_outer_diameter",
+    "name": "detail_parse_outer_diameter",
+    "suite": "parser",
+    "bucket": "measurement_filter",
+    "kind": "detail_parse",
+    "user_text": "show gold rings with 8mm outer diameter",
+    "llm_response": {
+      "requested_fields": [],
+      "attribute_filters": {
+        "jewelry_type": "ring",
+        "outer_diameter": "8mm"
+      },
+      "wants_image": false,
+      "semantic_hints": [],
+      "clarify_focus": "",
+      "confidence": 0.91
+    },
+    "expected": {
+      "attribute_filters": {
+        "jewelry_type": "ring",
+        "outer_diameter": "8mm"
+      }
+    }
+  },
+  {
+    "id": "follow_up_generation_gold_overflow",
+    "name": "follow_up_generation_gold_overflow",
+    "suite": "parser",
+    "bucket": "follow_up",
+    "kind": "follow_up_generation",
+    "inputs": {
+      "user_text": "I am looking for Gold product",
+      "attribute_filters": {
+        "color": "gold",
+        "material": "gold"
+      },
+      "has_more_results": true,
+      "products": [
+        {
+          "sku": "DGM12-000000",
+          "name": "Gold Circular Barbell",
+          "price": 10.0,
+          "attributes": {
+            "material": "Gold",
+            "color": "Gold"
+          }
+        }
+      ]
+    },
+    "expected": {
+      "first_question": "Try gold pieces"
+    }
+  },
+  {
+    "id": "follow_up_generation_attribute_fallback",
+    "name": "follow_up_generation_attribute_fallback",
+    "suite": "parser",
+    "bucket": "follow_up",
+    "kind": "follow_up_generation",
+    "inputs": {
+      "user_text": "show me products",
+      "attribute_filters": {},
+      "products": [
+        {
+          "sku": "BLK466-F02A12",
+          "name": "Titanium Labret 16g",
+          "price": 8.0,
+          "attributes": {
+            "jewelry_type": "Labret",
+            "material": "Titanium",
+            "gauge": "16g"
+          }
+        },
+        {
+          "sku": "BLK466-F04A12",
+          "name": "Titanium Labret 14g",
+          "price": 8.5,
+          "attributes": {
+            "jewelry_type": "Labret",
+            "material": "Titanium",
+            "gauge": "14g"
+          }
+        }
+      ]
+    },
+    "expected": {
+      "questions_include": [
+        "Try Titanium pieces"
+      ]
+    }
+  }
+]

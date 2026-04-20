@@ -3,6 +3,10 @@ from .product_attribute import AttributeDefinition, ProductAttributeValue, Facet
 from .product_group import ProductGroup
 from .knowledge import (
     KnowledgeArticle,
+    KnowledgeArticleVersion,
+    KnowledgeChunk,
+    KnowledgeChunkEnrichment,
+    KnowledgeChunkTag,
     KnowledgeEmbedding,
     KnowledgeUpload,
     KnowledgeUploadStatus,

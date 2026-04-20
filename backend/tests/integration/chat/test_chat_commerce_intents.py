@@ -52,23 +52,21 @@ def _workflow_decision(
     workflow: str,
     *,
     store_overview_request: bool = False,
-    recommendation_mode_requested: str = "similar_items",
 ) -> routing_policy.WorkflowDecision:
     return routing_policy.WorkflowDecision(
         workflow=workflow,
         source=ComponentSource.SQL,
-        needs_products=workflow in {"catalog", "recommendation"},
+        needs_products=workflow == "catalog",
         needs_knowledge=workflow == "knowledge",
         needs_clarification=workflow == "fallback",
         store_overview_request=store_overview_request,
-        recommendation_mode_requested=recommendation_mode_requested,
         reason="test_override",
         confidence=1.0,
     )
 
 
 @pytest.mark.asyncio
-async def test_component_pipeline_recommend_workflow_returns_recommendation_route(
+async def test_component_pipeline_catalog_workflow_returns_catalog_products(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = _canonical_product(sku="LAB-1", title="Titanium Labret 1", material="titanium")
@@ -90,7 +88,7 @@ async def test_component_pipeline_recommend_workflow_returns_recommendation_rout
             )
 
         async def smart_search(self, **kwargs):
-            raise AssertionError("semantic fallback should not run when structured recommendation seeds exist")
+            raise AssertionError("semantic fallback should not run when structured catalog seeds exist")
 
     pipeline = ComponentPipeline(
         db=object(),
@@ -105,35 +103,16 @@ async def test_component_pipeline_recommend_workflow_returns_recommendation_rout
     async def fake_generate_embedding(text: str):
         return [0.1, 0.2, 0.3]
 
-    async def fake_expand(*, anchor_product_ids, query_embedding, limit):
-        return SimpleNamespace(
-            product_ids=[],
-            source="structured_only",
-            used_anchor_embedding=False,
-            used_query_embedding=False,
-            distance_by_id={},
-        )
-
-    def fake_rank(*, candidates, attribute_filters, user_text, distance_by_id, anchor_products, limit, exclude_product_ids):
-        return SimpleNamespace(
-            items=[first, second],
-            meta={"recommendation_mode": "similar_items", "recommendation_ranked_count": 2},
-        )
-
     pipeline._field_resolver.resolve = fake_resolve  # type: ignore[method-assign]
-    pipeline._recommendation_service.expand_card_candidates = fake_expand  # type: ignore[method-assign]
-    pipeline._recommendation_service.rank_canonical_products = fake_rank  # type: ignore[method-assign]
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
 
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="recommend titanium labrets", locale="en-US"),
         conversation_id=88,
         run_id="run-recommend",
-        route_decision_override=_workflow_decision("recommendation"),
+        route_decision_override=_workflow_decision("catalog"),
     )
 
-    assert result.response.routing.workflow == "recommendation"
+    assert result.response.routing.workflow == "catalog"
     assert len(result.response.product_carousel) == 2
-    assert not any(component.type.value == "recommendations" for component in result.response.components)
-    assert "what would you like to focus on next" in result.response.reply_text.lower()
-    assert result.debug.get("recommendation_mode_requested") == "similar_items"
+    assert "options" in result.response.reply_text.lower()

@@ -1,5 +1,5 @@
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Enum, Integer, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
 from datetime import datetime
@@ -91,6 +91,7 @@ class KnowledgeChunk(Base):
     article = relationship("KnowledgeArticle", back_populates="chunks")
     embeddings = relationship("KnowledgeEmbedding", back_populates="chunk", cascade="all, delete-orphan")
     tags = relationship("KnowledgeChunkTag", back_populates="chunk", cascade="all, delete-orphan")
+    enrichment = relationship("KnowledgeChunkEnrichment", back_populates="chunk", uselist=False, cascade="all, delete-orphan")
 
 class KnowledgeChunkTag(Base):
     __tablename__ = "knowledge_chunk_tags"
@@ -101,6 +102,19 @@ class KnowledgeChunkTag(Base):
 
     # Relationships
     chunk = relationship("KnowledgeChunk", back_populates="tags")
+
+class KnowledgeChunkEnrichment(Base):
+    __tablename__ = "knowledge_chunk_enrichments"
+
+    chunk_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_chunks.id", ondelete="CASCADE"), primary_key=True)
+    summary_text = Column(Text, nullable=False)
+    summary_meta = Column(JSONB, nullable=False, default=dict)
+    generated_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    chunk = relationship("KnowledgeChunk", back_populates="enrichment")
 
 class KnowledgeEmbedding(Base):
     __tablename__ = "knowledge_embeddings"

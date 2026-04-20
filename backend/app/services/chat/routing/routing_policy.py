@@ -15,8 +15,6 @@ from app.services.chat.runtime.capabilities import ChatRuntimeCapabilities, buil
 SUPPORTED_WORKFLOWS = {
     "catalog",
     "knowledge",
-    "recommendation",
-    "smalltalk",
     "off_topic",
     "fallback",
 }
@@ -31,20 +29,18 @@ class WorkflowDecision:
     needs_knowledge: bool
     needs_clarification: bool
     store_overview_request: bool
-    recommendation_mode_requested: str = "similar_items"
     knowledge_query: str = ""
     reason: str = ""
     confidence: float = 0.0
 
     def to_public_routing(self, *, execution_mode: str, selection_source: str) -> ChatRouting:
         return ChatRouting(
-            workflow=self.workflow,
+            workflow=_coerce_workflow(self.workflow),
             execution_mode=execution_mode,
             needs_products=self.needs_products,
             needs_knowledge=self.needs_knowledge,
             needs_clarification=self.needs_clarification,
             store_overview_request=self.store_overview_request,
-            recommendation_mode_requested=self.recommendation_mode_requested,
             reason=self.reason,
             confidence=self.confidence,
             selection_source=selection_source,
@@ -133,15 +129,16 @@ def is_agentic_tool_suitable(
         return False
     if sku_token:
         return True
-    # Let the LLM decide agentic routing for broad catalog+knowledge chains.
-    return bool(workflow == "catalog" and needs_products and needs_knowledge)
+    if workflow == "catalog":
+        return bool(needs_products)
+    if workflow == "knowledge":
+        return bool(needs_knowledge)
+    return False
 
 
 def _workflow_source(workflow: str) -> ComponentSource:
     if workflow == "knowledge":
         return ComponentSource.KNOWLEDGE
-    if workflow == "smalltalk":
-        return ComponentSource.TOOL
     if workflow == "off_topic":
         return ComponentSource.ERROR
     if workflow == "fallback":
@@ -174,7 +171,7 @@ def _coerce_bool(value: Any, *, default: bool = False) -> bool:
 
 
 def _default_flags_for_workflow(workflow: str) -> tuple[bool, bool, bool]:
-    if workflow in {"catalog", "recommendation"}:
+    if workflow == "catalog":
         return True, False, False
     if workflow == "knowledge":
         return False, True, False
@@ -193,7 +190,6 @@ def _fallback_workflow_decision(*, reason: str, confidence: float = 0.0) -> Work
         needs_knowledge=False,
         needs_clarification=True,
         store_overview_request=False,
-        recommendation_mode_requested="similar_items",
         knowledge_query="",
         reason=reason,
         confidence=max(0.0, min(1.0, float(confidence))),
@@ -218,7 +214,6 @@ def _timeout_guardrail_decision(
             needs_knowledge=False,
             needs_clarification=False,
             store_overview_request=False,
-            recommendation_mode_requested="similar_items",
             knowledge_query="",
             reason="routing_timeout_catalog_guardrail",
             confidence=0.51,
@@ -251,122 +246,6 @@ def _should_soft_accept_llm_route(
     return True
 
 
-def _promote_directional_fallback_route(
-    *,
-    text: str,
-    route_reason: str,
-    llm_route_decision: WorkflowDecision,
-    detail_has_filters: bool,
-    detail_request: bool,
-    sku_tokens: Sequence[str],
-) -> WorkflowDecision | None:
-    if llm_route_decision.workflow != "fallback":
-        return None
-
-    soft_floor = float(getattr(settings, "CHAT_LLM_ROUTING_SOFT_MIN_CONFIDENCE", 0.55))
-    if llm_route_decision.confidence < soft_floor:
-        return None
-
-    normalized_text = normalize_text(text)
-    normalized_reason = normalize_text(route_reason)
-    combined_text = f"{normalized_text} {normalized_reason}".strip()
-    if not combined_text:
-        return None
-
-    recommendation_cues = (
-        "recommend",
-        "suggest",
-        "what goes with",
-        "what fits",
-        "matching",
-        "complementary",
-        "pair",
-        "pairs with",
-    )
-    knowledge_cues = (
-        "shipping",
-        "refund",
-        "payment",
-        "contact",
-        "location",
-        "showroom",
-        "address",
-        "phone",
-        "email",
-        "warranty",
-        "policy",
-        "hours",
-        "open",
-        "close",
-    )
-    shopping_cues = (
-        "show me",
-        "do you have",
-        "have any",
-        "something",
-        "looking for",
-        "find",
-        "elegant",
-        "nice",
-        "jewelry",
-        "product",
-        "material",
-        "color",
-        "gauge",
-        "design",
-        "style",
-        "helix",
-        "labret",
-        "titanium",
-        "opal",
-        "barbell",
-    )
-
-    product_signal = bool(detail_has_filters or detail_request or sku_tokens)
-    recommendation_signal = bool(
-        llm_route_decision.recommendation_mode_requested == "complementary_items"
-        or any(cue in combined_text for cue in recommendation_cues)
-    )
-    knowledge_signal = bool(
-        llm_route_decision.needs_knowledge
-        or llm_route_decision.store_overview_request
-        or any(cue in combined_text for cue in knowledge_cues)
-    )
-    shopping_signal = bool(product_signal or llm_route_decision.needs_products or any(cue in combined_text for cue in shopping_cues))
-
-    if recommendation_signal and shopping_signal:
-        workflow = "recommendation"
-    elif shopping_signal and knowledge_signal:
-        workflow = "catalog"
-    elif recommendation_signal:
-        workflow = "recommendation"
-    elif shopping_signal:
-        workflow = "catalog"
-    elif knowledge_signal:
-        workflow = "knowledge"
-    else:
-        return None
-
-    needs_products = workflow in {"catalog", "recommendation"}
-    needs_knowledge = workflow == "knowledge" or (workflow == "catalog" and bool(llm_route_decision.needs_knowledge))
-    return WorkflowDecision(
-        workflow=workflow,
-        source=_workflow_source(workflow),
-        needs_products=needs_products,
-        needs_knowledge=needs_knowledge,
-        needs_clarification=False,
-        store_overview_request=bool(llm_route_decision.store_overview_request if workflow == "knowledge" else False),
-        recommendation_mode_requested=(
-            "complementary_items"
-            if workflow == "recommendation" and recommendation_signal
-            else "similar_items"
-        ),
-        knowledge_query=str(llm_route_decision.knowledge_query or "").strip() if needs_knowledge else "",
-        reason=str(llm_route_decision.reason or "").strip(),
-        confidence=float(llm_route_decision.confidence or 0.0),
-    )
-
-
 def _coerce_llm_routing_payload(payload: Dict[str, Any]) -> tuple[WorkflowDecision, str, str, float]:
     workflow = _coerce_workflow(payload.get("workflow"))
     execution_mode = _coerce_execution_mode(payload.get("execution_mode"))
@@ -375,9 +254,6 @@ def _coerce_llm_routing_payload(payload: Dict[str, Any]) -> tuple[WorkflowDecisi
     needs_knowledge = _coerce_bool(payload.get("needs_knowledge"), default=defaults[1])
     needs_clarification = _coerce_bool(payload.get("needs_clarification"), default=defaults[2])
     store_overview_request = _coerce_bool(payload.get("store_overview_request"), default=False)
-    recommendation_mode_requested = str(payload.get("recommendation_mode_requested") or "similar_items").strip().lower()
-    if recommendation_mode_requested not in {"similar_items", "complementary_items"}:
-        recommendation_mode_requested = "similar_items"
     knowledge_query = str(payload.get("knowledge_query") or "").strip()
     reason = str(payload.get("reason") or "").strip()
     try:
@@ -386,16 +262,10 @@ def _coerce_llm_routing_payload(payload: Dict[str, Any]) -> tuple[WorkflowDecisi
         confidence = 0.0
     confidence = max(0.0, min(1.0, confidence))
 
-    if workflow == "recommendation":
-        needs_products = True
-        needs_knowledge = False
-    elif workflow == "knowledge":
+    if workflow == "knowledge":
         needs_knowledge = True
     elif workflow == "catalog":
         needs_products = True
-    elif workflow == "smalltalk":
-        needs_products = False
-        needs_knowledge = False
     elif workflow == "off_topic":
         needs_products = False
         needs_knowledge = False
@@ -410,7 +280,6 @@ def _coerce_llm_routing_payload(payload: Dict[str, Any]) -> tuple[WorkflowDecisi
         needs_knowledge=needs_knowledge,
         needs_clarification=needs_clarification,
         store_overview_request=store_overview_request,
-        recommendation_mode_requested=recommendation_mode_requested if workflow == "recommendation" else "similar_items",
         knowledge_query=knowledge_query if needs_knowledge else "",
         reason=reason,
         confidence=confidence,
@@ -436,6 +305,40 @@ def _with_trace_fields(
         llm_workflow=llm_route_decision.workflow if llm_route_decision else "",
         llm_execution_mode=llm_mode,
         confidence_gate_applied=confidence_gate_applied,
+    )
+
+
+def _confidence_gate_fallback_decision(
+    *,
+    caps: ChatRuntimeCapabilities,
+    channel: str | None,
+    llm_route_decision: WorkflowDecision,
+    llm_mode: str,
+    llm_reason: str,
+    llm_confidence: float,
+    decision_reason: str,
+) -> ExecutionDecision:
+    fallback = _fallback_workflow_decision(
+        reason=llm_reason or decision_reason,
+        confidence=llm_confidence,
+    )
+    decision = ExecutionDecision(
+        route_decision=fallback,
+        execution_mode="component",
+        reason=decision_reason,
+        feature_enabled=bool(caps.agentic_function_calling_enabled),
+        channel_allowed=is_agentic_channel_enabled(channel=channel, capabilities=caps),
+        tool_suitable=False,
+        selection_source="llm_fallback",
+    )
+    return _with_trace_fields(
+        decision=decision,
+        llm_route_decision=llm_route_decision,
+        llm_mode=llm_mode,
+        llm_reason=llm_reason or decision_reason,
+        llm_confidence=llm_confidence,
+        selection_source="llm_fallback",
+        confidence_gate_applied=True,
     )
 
 
@@ -626,41 +529,6 @@ async def decide_execution_mode_with_llm(
 
     llm_route_decision, llm_mode, llm_reason, llm_confidence = _coerce_llm_routing_payload(llm_payload)
 
-    promoted_route_decision = _promote_directional_fallback_route(
-        text=text,
-        route_reason=llm_reason,
-        llm_route_decision=llm_route_decision,
-        detail_has_filters=detail_has_filters,
-        detail_request=detail_request,
-        sku_tokens=sku_tokens,
-    )
-    if promoted_route_decision is not None:
-        decision = ExecutionDecision(
-            route_decision=promoted_route_decision,
-            execution_mode=llm_mode,
-            reason=llm_reason or "llm_selected_soft",
-            feature_enabled=bool(caps.agentic_function_calling_enabled),
-            channel_allowed=is_agentic_channel_enabled(channel=channel, capabilities=caps),
-            tool_suitable=is_agentic_tool_suitable(
-                user_text=text,
-                workflow=promoted_route_decision.workflow,
-                sku_token=str(sku_tokens[0]) if list(sku_tokens or []) else None,
-                needs_products=promoted_route_decision.needs_products,
-                needs_knowledge=promoted_route_decision.needs_knowledge,
-            ),
-            selection_source="llm_soft",
-            timeout_retry_used=timeout_retry_used,
-        )
-        return _with_trace_fields(
-            decision=decision,
-            llm_route_decision=llm_route_decision,
-            llm_mode=llm_mode,
-            llm_reason=llm_reason,
-            llm_confidence=llm_confidence,
-            selection_source="llm_soft",
-            confidence_gate_applied=True,
-        )
-
     if _should_soft_accept_llm_route(
         workflow=llm_route_decision.workflow,
         execution_mode=llm_mode,
@@ -695,49 +563,25 @@ async def decide_execution_mode_with_llm(
         )
 
     if llm_confidence < min_confidence:
-        fallback = _fallback_workflow_decision(
-            reason=llm_reason or "confidence_below_threshold",
-            confidence=llm_confidence,
-        )
-        return _with_trace_fields(
-            decision=ExecutionDecision(
-                route_decision=fallback,
-                execution_mode="component",
-                reason="confidence_below_threshold",
-                feature_enabled=bool(caps.agentic_function_calling_enabled),
-                channel_allowed=is_agentic_channel_enabled(channel=channel, capabilities=caps),
-                tool_suitable=False,
-                selection_source="llm_fallback",
-            ),
+        return _confidence_gate_fallback_decision(
+            caps=caps,
+            channel=channel,
             llm_route_decision=llm_route_decision,
             llm_mode=llm_mode,
-            llm_reason=llm_reason or "confidence_below_threshold",
+            llm_reason=llm_reason,
             llm_confidence=llm_confidence,
-            selection_source="llm_fallback",
-            confidence_gate_applied=True,
+            decision_reason="confidence_below_threshold",
         )
 
     if llm_mode == "agentic" and llm_confidence < agentic_min_confidence:
-        fallback = _fallback_workflow_decision(
-            reason=llm_reason or "agentic_confidence_below_threshold",
-            confidence=llm_confidence,
-        )
-        return _with_trace_fields(
-            decision=ExecutionDecision(
-                route_decision=fallback,
-                execution_mode="component",
-                reason="agentic_confidence_below_threshold",
-                feature_enabled=bool(caps.agentic_function_calling_enabled),
-                channel_allowed=is_agentic_channel_enabled(channel=channel, capabilities=caps),
-                tool_suitable=False,
-                selection_source="llm_fallback",
-            ),
+        return _confidence_gate_fallback_decision(
+            caps=caps,
+            channel=channel,
             llm_route_decision=llm_route_decision,
             llm_mode=llm_mode,
-            llm_reason=llm_reason or "agentic_confidence_below_threshold",
+            llm_reason=llm_reason,
             llm_confidence=llm_confidence,
-            selection_source="llm_fallback",
-            confidence_gate_applied=True,
+            decision_reason="agentic_confidence_below_threshold",
         )
 
     feature_enabled = bool(caps.agentic_function_calling_enabled)

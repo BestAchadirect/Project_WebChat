@@ -13,7 +13,7 @@ def test_extract_sku_tokens_dedupes_and_filters_noise() -> None:
     assert tokens == ["ABC-1", "SKU_XY-22"]
 
 
-def test_agentic_tool_suitability_requires_supported_workflow() -> None:
+def test_agentic_tool_suitability_allows_supported_read_only_requests() -> None:
     assert (
         routing_policy.is_agentic_tool_suitable(
             user_text="What is your shipping policy?",
@@ -22,7 +22,17 @@ def test_agentic_tool_suitability_requires_supported_workflow() -> None:
             needs_products=False,
             needs_knowledge=True,
         )
-        is False
+        is True
+    )
+    assert (
+        routing_policy.is_agentic_tool_suitable(
+            user_text="Show me titanium labrets",
+            workflow="catalog",
+            sku_token=None,
+            needs_products=True,
+            needs_knowledge=False,
+        )
+        is True
     )
     assert (
         routing_policy.is_agentic_tool_suitable(
@@ -33,6 +43,26 @@ def test_agentic_tool_suitability_requires_supported_workflow() -> None:
             needs_knowledge=False,
         )
         is True
+    )
+    assert (
+        routing_policy.is_agentic_tool_suitable(
+            user_text="hello there",
+            workflow="off_topic",
+            sku_token=None,
+            needs_products=False,
+            needs_knowledge=False,
+        )
+        is False
+    )
+    assert (
+        routing_policy.is_agentic_tool_suitable(
+            user_text="find something nice",
+            workflow="catalog",
+            sku_token=None,
+            needs_products=False,
+            needs_knowledge=False,
+        )
+        is False
     )
 
 
@@ -69,6 +99,80 @@ async def test_llm_routing_returns_catalog_workflow_when_valid(monkeypatch: pyte
     assert decision.selection_source == "llm"
     assert decision.llm_workflow == "catalog"
     assert decision.route_decision.knowledge_query == ""
+
+
+@pytest.mark.asyncio
+async def test_llm_routing_returns_off_topic_workflow_for_casual_greeting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        return {
+            "workflow": "off_topic",
+            "execution_mode": "component",
+            "needs_products": False,
+            "needs_knowledge": False,
+            "needs_clarification": False,
+            "store_overview_request": False,
+            "reason": "casual store greeting",
+            "confidence": 0.91,
+        }
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="Hi there",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "off_topic"
+    assert decision.route_decision.needs_products is False
+    assert decision.route_decision.needs_knowledge is False
+    assert decision.execution_mode == "component"
+    assert decision.selection_source == "llm"
+    assert decision.llm_workflow == "off_topic"
+
+
+@pytest.mark.asyncio
+async def test_llm_routing_keeps_casual_fallback_as_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(**kwargs):
+        return {
+            "workflow": "fallback",
+            "execution_mode": "component",
+            "needs_products": False,
+            "needs_knowledge": False,
+            "needs_clarification": True,
+            "store_overview_request": False,
+            "reason": "hi there",
+            "confidence": 0.61,
+        }
+
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
+    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    decision = await routing_policy.decide_execution_mode_with_llm(
+        text="Hi there",
+        channel="widget",
+        locale="en-US",
+        detail_has_filters=False,
+        detail_request=False,
+        sku_tokens=[],
+    )
+
+    assert decision.route_decision.workflow == "fallback"
+    assert decision.execution_mode == "component"
+    assert decision.selection_source == "llm_fallback"
+    assert decision.confidence_gate_applied is True
+    assert decision.route_decision.needs_clarification is True
+    assert decision.llm_workflow == "fallback"
 
 
 @pytest.mark.asyncio
@@ -181,45 +285,7 @@ async def test_llm_routing_soft_accepts_medium_confidence_knowledge_request(
 
 
 @pytest.mark.asyncio
-async def test_llm_routing_soft_accepts_medium_confidence_recommendation_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def fake_generate_chat_json(**kwargs):
-        return {
-            "workflow": "recommendation",
-            "execution_mode": "component",
-            "needs_products": True,
-            "needs_knowledge": False,
-            "needs_clarification": False,
-            "store_overview_request": False,
-            "recommendation_mode_requested": "complementary_items",
-            "reason": "recommend helix jewelry",
-            "confidence": 0.64,
-        }
-
-    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
-    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
-    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
-
-    decision = await routing_policy.decide_execution_mode_with_llm(
-        text="recommend helix jewelry",
-        channel="widget",
-        locale="en-US",
-        detail_has_filters=False,
-        detail_request=False,
-        sku_tokens=[],
-    )
-
-    assert decision.route_decision.workflow == "recommendation"
-    assert decision.route_decision.recommendation_mode_requested == "complementary_items"
-    assert decision.execution_mode == "component"
-    assert decision.selection_source == "llm_soft"
-    assert decision.confidence_gate_applied is True
-    assert decision.llm_workflow == "recommendation"
-
-
-@pytest.mark.asyncio
-async def test_llm_routing_promotes_directional_fallback_to_catalog(
+async def test_llm_routing_keeps_directional_fallback_as_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def fake_generate_chat_json(**kwargs):
@@ -247,11 +313,12 @@ async def test_llm_routing_promotes_directional_fallback_to_catalog(
         sku_tokens=[],
     )
 
-    assert decision.route_decision.workflow == "catalog"
+    assert decision.route_decision.workflow == "fallback"
     assert decision.execution_mode == "component"
-    assert decision.selection_source == "llm_soft"
+    assert decision.selection_source == "llm_fallback"
     assert decision.confidence_gate_applied is True
-    assert decision.route_decision.needs_clarification is False
+    assert decision.route_decision.needs_clarification is True
+    assert decision.reason == "confidence_below_threshold"
     assert decision.llm_workflow == "fallback"
 
 
@@ -469,8 +536,8 @@ async def test_llm_routing_timeout_retries_with_compact_prompt(monkeypatch: pyte
 
     assert calls["count"] == 2
     assert len(calls["system_prompts"][1]) < len(calls["system_prompts"][0])
-    assert "recommendation_mode_requested" in calls["system_prompts"][0]
-    assert "recommendation_mode_requested" in calls["system_prompts"][1]
+    assert "knowledge_query" in calls["system_prompts"][0]
+    assert "knowledge_query" in calls["system_prompts"][1]
     assert decision.route_decision.workflow == "knowledge"
     assert decision.execution_mode == "component"
     assert decision.selection_source == "llm_retry"
@@ -519,7 +586,7 @@ async def test_llm_routing_prefers_nlu_model_when_routing_model_is_unset(
 
 
 @pytest.mark.asyncio
-async def test_llm_routing_prompt_includes_company_and_recommendation_examples(
+async def test_llm_routing_prompt_includes_expected_schema_and_workflow_examples(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, str] = {}
@@ -552,7 +619,12 @@ async def test_llm_routing_prompt_includes_company_and_recommendation_examples(
 
     system_prompt = captured["system"]
     assert "Return ONLY strict JSON" in system_prompt
-    assert "recommendation_mode_requested" in system_prompt
+    assert "knowledge_query" in system_prompt
+    assert "off_topic" in system_prompt
+    assert "I want to talk to a sales person" in system_prompt
+    assert "How do I contact support?" in system_prompt
+    assert "support/contact requests" in system_prompt
+    assert "set needs_knowledge=true" in system_prompt
     assert "User:" not in system_prompt
 
 
@@ -624,37 +696,3 @@ async def test_llm_routing_keeps_payment_knowledge_query_for_mixed_request(
     assert decision.route_decision.workflow == "catalog"
     assert decision.route_decision.needs_knowledge is True
     assert decision.route_decision.knowledge_query == "what payment methods do you accept"
-
-
-@pytest.mark.asyncio
-async def test_llm_routing_keeps_recommendation_mode_for_complementary_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def fake_generate_chat_json(**kwargs):
-        return {
-            "workflow": "recommendation",
-            "execution_mode": "component",
-            "needs_products": True,
-            "needs_knowledge": False,
-            "needs_clarification": False,
-            "store_overview_request": False,
-            "recommendation_mode_requested": "complementary_items",
-            "reason": "user asks what goes with a labret",
-            "confidence": 0.94,
-        }
-
-    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_ENABLED", True)
-    monkeypatch.setattr(settings, "CHAT_LLM_ROUTING_MIN_CONFIDENCE", 0.7)
-    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
-
-    decision = await routing_policy.decide_execution_mode_with_llm(
-        text="What goes with this labret?",
-        channel="widget",
-        locale="en-US",
-        detail_has_filters=False,
-        detail_request=False,
-        sku_tokens=[],
-    )
-
-    assert decision.route_decision.workflow == "recommendation"
-    assert decision.route_decision.recommendation_mode_requested == "complementary_items"

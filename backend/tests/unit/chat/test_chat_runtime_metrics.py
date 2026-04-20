@@ -81,13 +81,12 @@ def test_build_latency_payload_counts_only_textual_llm_calls() -> None:
 
 def test_routing_snapshot_captures_decision_details() -> None:
     route_decision = SimpleNamespace(
-        workflow="recommendation",
+        workflow="catalog",
         confidence=0.91,
         needs_products=True,
         needs_knowledge=False,
         needs_clarification=False,
         store_overview_request=False,
-        recommendation_mode_requested="complementary_items",
     )
     execution_decision = SimpleNamespace(
         execution_mode="component",
@@ -95,7 +94,7 @@ def test_routing_snapshot_captures_decision_details() -> None:
         reason="selected",
         llm_reason="mixed request",
         llm_confidence=0.91,
-        llm_workflow="recommendation",
+        llm_workflow="catalog",
         llm_execution_mode="component",
         confidence_gate_applied=False,
         timeout_retry_used=True,
@@ -105,9 +104,8 @@ def test_routing_snapshot_captures_decision_details() -> None:
         route_decision=route_decision,
         execution_decision=execution_decision,
     )
-    assert snapshot["workflow"] == "recommendation"
+    assert snapshot["workflow"] == "catalog"
     assert snapshot["selection_source"] == "llm_retry"
-    assert snapshot["recommendation_mode_requested"] == "complementary_items"
     assert snapshot["timeout_retry_used"] is True
 
 
@@ -119,7 +117,6 @@ def test_routing_snapshot_captures_agentic_guardrail_block() -> None:
         needs_knowledge=False,
         needs_clarification=False,
         store_overview_request=False,
-        recommendation_mode_requested="similar_items",
     )
     execution_decision = SimpleNamespace(
         execution_mode="component",
@@ -151,7 +148,6 @@ def test_routing_snapshot_captures_timeout_guardrail_catalog() -> None:
         needs_knowledge=False,
         needs_clarification=False,
         store_overview_request=False,
-        recommendation_mode_requested="similar_items",
     )
     execution_decision = SimpleNamespace(
         execution_mode="component",

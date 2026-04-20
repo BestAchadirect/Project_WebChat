@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from uuid import uuid4
+from types import SimpleNamespace
+
+import pytest
 
 from app.services.chat.parsing.detail_query_parser import DetailQueryParser
 from app.services.chat.parsing.parser_rule_types import build_rule_set
@@ -104,10 +107,42 @@ def _db_alias_map() -> dict[str, dict[str, str]]:
     }
 
 
-def test_detail_query_parser_extracts_fields_and_filters() -> None:
-    parsed = DetailQueryParser.parse(
+def _fake_detail_inference(
+    *,
+    requested_fields: list[str] | None = None,
+    attribute_filters: dict[str, str] | None = None,
+    wants_image: bool = False,
+    semantic_hints: list[str] | None = None,
+    clarify_focus: str = "",
+    confidence: float = 0.91,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        requested_fields=list(requested_fields or []),
+        attribute_filters=dict(attribute_filters or {}),
+        wants_image=wants_image,
+        semantic_hints=list(semantic_hints or []),
+        clarify_focus=clarify_focus,
+        confidence=confidence,
+    )
+
+
+@pytest.mark.asyncio
+async def test_detail_query_parser_extracts_fields_and_filters(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_infer_detail_query(**kwargs):
+        return _fake_detail_inference(
+            requested_fields=["price", "stock", "image", "attributes"],
+            attribute_filters={"jewelry_type": "barbell", "color": "black", "gauge": "25mm"},
+            wants_image=True,
+        )
+
+    monkeypatch.setattr(
+        "app.services.chat.parsing.detail_query_parser.infer_detail_query",
+        fake_infer_detail_query,
+    )
+
+    parsed = await DetailQueryParser.parse_async(
         user_text="price and stock for barbell black 25mm gauge with image",
-        nlu_data={},
+        nlu_data={"workflow": "catalog"},
         alias_map=_db_alias_map(),
         parser_rules=_db_rules(),
     )
@@ -120,10 +155,22 @@ def test_detail_query_parser_extracts_fields_and_filters() -> None:
     assert parsed.attribute_filters.get("gauge") == "25mm"
 
 
-def test_detail_query_parser_supports_explicit_opal_color_and_material_synonyms() -> None:
-    parsed = DetailQueryParser.parse(
+@pytest.mark.asyncio
+async def test_detail_query_parser_supports_explicit_opal_color_and_material_synonyms(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_infer_detail_query(**kwargs):
+        return _fake_detail_inference(
+            requested_fields=["attributes"],
+            attribute_filters={"opal_color": "blue", "material": "titanium g23", "jewelry_type": "barbell"},
+        )
+
+    monkeypatch.setattr(
+        "app.services.chat.parsing.detail_query_parser.infer_detail_query",
+        fake_infer_detail_query,
+    )
+
+    parsed = await DetailQueryParser.parse_async(
         user_text="Need blue opal color with implant grade titanium barbell",
-        nlu_data={},
+        nlu_data={"workflow": "catalog"},
         alias_map=_db_alias_map(),
         parser_rules=_db_rules(),
     )
@@ -132,18 +179,25 @@ def test_detail_query_parser_supports_explicit_opal_color_and_material_synonyms(
     assert parsed.attribute_filters.get("jewelry_type") == "barbell"
 
 
-def test_detail_query_parser_does_not_infer_plain_opal_without_explicit_pattern() -> None:
-    rules = build_rule_set(
-        requested_field_patterns=_db_rules().requested_field_patterns,
-        value_extract_patterns=_db_rules().value_extract_patterns,
-        detection_attribute_order=["jewelry_type", "material", "threading", "finish", "design"],
-        allowed_attribute_filters=["stone", "opal_color", "finish", "material"],
+@pytest.mark.asyncio
+async def test_detail_query_parser_does_not_infer_plain_opal_without_explicit_pattern(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_infer_detail_query(**kwargs):
+        return _fake_detail_inference(
+            requested_fields=["attributes"],
+            attribute_filters={},
+            semantic_hints=[],
+        )
+
+    monkeypatch.setattr(
+        "app.services.chat.parsing.detail_query_parser.infer_detail_query",
+        fake_infer_detail_query,
     )
-    parsed = DetailQueryParser.parse(
+
+    parsed = await DetailQueryParser.parse_async(
         user_text="Do you have sterilization with opal?",
-        nlu_data={},
+        nlu_data={"workflow": "catalog"},
         alias_map={key: value for key, value in _db_alias_map().items() if key not in {"color", "stone", "finish"}},
-        parser_rules=rules,
+        parser_rules=_db_rules(),
     )
     assert parsed.attribute_filters.get("finish") is None
     assert parsed.attribute_filters.get("stone") is None
@@ -151,32 +205,48 @@ def test_detail_query_parser_does_not_infer_plain_opal_without_explicit_pattern(
     assert parsed.semantic_hints == []
 
 
-def test_detail_query_parser_does_not_force_sterilization_into_finish_without_exact_wording() -> None:
-    alias_map = _db_alias_map()
-    alias_map.pop("finish", None)
-    alias_map.pop("color", None)
-    alias_map.pop("stone", None)
-    rules = build_rule_set(
-        requested_field_patterns=_db_rules().requested_field_patterns,
-        value_extract_patterns=_db_rules().value_extract_patterns,
-        detection_attribute_order=["jewelry_type", "material", "threading", "finish", "design"],
-        allowed_attribute_filters=["stone", "color", "opal_color", "finish", "material"],
+@pytest.mark.asyncio
+async def test_detail_query_parser_does_not_force_sterilization_into_finish_without_exact_wording(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_infer_detail_query(**kwargs):
+        return _fake_detail_inference(
+            requested_fields=["attributes"],
+            attribute_filters={},
+            semantic_hints=[],
+        )
+
+    monkeypatch.setattr(
+        "app.services.chat.parsing.detail_query_parser.infer_detail_query",
+        fake_infer_detail_query,
     )
-    parsed = DetailQueryParser.parse(
+
+    parsed = await DetailQueryParser.parse_async(
         user_text="Do you have sterilization with opal?",
-        nlu_data={},
-        alias_map=alias_map,
-        parser_rules=rules,
+        nlu_data={"workflow": "catalog"},
+        alias_map=_db_alias_map(),
+        parser_rules=_db_rules(),
     )
 
     assert parsed.attribute_filters.get("finish") is None
     assert all(parsed.attribute_filters.get(key) is None for key in ("stone", "color", "opal_color"))
 
 
-def test_detail_query_parser_filter_only_query_is_not_detail_mode() -> None:
-    parsed = DetailQueryParser.parse(
+@pytest.mark.asyncio
+async def test_detail_query_parser_filter_only_query_is_not_detail_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_infer_detail_query(**kwargs):
+        return _fake_detail_inference(
+            requested_fields=[],
+            attribute_filters={"jewelry_type": "labret", "gauge": "14g", "material": "steel"},
+            wants_image=False,
+        )
+
+    monkeypatch.setattr(
+        "app.services.chat.parsing.detail_query_parser.infer_detail_query",
+        fake_infer_detail_query,
+    )
+
+    parsed = await DetailQueryParser.parse_async(
         user_text="Give me a Labret with 14g with steel",
-        nlu_data={},
+        nlu_data={"workflow": "catalog"},
         alias_map=_db_alias_map(),
         parser_rules=_db_rules(),
     )
@@ -186,10 +256,29 @@ def test_detail_query_parser_filter_only_query_is_not_detail_mode() -> None:
     assert parsed.attribute_filters.get("material") == "steel"
 
 
-def test_detail_query_parser_extracts_extended_attribute_filters() -> None:
-    parsed = DetailQueryParser.parse(
+@pytest.mark.asyncio
+async def test_detail_query_parser_extracts_extended_attribute_filters(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_infer_detail_query(**kwargs):
+        return _fake_detail_inference(
+            requested_fields=["attributes"],
+            attribute_filters={
+                "finish": "sterilized",
+                "design": "heart",
+                "jewelry_type": "ring",
+                "outer_diameter": "8mm",
+                "ring_size": "7",
+                "opal_color": "blue",
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.services.chat.parsing.detail_query_parser.infer_detail_query",
+        fake_infer_detail_query,
+    )
+
+    parsed = await DetailQueryParser.parse_async(
         user_text="Show sterilized heart ring with 8mm outer diameter and ring size 7 in blue opal color",
-        nlu_data={},
+        nlu_data={"workflow": "catalog"},
         alias_map=_db_alias_map(),
         parser_rules=_db_rules(),
     )
@@ -200,6 +289,70 @@ def test_detail_query_parser_extracts_extended_attribute_filters() -> None:
     assert parsed.attribute_filters.get("outer_diameter") == "8mm"
     assert parsed.attribute_filters.get("ring_size") == "7"
     assert parsed.attribute_filters.get("opal_color") == "blue"
+
+
+@pytest.mark.asyncio
+async def test_detail_query_parser_async_uses_llm_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_infer_detail_query(**kwargs):
+        return SimpleNamespace(
+            requested_fields=["price", "image", "bogus"],
+            attribute_filters={"color": "  Opal ", "gauge": "25 gauge"},
+            wants_image=True,
+            semantic_hints=["heart"],
+            clarify_focus="",
+            confidence=0.91,
+        )
+
+    monkeypatch.setattr(
+        "app.services.chat.parsing.detail_query_parser.infer_detail_query",
+        fake_infer_detail_query,
+    )
+
+    parsed = await DetailQueryParser.parse_async(
+        user_text="Show me details",
+        nlu_data={"workflow": "catalog"},
+        alias_map=_db_alias_map(),
+        parser_rules=_db_rules(),
+    )
+
+    assert parsed.requested_fields == ["price", "image"]
+    assert parsed.attribute_filters.get("color") == "opal"
+    assert parsed.attribute_filters.get("gauge") == "25g"
+    assert parsed.wants_image is True
+    assert parsed.semantic_hints == ["heart"]
+    assert parsed.is_detail_request is True
+
+
+@pytest.mark.asyncio
+async def test_detail_query_parser_async_clarifies_low_confidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_infer_detail_query(**kwargs):
+        return SimpleNamespace(
+            requested_fields=["price"],
+            attribute_filters={"color": "opal"},
+            wants_image=True,
+            semantic_hints=["sterilization"],
+            clarify_focus="",
+            confidence=0.1,
+        )
+
+    monkeypatch.setattr(
+        "app.services.chat.parsing.detail_query_parser.infer_detail_query",
+        fake_infer_detail_query,
+    )
+
+    parsed = await DetailQueryParser.parse_async(
+        user_text="I want something",
+        nlu_data={"workflow": "catalog"},
+        alias_map=_db_alias_map(),
+        parser_rules=_db_rules(),
+    )
+
+    assert parsed.requested_fields == []
+    assert parsed.attribute_filters == {}
+    assert parsed.wants_image is False
+    assert parsed.semantic_hints == []
+    assert parsed.clarify_focus == "detail_request_needs_specific_product"
+    assert parsed.is_detail_request is False
 
 
 def test_detail_resolver_filters_and_limits_top_matches() -> None:

@@ -3,32 +3,50 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import app.services.chat.observability.regression_eval as regression_eval
+from app.services.chat.parsing.parser_rule_types import ParserRuleSet
 
 
 SUPPORTED_CONTRACT_KINDS = {"response_contract"}
 
 
-def default_product_dataset_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "tests" / "data" / "product_accuracy_cases.json"
+def _regression_data_dir() -> Path:
+    return Path(__file__).resolve().parents[4] / "tests" / "regression" / "data"
 
 
-def default_faq_dataset_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "tests" / "data" / "faq_accuracy_cases.json"
+def default_routing_dataset_path() -> Path:
+    return _regression_data_dir() / "chat_routing_cases.json"
+
+
+def default_parser_dataset_path() -> Path:
+    return _regression_data_dir() / "chat_parser_cases.json"
+
+
+def default_response_dataset_path() -> Path:
+    return _regression_data_dir() / "chat_response_contract_cases.json"
 
 
 def default_dataset_paths(*, suite: str = "all") -> List[Path]:
-    normalized = str(suite or "all").strip().lower()
-    if normalized == "product":
-        return [default_product_dataset_path()]
-    if normalized == "faq":
-        return [default_faq_dataset_path()]
-    return [default_product_dataset_path(), default_faq_dataset_path()]
+    suite_norm = str(suite or "all").strip().lower()
+    suite_map = {
+        "routing": [default_routing_dataset_path()],
+        "parser": [default_parser_dataset_path()],
+        "response": [default_response_dataset_path()],
+        "all": [
+            default_routing_dataset_path(),
+            default_parser_dataset_path(),
+            default_response_dataset_path(),
+        ],
+    }
+    if suite_norm not in suite_map:
+        raise ValueError(f"unsupported accuracy suite: {suite}")
+    return list(suite_map[suite_norm])
 
 
 def load_accuracy_cases(paths: Optional[Sequence[str | Path]] = None, *, suite: str = "all") -> List[Dict[str, Any]]:
     dataset_paths = [Path(item) for item in list(paths or [])] or default_dataset_paths(suite=suite)
     cases: List[Dict[str, Any]] = []
     seen_ids: set[str] = set()
+    suite_norm = str(suite or "all").strip().lower()
     for dataset_path in dataset_paths:
         payload = json.loads(dataset_path.read_text(encoding="utf-8"))
         if not isinstance(payload, list):
@@ -40,8 +58,11 @@ def load_accuracy_cases(paths: Optional[Sequence[str | Path]] = None, *, suite: 
                 raise ValueError(f"accuracy case missing id: {dataset_path}")
             if case_id in seen_ids:
                 raise ValueError(f"duplicate accuracy case id: {case_id}")
+            case_suite = str(case.get("suite") or "").strip().lower() or _infer_suite_from_path(dataset_path)
+            if suite_norm != "all" and case_suite != suite_norm:
+                continue
             seen_ids.add(case_id)
-            case.setdefault("suite", _infer_suite_from_path(dataset_path))
+            case.setdefault("suite", case_suite)
             case.setdefault("dataset_path", str(dataset_path))
             cases.append(case)
     return cases
@@ -67,6 +88,8 @@ def evaluate_case(
     case: Dict[str, Any],
     *,
     actual_results: Optional[Dict[str, Dict[str, Any]]] = None,
+    parser_rules: ParserRuleSet | None = None,
+    alias_map: Dict[str, Dict[str, str]] | None = None,
 ) -> Dict[str, Any]:
     kind = str(case.get("kind") or "").strip().lower()
     case_id = str(case.get("id") or "").strip()
@@ -75,7 +98,11 @@ def evaluate_case(
     if kind in SUPPORTED_CONTRACT_KINDS:
         result = _evaluate_response_contract(case=case, actual_results=actual_results)
     else:
-        result = regression_eval.evaluate_case(case)
+        result = regression_eval.evaluate_case(
+            case,
+            parser_rules=parser_rules,
+            alias_map=alias_map,
+        )
     result["id"] = case_id
     result["suite"] = suite
     result["bucket"] = bucket
@@ -87,8 +114,18 @@ def run_accuracy_suite(
     cases: Sequence[Dict[str, Any]],
     *,
     actual_results: Optional[Dict[str, Dict[str, Any]]] = None,
+    parser_rules: ParserRuleSet | None = None,
+    alias_map: Dict[str, Dict[str, str]] | None = None,
 ) -> Dict[str, Any]:
-    results = [evaluate_case(case, actual_results=actual_results) for case in list(cases or [])]
+    results = [
+        evaluate_case(
+            case,
+            actual_results=actual_results,
+            parser_rules=parser_rules,
+            alias_map=alias_map,
+        )
+        for case in list(cases or [])
+    ]
     failures = [result for result in results if not bool(result.get("passed", False))]
     by_kind = _count_by(results, "kind")
     by_suite = _count_by(results, "suite")
@@ -100,6 +137,7 @@ def run_accuracy_suite(
         "by_kind": by_kind,
         "by_suite": by_suite,
         "by_bucket": by_bucket,
+        "token_usage_estimate": _summarize_token_usage(results),
         "results": results,
         "failures": failures,
     }
@@ -142,6 +180,12 @@ def _evaluate_response_contract(
             if str(item.get("sku") or "").strip()
         ],
         "debug": dict(actual_response.get("debug") or {}),
+        "token_usage_estimate": {
+            "total_prompt_tokens": 0,
+            "total_completion_tokens": 0,
+            "total_tokens": 0,
+            "by_call": [],
+        },
     }
     mismatches = _compare_response_contract(actual=actual, expected=expected)
     return {
@@ -266,13 +310,6 @@ def _product_carousel_from_components(components: List[Dict[str, Any]]) -> List[
             product = data.get("product")
             if isinstance(product, dict):
                 return [dict(product)]
-    for component in components:
-        component_type = _component_type_value(component)
-        data = dict(component.get("data") or {})
-        if component_type in {"recommendations"}:
-            items = [dict(item or {}) for item in list(data.get("items") or []) if isinstance(item, dict)]
-            if items:
-                return items
     return []
 
 
@@ -309,8 +346,26 @@ def _count_by(results: Iterable[Dict[str, Any]], field_name: str) -> Dict[str, i
 
 def _infer_suite_from_path(path: Path) -> str:
     name = path.stem.lower()
-    if "faq" in name:
-        return "faq"
-    if "product" in name:
-        return "product"
+    if "routing" in name:
+        return "routing"
+    if "parser" in name:
+        return "parser"
+    if "response" in name:
+        return "response"
     return "unknown"
+
+
+def _summarize_token_usage(results: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    summary = {
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "total_tokens": 0,
+        "by_call": [],
+    }
+    for result in list(results or []):
+        token_usage = dict((result or {}).get("actual", {}).get("token_usage_estimate") or {})
+        summary["total_prompt_tokens"] += int(token_usage.get("total_prompt_tokens", 0) or 0)
+        summary["total_completion_tokens"] += int(token_usage.get("total_completion_tokens", 0) or 0)
+        summary["total_tokens"] += int(token_usage.get("total_tokens", 0) or 0)
+        summary["by_call"].extend(list(token_usage.get("by_call") or []))
+    return summary

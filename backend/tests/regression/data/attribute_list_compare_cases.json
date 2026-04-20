@@ -1,0 +1,22 @@
+[
+  {
+    "id": "attribute_list_gauge_general",
+    "query": "What gauges do you have?",
+    "target": "gauge",
+    "attribute_filters": {}
+  },
+  {
+    "id": "attribute_list_gauge_titanium",
+    "query": "How many gauge do you have for titanium jewelry?",
+    "target": "gauge",
+    "attribute_filters": {
+      "material": "titanium"
+    }
+  },
+  {
+    "id": "attribute_list_material_general",
+    "query": "What materials do you have?",
+    "target": "material",
+    "attribute_filters": {}
+  }
+]

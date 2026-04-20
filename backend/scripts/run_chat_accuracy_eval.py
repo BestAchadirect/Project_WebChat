@@ -10,11 +10,11 @@ from app.services.chat.observability import accuracy_eval
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run product and FAQ chat accuracy evaluation.")
+    parser = argparse.ArgumentParser(description="Run chat routing, parser, and response accuracy evaluation.")
     parser.add_argument(
         "--suite",
         type=str,
-        choices=("all", "product", "faq"),
+        choices=("all", "routing", "parser", "response"),
         default="all",
         help="Built-in suite to run when --dataset is not provided.",
     )

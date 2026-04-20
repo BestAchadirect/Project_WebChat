@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
@@ -9,6 +10,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("pydantic_settings")
 
+from app.core.config import settings
 from app.schemas.chat import ChatRequest, KnowledgeSource, ProductCard
 from app.services.ai.llm_service import llm_service
 from app.services.chat.runtime import alias_cache
@@ -91,7 +93,7 @@ def _workflow_decision(
     return routing_policy.WorkflowDecision(
         workflow=workflow,
         source=source,
-        needs_products=workflow in {"catalog", "recommendation"},
+        needs_products=workflow == "catalog",
         needs_knowledge=workflow == "knowledge",
         needs_clarification=workflow == "fallback",
         store_overview_request=store_overview_request,
@@ -142,7 +144,7 @@ async def test_component_pipeline_structured_no_match_returns_clarify_without_ve
         redis_cache=_RedisStub(),
     )
 
-    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=[],
             attribute_filters={"material": "titanium"},
@@ -151,7 +153,7 @@ async def test_component_pipeline_structured_no_match_returns_clarify_without_ve
         )
 
     monkeypatch.setattr(
-        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
         fake_parse,
     )
     monkeypatch.setattr(llm_service, "generate_embedding", lambda text: [0.1, 0.2, 0.3])
@@ -197,7 +199,7 @@ async def test_component_pipeline_design_discovery_uses_generic_structured_clari
         redis_cache=_RedisStub(),
     )
 
-    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=[],
             attribute_filters={},
@@ -209,7 +211,7 @@ async def test_component_pipeline_design_discovery_uses_generic_structured_clari
         return [0.1, 0.2, 0.3]
 
     monkeypatch.setattr(
-        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
         fake_parse,
     )
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
@@ -232,6 +234,41 @@ async def test_component_pipeline_design_discovery_uses_generic_structured_clari
     assert result.debug.get("semantic_first_used") is True
     assert result.debug.get("clarify_mode") == "recoverable_product"
     assert result.debug.get("clarify_best_effort_help") is True
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_fake_nipple_triggers_suitability_clarify(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CatalogStub:
+        async def structured_count(self, **kwargs):
+            raise AssertionError("structured_count should not run when suitability gate triggers")
+
+        async def vector_search(self, **kwargs):
+            raise AssertionError("vector_search should not run when suitability gate triggers")
+
+        async def structured_search(self, **kwargs):
+            raise AssertionError("structured_search should not run when suitability gate triggers")
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    monkeypatch.setattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_ENABLED", False, raising=False)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="fake nipple", locale="en-US"),
+        conversation_id=78,
+        run_id="run-fake-nipple",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    assert any(component.type.value == "clarify" for component in result.response.components)
+    assert result.debug.get("clarify_reason") == "structured_no_match"
+    assert result.response.routing.needs_clarification is True
 
 
 @pytest.mark.asyncio
@@ -269,7 +306,7 @@ async def test_component_pipeline_discovery_query_returns_semantic_suggestion(
     async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
-    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=[],
             attribute_filters={},
@@ -282,7 +319,7 @@ async def test_component_pipeline_discovery_query_returns_semantic_suggestion(
 
     pipeline._field_resolver.resolve = fake_resolve  # type: ignore[method-assign]
     monkeypatch.setattr(
-        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
         fake_parse,
     )
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
@@ -337,7 +374,7 @@ async def test_component_pipeline_broad_discovery_relaxes_hard_filter_miss(
     async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
-    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=[],
             attribute_filters={"gauge": "14g"},
@@ -349,7 +386,7 @@ async def test_component_pipeline_broad_discovery_relaxes_hard_filter_miss(
         return [0.1, 0.2, 0.3]
 
     monkeypatch.setattr(
-        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
         fake_parse,
     )
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
@@ -396,7 +433,7 @@ async def test_component_pipeline_precision_sku_request_stays_strict(
         redis_cache=_RedisStub(),
     )
 
-    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=["price"],
             attribute_filters={},
@@ -408,7 +445,7 @@ async def test_component_pipeline_precision_sku_request_stays_strict(
         return [0.1, 0.2, 0.3]
 
     monkeypatch.setattr(
-        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
         fake_parse,
     )
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
@@ -477,7 +514,7 @@ async def test_component_pipeline_product_browse_reply_is_deterministic_without_
     async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
-    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=[],
             attribute_filters={"jewelry_type": "labret", "gauge": "14g", "material": "steel"},
@@ -487,14 +524,18 @@ async def test_component_pipeline_product_browse_reply_is_deterministic_without_
 
     pipeline._field_resolver.resolve = fake_resolve  # type: ignore[method-assign]
     monkeypatch.setattr(
-        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
         fake_parse,
     )
 
     async def fake_generate_embedding(text: str):
         return [0.1, 0.2, 0.3]
 
+    async def fake_generate_chat_json(*, messages, **kwargs):
+        return {"reply": "Steel material labrets are available in a range of styles."}
+
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
 
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="Give me a Labret with 14g with steel", locale="en-US"),
@@ -504,7 +545,7 @@ async def test_component_pipeline_product_browse_reply_is_deterministic_without_
     )
 
     assert result.response.routing.workflow == "catalog"
-    assert result.llm_calls == 0
+    assert result.llm_calls == 1
     assert result.debug.get("component_source") == "vector"
     assert result.debug.get("match_tier") == "semantic_suggestion"
     assert "steel material" in result.response.reply_text.lower()
@@ -548,12 +589,12 @@ async def test_component_pipeline_semantic_hint_no_match_returns_focused_clarify
         redis_cache=_RedisStub(),
     )
 
-    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=[],
             attribute_filters={},
             semantic_hints=["sterilization"],
-            clarify_focus="sterilization_meaning",
+            clarify_focus="condition",
             wants_image=False,
             is_detail_request=False,
         )
@@ -562,7 +603,7 @@ async def test_component_pipeline_semantic_hint_no_match_returns_focused_clarify
         return [0.1, 0.2, 0.3]
 
     monkeypatch.setattr(
-        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
         fake_parse,
     )
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
@@ -580,7 +621,7 @@ async def test_component_pipeline_semantic_hint_no_match_returns_focused_clarify
     assert result.debug.get("clarify_reason") == "semantic_concept_unclear"
     assert result.debug.get("semantic_guardrail_reason") == "semantic_hint_clarify"
     assert result.debug.get("semantic_hint_clarify_used") is True
-    assert "pre-sterilized jewelry" in result.response.reply_text.lower()
+    assert result.response.reply_text.lower().startswith("what condition")
     assert result.debug.get("clarify_mode") == "strict_ambiguity"
     assert result.debug.get("clarify_best_effort_help") is False
 
@@ -640,12 +681,12 @@ async def test_component_pipeline_semantic_hint_no_match_returns_clarify(
     async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
         return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
-    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=[],
             attribute_filters={},
             semantic_hints=["sterilization"],
-            clarify_focus="sterilization_meaning",
+            clarify_focus="condition",
             wants_image=False,
             is_detail_request=False,
         )
@@ -655,7 +696,7 @@ async def test_component_pipeline_semantic_hint_no_match_returns_clarify(
 
     pipeline._field_resolver.resolve = fake_resolve  # type: ignore[method-assign]
     monkeypatch.setattr(
-        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
         fake_parse,
     )
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
@@ -699,18 +740,18 @@ async def test_component_pipeline_sterilization_with_opal_returns_clarify(
         redis_cache=_RedisStub(),
     )
 
-    def fake_parse(*, user_text: str, nlu_data, **kwargs):
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
         return DetailQuery(
             requested_fields=[],
             attribute_filters={},
             semantic_hints=[],
-            clarify_focus="sterilization_meaning",
+            clarify_focus="condition",
             wants_image=False,
             is_detail_request=False,
         )
 
     monkeypatch.setattr(
-        "app.services.chat.components.pipeline.DetailQueryParser.parse",
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
         fake_parse,
     )
 
@@ -757,7 +798,7 @@ async def test_component_pipeline_high_risk_knowledge_error_returns_clarify(
     assert result.debug.get("component_knowledge_fail_soft") is True
     assert result.debug.get("clarify_reason") == "knowledge_unavailable"
     follow_ups = [item.lower() for item in component_contract.follow_up_questions_from_response(result.response)]
-    assert "what is your shipping policy?" in follow_ups
+    assert follow_ups == []
     assert result.debug.get("clarify_mode") == "strict_knowledge"
     assert result.debug.get("clarify_best_effort_help") is True
 
@@ -807,8 +848,7 @@ async def test_component_pipeline_high_risk_knowledge_with_weak_sources_returns_
     assert result.debug.get("knowledge_clarify_focus") == "contact"
     assert "email" in result.response.reply_text.lower() or "phone" in result.response.reply_text.lower()
     follow_ups = [item.lower() for item in component_contract.follow_up_questions_from_response(result.response)]
-    assert any("sales email" in item for item in follow_ups)
-    assert any("phone number" in item for item in follow_ups)
+    assert follow_ups == []
     assert result.debug.get("clarify_mode") == "strict_knowledge"
     assert result.debug.get("clarify_best_effort_help") is True
 
@@ -863,13 +903,24 @@ async def test_component_pipeline_store_overview_knowledge_passes_retrieval_prof
 
 
 @pytest.mark.asyncio
-async def test_component_pipeline_off_topic_uses_tone_composed_reply_without_retrieval() -> None:
+async def test_component_pipeline_off_topic_uses_terminal_llm_reply_without_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pipeline = ComponentPipeline(
         db=object(),
         catalog_search=SimpleNamespace(),
         knowledge_retrieval=_KnowledgeStub(),
         redis_cache=_RedisStub(),
     )
+
+    captured: dict[str, object] = {}
+
+    async def fake_generate_chat_json(*, messages, usage_kind=None, **kwargs):
+        captured["usage_kind"] = usage_kind
+        captured["workflow"] = json.loads(str(messages[1].get("content") or "{}")).get("workflow")
+        return {"reply": "I can't help with coding here, but I can help with body jewelry products and store policies."}
+
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
 
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="Can you write Python code for me?", locale="en-US"),
@@ -879,25 +930,143 @@ async def test_component_pipeline_off_topic_uses_tone_composed_reply_without_ret
     )
 
     reply = str(result.response.reply_text or "")
-    intro_candidates = [
-        "I can only help with this store's body jewelry shopping and support.",
-        "I'm focused on body jewelry products, recommendations, and store support here.",
-        "I can help with body jewelry products, stock, and store policies in this chat.",
-    ]
-    redirect_candidates = [
-        "If you want, tell me what jewelry type or material you're looking for.",
-        "If you want, ask me about products, stock, or store policies.",
-        "If you want, share your preferred style and I can suggest products.",
+    assert result.response.routing.workflow == "off_topic"
+    assert result.debug.get("component_source") == "error"
+    assert result.debug.get("terminal_reply_source") == "llm"
+    assert result.embedding_calls == 0
+    assert result.llm_calls == 2
+    assert "I can't help with coding here, but I can help with body jewelry products and store policies." in reply
+    assert captured["usage_kind"] == "chat_component_off_topic_copy"
+    assert captured["workflow"] == "off_topic"
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_off_topic_uses_terminal_llm_reply_without_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    captured: dict[str, object] = {}
+
+    async def fake_generate_chat_json(*, messages, usage_kind=None, **kwargs):
+        payload = json.loads(str(messages[1].get("content") or "{}"))
+        captured["usage_kind"] = usage_kind
+        captured["workflow"] = payload.get("workflow")
+        return {"reply": "Hi, I can help with body jewelry products, materials, sizes, stock, pricing, and store info."}
+
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Hi there", locale="en-US"),
+        conversation_id=77,
+        run_id="run-off-topic",
+        route_decision_override=_workflow_decision("off_topic"),
+    )
+
+    reply = str(result.response.reply_text or "")
+    scope_candidates = [
+        "body jewelry",
+        "materials",
+        "sizes",
+        "stock",
+        "pricing",
+        "store info",
+        "Achadirect support",
     ]
 
     assert result.response.routing.workflow == "off_topic"
     assert result.debug.get("component_source") == "error"
+    assert result.debug.get("terminal_reply_source") == "llm"
     assert result.embedding_calls == 0
-    assert result.llm_calls == 0
-    assert any(candidate in reply for candidate in intro_candidates)
-    assert any(candidate in reply for candidate in redirect_candidates)
-    assert str(result.debug.get("tone_key") or "").startswith("off_topic:")
-    assert result.debug.get("tone_style") in {"casual", "neutral", "direct"}
+    assert result.llm_calls == 2
+    assert any(candidate in reply.lower() for candidate in scope_candidates)
+    assert captured["usage_kind"] == "chat_component_off_topic_copy"
+    assert captured["workflow"] == "off_topic"
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_off_topic_uses_terminal_llm_with_requested_locale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    captured = {"called": 0, "locale": ""}
+
+    async def fake_generate_chat_json(*, messages, **kwargs):
+        payload = json.loads(str(messages[1].get("content") or "{}"))
+        captured["called"] += 1
+        captured["locale"] = str(payload.get("locale") or "")
+        thai = f"{chr(0x0E04)}{chr(0x0E48)}{chr(0x0E30)}"
+        mojibake = bytes([0xE0, 0xB8, 0x84, 0xE0, 0xB9, 0x88, 0xE0, 0xB8, 0xB0]).decode("cp1252")
+        return {"reply": f"Sawasdee ka {thai} {mojibake}, I can help with products and store info."}
+
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Hi there", locale="th-TH"),
+        conversation_id=77,
+        run_id="run-off-topic-th",
+        route_decision_override=_workflow_decision("off_topic"),
+    )
+
+    reply = str(result.response.reply_text or "")
+    assert result.response.routing.workflow == "off_topic"
+    assert result.debug.get("component_source") == "error"
+    assert result.debug.get("terminal_reply_source") == "llm"
+    assert result.embedding_calls == 0
+    assert result.llm_calls == 2
+    assert captured["called"] == 2
+    assert captured["locale"] == "th-TH"
+    assert "ค่ะ" in reply
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_off_topic_uses_terminal_llm_for_any_locale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    captured = {"called": 0, "locale": ""}
+
+    async def fake_generate_chat_json(*, messages, **kwargs):
+        payload = json.loads(str(messages[1].get("content") or "{}"))
+        captured["called"] += 1
+        captured["locale"] = str(payload.get("locale") or "")
+        return {"reply": "Hola, puedo ayudarte con productos de joyeria corporal y politicas de la tienda."}
+
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Hi there", locale="es-ES"),
+        conversation_id=77,
+        run_id="run-off-topic-es",
+        route_decision_override=_workflow_decision("off_topic"),
+    )
+
+    reply = str(result.response.reply_text or "")
+    assert result.response.routing.workflow == "off_topic"
+    assert result.debug.get("component_source") == "error"
+    assert result.debug.get("terminal_reply_source") == "llm"
+    assert result.embedding_calls == 0
+    assert result.llm_calls == 2
+    assert captured["called"] == 2
+    assert captured["locale"] == "es-ES"
+    assert "Hola" in reply
 
 
 @pytest.mark.asyncio
@@ -926,7 +1095,7 @@ async def test_component_pipeline_fallback_uncertain_uses_generic_clarify_messag
     assert any(component.type.value == "clarify" for component in result.response.components)
     assert result.response.reply_text in fallback_variants
     assert result.debug.get("clarify_reason") == "fallback_uncertain"
-    assert result.debug.get("tone_key") == "clarify:fallback_uncertain"
+    assert result.debug.get("tone_key") == ""
     assert result.debug.get("clarify_mode") == "broad_help"
     assert result.debug.get("clarify_best_effort_help") is True
 
@@ -951,6 +1120,8 @@ async def test_component_pipeline_fallback_gibberish_asks_rephrase() -> None:
     assert any(component.type.value == "clarify" for component in result.response.components)
     assert "rephrase" in result.response.reply_text.lower() or "type it again" in result.response.reply_text.lower()
     assert result.debug.get("clarify_reason") == "fallback_gibberish"
-    assert result.debug.get("tone_key") == "clarify:fallback_gibberish"
+    assert result.debug.get("tone_key") == ""
     assert result.debug.get("clarify_mode") == "gibberish"
     assert result.debug.get("clarify_best_effort_help") is False
+
+

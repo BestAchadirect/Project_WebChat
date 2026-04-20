@@ -57,7 +57,6 @@ type ChatComponentType =
     | 'query_summary'
     | 'product_cards'
     | 'product_detail'
-    | 'recommendations'
     | 'clarify'
     | 'knowledge_answer'
     | 'error'
@@ -520,7 +519,7 @@ const ProductCarousel: React.FC<{
                                 </div>
                                 {rep.description && (
                                     <div
-                                        className={`text-sm text-gray-600 leading-snug mb-3 ${isExpanded ? '' : 'line-clamp-2'}`}
+                                        className="text-sm text-gray-600 leading-snug mb-3 whitespace-pre-wrap break-words"
                                         title={rep.description}
                                     >
                                         {rep.description}
@@ -627,6 +626,60 @@ const asRecordArray = (value: unknown): Record<string, unknown>[] => {
     return value.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => item !== null);
 };
 
+const CATALOG_PAGINATION_REPLIES_STORAGE_KEY = 'genai_consumed_catalog_pagination_replies';
+
+const loadConsumedCatalogPaginationReplies = (): Record<string, true> => {
+    if (typeof window === 'undefined') return {};
+    try {
+        const raw = window.localStorage.getItem(CATALOG_PAGINATION_REPLIES_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+        return Object.keys(parsed as Record<string, unknown>).reduce<Record<string, true>>((acc, key) => {
+            const normalizedKey = String(key || '').trim();
+            if (normalizedKey) {
+                acc[normalizedKey] = true;
+            }
+            return acc;
+        }, {});
+    } catch {
+        return {};
+    }
+};
+
+const persistConsumedCatalogPaginationReplies = (tokens: Record<string, true>): void => {
+    if (typeof window === 'undefined') return;
+    try {
+        window.localStorage.setItem(CATALOG_PAGINATION_REPLIES_STORAGE_KEY, JSON.stringify(tokens || {}));
+    } catch {
+        // Ignore storage failures; UI disabling still protects the current session.
+    }
+};
+
+const buildCatalogPaginationReplyToken = (
+    conversationId: number | null,
+    label: string,
+    payload?: Record<string, unknown>,
+): string => {
+    const rawPayload = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+    const queryCacheKey = String(
+        rawPayload.query_cache_key ??
+        rawPayload.queryCacheKey ??
+        rawPayload.cache_key ??
+        rawPayload.cacheKey ??
+        ''
+    ).trim();
+    const displayOffset = Number(rawPayload.display_offset ?? rawPayload.offset ?? -1);
+    const displayLimit = Number(rawPayload.display_limit ?? rawPayload.limit ?? -1);
+    const normalizedLabel = String(label || '').trim().toLowerCase();
+    return [
+        String(conversationId ?? ''),
+        queryCacheKey || normalizedLabel,
+        Number.isFinite(displayOffset) && displayOffset >= 0 ? String(displayOffset) : '',
+        Number.isFinite(displayLimit) && displayLimit > 0 ? String(displayLimit) : '',
+    ].join('|');
+};
+
 const componentProductToCard = (raw: Record<string, unknown>): ProductCard => {
     const productId = asString(raw.product_id || raw.id || raw.sku || '');
     const attributes = asRecord(raw.attributes) || {};
@@ -683,6 +736,7 @@ const ChatComponentsRenderer: React.FC<{
     viewButtonText?: string;
     materialLabel?: string;
     jewelryTypeLabel?: string;
+    isQuickReplyConsumed?: (label: string, action?: string, payload?: Record<string, unknown>) => boolean;
     onQuickReply: (text: string, action?: string, payload?: Record<string, unknown>) => void;
     onProductClick?: (product: ProductCard, rank: number) => void;
 }> = ({
@@ -693,6 +747,7 @@ const ChatComponentsRenderer: React.FC<{
     viewButtonText,
     materialLabel,
     jewelryTypeLabel,
+    isQuickReplyConsumed,
     onQuickReply,
     onProductClick,
 }) => {
@@ -752,33 +807,6 @@ const ChatComponentsRenderer: React.FC<{
                     );
                 }
 
-                if (type === 'recommendations') {
-                    const items = asRecordArray(data.items);
-                    if (items.length === 0) return null;
-                    return (
-                        <div key={`${type}-${index}`} className="w-full">
-                            <div className="text-[11px] uppercase tracking-wider font-bold text-gray-500 mb-1">Recommendations</div>
-                            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-                                {items.map((item, itemIndex) => {
-                                    const displayCode = asString(item.master_code || item.title || item.sku).trim();
-                                    const label = displayCode || asString(item.title).trim() || `Item ${itemIndex + 1}`;
-                                    if (!displayCode) return null;
-                                    return (
-                                        <button
-                                            key={`${type}-item-${itemIndex}`}
-                                            onClick={() => onQuickReply(`Show details for ${displayCode}`)}
-                                            className="whitespace-nowrap flex-shrink-0 px-3 py-2 rounded-full border-2 bg-white text-xs font-bold text-gray-700 hover:bg-gray-50"
-                                            style={{ borderColor: primaryColor }}
-                                        >
-                                            {label}
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                    );
-                }
-
                 if (type === 'clarify') {
                     const messageText = asString(data.message).trim();
                     if (!messageText || messageText === message.content.trim()) return null;
@@ -835,16 +863,29 @@ const ChatComponentsRenderer: React.FC<{
                     if (items.length === 0) return null;
                     return (
                         <div key={`${type}-${index}`} className="flex flex-wrap gap-2">
-                            {items.map((item, itemIndex) => (
-                                <button
-                                    key={`${type}-item-${itemIndex}`}
-                                    type="button"
-                                    onClick={() => onQuickReply(item.label, item.action || undefined, item.payload)}
-                                    className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 shadow-sm transition-colors hover:bg-gray-50 hover:border-gray-300 active:scale-[0.99]"
-                                >
-                                    {item.label}
-                                </button>
-                            ))}
+                            {items.map((item, itemIndex) => {
+                                const consumed = item.action === 'catalog_pagination'
+                                    && Boolean(isQuickReplyConsumed?.(item.label, item.action || undefined, item.payload));
+                                return (
+                                    <button
+                                        key={`${type}-item-${itemIndex}`}
+                                        type="button"
+                                        disabled={consumed}
+                                        aria-disabled={consumed}
+                                        onClick={() => {
+                                            if (consumed) return;
+                                            onQuickReply(item.label, item.action || undefined, item.payload);
+                                        }}
+                                        className={`inline-flex items-center rounded-full border px-3 py-2 text-xs font-semibold shadow-sm transition-colors active:scale-[0.99] ${
+                                            consumed
+                                                ? 'cursor-not-allowed border-gray-100 bg-gray-100 text-gray-400 shadow-none'
+                                                : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300'
+                                        }`}
+                                    >
+                                        {item.label}
+                                    </button>
+                                );
+                            })}
                         </div>
                     );
                 }
@@ -968,6 +1009,9 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         const parsed = raw ? Number(raw) : NaN;
         return Number.isFinite(parsed) ? parsed : null;
     });
+    const [consumedCatalogPaginationReplies, setConsumedCatalogPaginationReplies] = useState<Record<string, true>>(
+        () => loadConsumedCatalogPaginationReplies()
+    );
     const [activeUserId, setActiveUserId] = useState(resolvedUserId);
     const [banners, setBanners] = useState<BannerItem[]>([]);
     const [isBannerLoading, setIsBannerLoading] = useState(false);
@@ -978,6 +1022,23 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [selectedImages, setSelectedImages] = useState<File[]>([]);
     const [selectedImageUrls, setSelectedImageUrls] = useState<string[]>([]);
+
+    const markCatalogPaginationReplyConsumed = (label: string, payload?: Record<string, unknown>) => {
+        const token = buildCatalogPaginationReplyToken(conversationId, label, payload);
+        if (!token) return;
+        setConsumedCatalogPaginationReplies((prev) => {
+            if (prev[token]) return prev;
+            const next = { ...prev, [token]: true } as Record<string, true>;
+            persistConsumedCatalogPaginationReplies(next);
+            return next;
+        });
+    };
+
+    const isCatalogPaginationReplyConsumed = (label: string, action?: string, payload?: Record<string, unknown>) => {
+        if (String(action || '').trim().toLowerCase() !== 'catalog_pagination') return false;
+        const token = buildCatalogPaginationReplyToken(conversationId, label, payload);
+        return Boolean(token && consumedCatalogPaginationReplies[token]);
+    };
 
     const formatTicketNumber = (ticket: Ticket) => {
         const year = new Date(ticket.created_at).getFullYear();
@@ -1283,9 +1344,9 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         textOverride?: string,
         clientAction?: string,
         clientActionPayload?: Record<string, unknown>,
-    ) => {
+    ): Promise<boolean> => {
         const textToSend = textOverride || input;
-        if (!textToSend.trim() || isLoading) return;
+        if (!textToSend.trim() || isLoading) return false;
 
         setMessages(prev => [...prev, { role: 'user', content: textToSend }]);
         setInput('');
@@ -1335,14 +1396,25 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                 void formatSources(data.sources);
             }
 
+            return true;
+
         } catch (error) {
             console.error('Chat error:', error);
             setMessages(prev => [...prev, {
                 role: 'system',
                 content: 'Sorry, something went wrong. Please try again.'
             }]);
+            return false;
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const handleQuickReply = async (question: string, action?: string, payload?: Record<string, unknown>) => {
+        const normalizedAction = String(action || '').trim().toLowerCase();
+        const success = await sendMessage(question, action, payload);
+        if (success && normalizedAction === 'catalog_pagination') {
+            markCatalogPaginationReplyConsumed(question, payload);
         }
     };
 
@@ -1584,8 +1656,9 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                                     viewButtonText={msg.viewButtonText}
                                                     materialLabel={msg.materialLabel}
                                                     jewelryTypeLabel={msg.jewelryTypeLabel}
+                                                    isQuickReplyConsumed={isCatalogPaginationReplyConsumed}
                                                     onQuickReply={(question, action, payload) => {
-                                                        void sendMessage(question, action, payload);
+                                                        void handleQuickReply(question, action, payload);
                                                     }}
                                                     onProductClick={(product, rank) => {
                                                         void trackProductClick(product, rank, msg.qaLogId);

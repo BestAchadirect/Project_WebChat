@@ -25,11 +25,23 @@ from app.services.catalog.projection_service import product_projection_sync_serv
 from app.services.imports.service import data_import_service
 from app.services.catalog.attribute_sync_service import product_attribute_sync_service
 from app.services.catalog.category_taxonomy_service import category_taxonomy_service
+from app.utils.synonym_rules import (
+    BODY_PART_FALLBACK_TOKENS,
+    JEWELRY_TYPE_FALLBACK_TOKENS,
+    MATERIAL_FALLBACK_TOKENS,
+    PRESENTATION_TYPE_FALLBACK_TOKENS,
+    FEATURE_FALLBACK_TOKENS,
+    THEME_FALLBACK_TOKENS,
+)
 from app.utils.pagination import normalize_pagination
 
 router = APIRouter()
 
 ATTRIBUTE_FIELDS = {
+    "body_part",
+    "feature",
+    "presentation_type",
+    "theme",
     "material",
     "jewelry_type",
     "color",
@@ -54,6 +66,10 @@ ATTRIBUTE_FIELDS = {
 ALLOWED_BULK_UPDATE_FIELDS = set(ATTRIBUTE_FIELDS)
 
 FILTER_FACETS = [
+    "body_part",
+    "feature",
+    "presentation_type",
+    "theme",
     "material",
     "jewelry_type",
     "color",
@@ -76,32 +92,6 @@ FILTER_FACETS = [
     "quantity_in_bulk",
     "category",
 ]
-
-MATERIAL_FALLBACK_TOKENS: Dict[str, List[str]] = {
-    "Titanium G23": ["titanium g23", "g23", "implant grade", "implant-grade"],
-    "Titanium": ["titanium"],
-    "Steel": ["surgical steel", "stainless steel", "316l", "steel"],
-    "Gold": ["gold"],
-    "Silver": ["silver"],
-    "Niobium": ["niobium"],
-    "Acrylic": ["acrylic"],
-}
-
-JEWELRY_TYPE_FALLBACK_TOKENS: Dict[str, List[str]] = {
-    "Barbell": ["barbell", "barbells"],
-    "Circular Barbell": ["circular barbell", "horseshoe"],
-    "Labret": ["labret", "labrets"],
-    "Ring": ["ring", "rings"],
-    "Stud": ["stud", "studs"],
-    "Tunnel": ["tunnel", "tunnels"],
-    "Plug": ["plug", "plugs"],
-}
-
-DUAL_SOURCE_FALLBACKS: Dict[str, Dict[str, List[str]]] = {
-    "material": MATERIAL_FALLBACK_TOKENS,
-    "jewelry_type": JEWELRY_TYPE_FALLBACK_TOKENS,
-}
-
 
 def _facets_v2_read_enabled() -> bool:
     return bool(getattr(settings, "FACETS_V2_READ_ENABLED", False))
@@ -167,7 +157,20 @@ def _infer_fallback_attribute_value(field: str, search_text: Optional[str]) -> O
     text = str(search_text or "").strip().lower()
     if not text:
         return None
-    mapping = DUAL_SOURCE_FALLBACKS.get(field, {})
+    if field == "material":
+        mapping = MATERIAL_FALLBACK_TOKENS
+    elif field == "jewelry_type":
+        mapping = JEWELRY_TYPE_FALLBACK_TOKENS
+    elif field == "presentation_type":
+        mapping = PRESENTATION_TYPE_FALLBACK_TOKENS
+    elif field == "body_part":
+        mapping = BODY_PART_FALLBACK_TOKENS
+    elif field == "theme":
+        mapping = THEME_FALLBACK_TOKENS
+    elif field == "feature":
+        mapping = FEATURE_FALLBACK_TOKENS
+    else:
+        mapping = {}
     for label, tokens in mapping.items():
         for token in tokens:
             needle = str(token or "").strip().lower()
@@ -493,6 +496,26 @@ def _build_product_schema(product: Product, attrs: dict) -> ProductSchema:
         if inferred_type:
             merged_attrs["jewelry_type"] = inferred_type
 
+    if not merged_attrs.get("presentation_type"):
+        inferred_presentation_type = _infer_fallback_attribute_value("presentation_type", getattr(product, "search_text", None))
+        if inferred_presentation_type:
+            merged_attrs["presentation_type"] = inferred_presentation_type
+
+    if not merged_attrs.get("body_part"):
+        inferred_body_part = _infer_fallback_attribute_value("body_part", getattr(product, "search_text", None))
+        if inferred_body_part:
+            merged_attrs["body_part"] = inferred_body_part
+
+    if not merged_attrs.get("theme"):
+        inferred_theme = _infer_fallback_attribute_value("theme", getattr(product, "search_text", None))
+        if inferred_theme:
+            merged_attrs["theme"] = inferred_theme
+
+    if not merged_attrs.get("feature"):
+        inferred_feature = _infer_fallback_attribute_value("feature", getattr(product, "search_text", None))
+        if inferred_feature:
+            merged_attrs["feature"] = inferred_feature
+
     return ProductSchema(
         id=str(product.id),
         klevu_id=product.klevu_id,
@@ -511,6 +534,8 @@ def _build_product_schema(product: Product, attrs: dict) -> ProductSchema:
         is_featured=product.is_featured,
         priority=product.priority,
         master_code=product.master_code,
+        body_part=merged_attrs.get("body_part"),
+        feature=merged_attrs.get("feature"),
         jewelry_type=merged_attrs.get("jewelry_type"),
         material=merged_attrs.get("material"),
         length=merged_attrs.get("length"),
@@ -531,6 +556,8 @@ def _build_product_schema(product: Product, attrs: dict) -> ProductSchema:
         threading=merged_attrs.get("threading"),
         outer_diameter=merged_attrs.get("outer_diameter"),
         pearl_color=merged_attrs.get("pearl_color"),
+        presentation_type=merged_attrs.get("presentation_type"),
+        theme=merged_attrs.get("theme"),
     )
 
 
@@ -687,7 +714,12 @@ async def _build_attribute_facet_rows(
         return payload
 
     inferred_rows: List[Dict[str, Any]] = []
-    fallback_map = DUAL_SOURCE_FALLBACKS.get(field, {})
+    if field == "material":
+        fallback_map = MATERIAL_FALLBACK_TOKENS
+    elif field == "jewelry_type":
+        fallback_map = JEWELRY_TYPE_FALLBACK_TOKENS
+    else:
+        fallback_map = {}
     for label, tokens in fallback_map.items():
         if not tokens:
             continue

@@ -24,7 +24,6 @@ from app.schemas.chat import (
 )
 from app.services.catalog.product_search import CatalogProductSearchService
 from app.services.chat.agentic.orchestrator import AgentOrchestrator, AgentRunResult
-from app.services.chat.retrieval.recommendation_service import RecommendationService
 from app.services.chat.components.cache import component_cache
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.presentation import component_contract, public_response
@@ -32,6 +31,7 @@ from app.services.chat.runtime.capabilities import build_chat_runtime_capabiliti
 from app.services.chat.runtime import conversation_state, persistence, unified_chat_runtime
 from app.services.chat.retrieval import follow_up_policy
 from app.services.chat.routing import routing_policy
+from app.services.chat.routing.contracts import DecisionState
 from app.services.chat.observability import runtime_metrics
 from app.services.knowledge.retrieval import KnowledgeRetrievalService
 from app.utils.debug_log import debug_log as _debug_log
@@ -59,7 +59,6 @@ class ChatService:
         self.db = db
         self._catalog_search = CatalogProductSearchService(db=self.db)
         self._knowledge_retrieval = KnowledgeRetrievalService(db=self.db, log_event=self._log_event)
-        self._recommendation_service = RecommendationService(db=self.db, catalog_search=self._catalog_search)
 
     @staticmethod
     def _feature_flags_snapshot() -> Dict[str, Any]:
@@ -483,7 +482,11 @@ class ChatService:
         conversation_id: int,
         run_id: str,
         route_decision_override: Optional[routing_policy.WorkflowDecision] = None,
+        detail_override: Any | None = None,
+        llm_call_count_override: int = 0,
         routing_selection_source: str = "",
+        internal_workflow_override: str = "",
+        decision_state_override: Optional[DecisionState] = None,
         channel: str = "widget",
     ):
         pipeline = ComponentPipeline(
@@ -497,7 +500,11 @@ class ChatService:
             conversation_id=conversation_id,
             run_id=run_id,
             route_decision_override=route_decision_override,
+            detail_override=detail_override,
+            llm_call_count_override=llm_call_count_override,
             routing_selection_source=routing_selection_source,
+            internal_workflow_override=internal_workflow_override,
+            decision_state_override=decision_state_override,
             channel=channel,
         )
 

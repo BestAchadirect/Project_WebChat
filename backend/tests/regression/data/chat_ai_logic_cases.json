@@ -1,0 +1,597 @@
+[
+  {
+    "id": "routing_off_topic_greeting",
+    "name": "routing_off_topic_greeting",
+    "suite": "routing",
+    "bucket": "greeting",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "Hi there",
+      "channel": "widget",
+      "locale": "en-US",
+      "detail_has_filters": false,
+      "detail_request": false,
+      "sku_tokens": []
+    },
+    "llm_responses": [
+      {
+        "workflow": "off_topic",
+        "execution_mode": "component",
+        "needs_products": false,
+        "needs_knowledge": false,
+        "needs_clarification": false,
+        "store_overview_request": false,
+        "reason": "casual store greeting",
+        "confidence": 0.91
+      }
+    ],
+    "expected": {
+      "workflow": "off_topic",
+      "execution_mode": "component",
+      "needs_products": false,
+      "needs_knowledge": false,
+      "needs_clarification": false,
+      "store_overview_request": false,
+      "selection_source": "llm",
+      "reason": "casual store greeting",
+      "confidence": 0.91,
+      "llm_workflow": "off_topic"
+    }
+  },
+  {
+    "id": "routing_catalog_browse_products",
+    "name": "routing_catalog_browse_products",
+    "suite": "routing",
+    "bucket": "browse",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "Show me titanium labrets",
+      "channel": "widget",
+      "locale": "en-US",
+      "detail_has_filters": false,
+      "detail_request": false,
+      "sku_tokens": []
+    },
+    "llm_responses": [
+      {
+        "workflow": "catalog",
+        "execution_mode": "component",
+        "needs_products": true,
+        "needs_knowledge": false,
+        "needs_clarification": false,
+        "store_overview_request": false,
+        "reason": "browse request",
+        "confidence": 0.91
+      }
+    ],
+    "expected": {
+      "workflow": "catalog",
+      "execution_mode": "component",
+      "needs_products": true,
+      "needs_knowledge": false,
+      "needs_clarification": false,
+      "store_overview_request": false,
+      "selection_source": "llm",
+      "reason": "browse request",
+      "confidence": 0.91,
+      "llm_workflow": "catalog"
+    }
+  },
+  {
+    "id": "routing_knowledge_policy_question",
+    "name": "routing_knowledge_policy_question",
+    "suite": "routing",
+    "bucket": "policy",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "what is your shipping policy?",
+      "channel": "widget",
+      "locale": "en-US",
+      "detail_has_filters": false,
+      "detail_request": false,
+      "sku_tokens": []
+    },
+    "llm_responses": [
+      {
+        "workflow": "knowledge",
+        "execution_mode": "component",
+        "needs_products": false,
+        "needs_knowledge": true,
+        "needs_clarification": false,
+        "store_overview_request": false,
+        "reason": "store policy question",
+        "confidence": 0.93
+      }
+    ],
+    "expected": {
+      "workflow": "knowledge",
+      "execution_mode": "component",
+      "needs_products": false,
+      "needs_knowledge": true,
+      "needs_clarification": false,
+      "store_overview_request": false,
+      "selection_source": "llm",
+      "reason": "store policy question",
+      "confidence": 0.93,
+      "llm_workflow": "knowledge"
+    }
+  },
+  {
+    "id": "routing_off_topic_unrelated",
+    "name": "routing_off_topic_unrelated",
+    "suite": "routing",
+    "bucket": "off_topic",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "Can you write Python code for me?",
+      "channel": "widget",
+      "locale": "en-US",
+      "detail_has_filters": false,
+      "detail_request": false,
+      "sku_tokens": []
+    },
+    "llm_responses": [
+      {
+        "workflow": "off_topic",
+        "execution_mode": "component",
+        "needs_products": false,
+        "needs_knowledge": false,
+        "needs_clarification": false,
+        "store_overview_request": false,
+        "reason": "unrelated non-store request",
+        "confidence": 0.94
+      }
+    ],
+    "expected": {
+      "workflow": "off_topic",
+      "execution_mode": "component",
+      "needs_products": false,
+      "needs_knowledge": false,
+      "needs_clarification": false,
+      "store_overview_request": false,
+      "selection_source": "llm",
+      "reason": "unrelated non-store request",
+      "confidence": 0.94,
+      "llm_workflow": "off_topic"
+    }
+  },
+  {
+    "id": "routing_soft_off_topic_fallback",
+    "name": "routing_soft_off_topic_fallback",
+    "suite": "routing",
+    "bucket": "soft_accept",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "Hi there",
+      "channel": "widget",
+      "locale": "en-US",
+      "detail_has_filters": false,
+      "detail_request": false,
+      "sku_tokens": []
+    },
+    "llm_responses": [
+      {
+        "workflow": "fallback",
+        "execution_mode": "component",
+        "needs_products": false,
+        "needs_knowledge": false,
+        "needs_clarification": true,
+        "store_overview_request": false,
+        "reason": "hi there",
+        "confidence": 0.61
+      }
+    ],
+    "expected": {
+      "workflow": "off_topic",
+      "execution_mode": "component",
+      "needs_products": false,
+      "needs_knowledge": false,
+      "needs_clarification": false,
+      "store_overview_request": false,
+      "selection_source": "llm_soft",
+      "reason": "hi there",
+      "confidence": 0.61,
+      "confidence_gate_applied": true,
+      "llm_workflow": "fallback"
+    }
+  },
+  {
+    "id": "routing_confidence_gate_fallback",
+    "name": "routing_confidence_gate_fallback",
+    "suite": "routing",
+    "bucket": "confidence_gate",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "Can I have your contact details?",
+      "channel": "widget",
+      "locale": "en-US",
+      "detail_has_filters": false,
+      "detail_request": false,
+      "sku_tokens": []
+    },
+    "llm_responses": [
+      {
+        "workflow": "knowledge",
+        "execution_mode": "component",
+        "needs_products": false,
+        "needs_knowledge": true,
+        "needs_clarification": false,
+        "store_overview_request": false,
+        "reason": "uncertain",
+        "confidence": 0.42
+      }
+    ],
+    "expected": {
+      "workflow": "fallback",
+      "execution_mode": "component",
+      "needs_products": false,
+      "needs_knowledge": false,
+      "needs_clarification": true,
+      "store_overview_request": false,
+      "selection_source": "llm_fallback",
+      "reason": "uncertain",
+      "confidence": 0.42,
+      "confidence_gate_applied": true,
+      "llm_workflow": "knowledge",
+      "llm_reason": "uncertain"
+    }
+  },
+  {
+    "id": "routing_timeout_retry_knowledge",
+    "name": "routing_timeout_retry_knowledge",
+    "suite": "routing",
+    "bucket": "retry",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "How can I contact your sales team?",
+      "channel": "widget",
+      "locale": "en-US",
+      "detail_has_filters": false,
+      "detail_request": false,
+      "sku_tokens": []
+    },
+    "llm_responses": [
+      {
+        "error": "TimeoutError"
+      },
+      {
+        "workflow": "knowledge",
+        "execution_mode": "component",
+        "needs_products": false,
+        "needs_knowledge": true,
+        "needs_clarification": false,
+        "store_overview_request": true,
+        "reason": "contact request",
+        "confidence": 0.92
+      }
+    ],
+    "expected": {
+      "workflow": "knowledge",
+      "execution_mode": "component",
+      "needs_products": false,
+      "needs_knowledge": true,
+      "needs_clarification": false,
+      "store_overview_request": true,
+      "selection_source": "llm_retry",
+      "reason": "contact request",
+      "confidence": 0.92,
+      "timeout_retry_used": true,
+      "llm_workflow": "knowledge"
+    }
+  },
+  {
+    "id": "routing_mixed_request_keeps_knowledge_query",
+    "name": "routing_mixed_request_keeps_knowledge_query",
+    "suite": "routing",
+    "bucket": "mixed",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "Show me titanium jewelry and also what payment methods do you accept?",
+      "channel": "widget",
+      "locale": "en-US",
+      "detail_has_filters": false,
+      "detail_request": false,
+      "sku_tokens": []
+    },
+    "llm_responses": [
+      {
+        "workflow": "catalog",
+        "execution_mode": "component",
+        "needs_products": true,
+        "needs_knowledge": true,
+        "needs_clarification": false,
+        "store_overview_request": false,
+        "knowledge_query": "what payment methods do you accept",
+        "reason": "mixed request with payment follow-up",
+        "confidence": 0.93
+      }
+    ],
+    "expected": {
+      "workflow": "catalog",
+      "execution_mode": "component",
+      "needs_products": true,
+      "needs_knowledge": true,
+      "needs_clarification": false,
+      "store_overview_request": false,
+      "selection_source": "llm",
+      "reason": "mixed request with payment follow-up",
+      "confidence": 0.93,
+      "knowledge_query": "what payment methods do you accept",
+      "llm_workflow": "catalog"
+    }
+  },
+  {
+    "id": "detail_parse_gold_heart_shape",
+    "name": "detail_parse_gold_heart_shape",
+    "suite": "parser",
+    "bucket": "attribute_browse",
+    "kind": "detail_parse",
+    "user_text": "Can i see gold with a heart shape?",
+    "expected": {
+      "attribute_filters": {
+        "material": "gold",
+        "color": "gold",
+        "design": "heart"
+      }
+    }
+  },
+  {
+    "id": "detail_parse_outer_diameter",
+    "name": "detail_parse_outer_diameter",
+    "suite": "parser",
+    "bucket": "measurement_filter",
+    "kind": "detail_parse",
+    "user_text": "show gold rings with 8mm outer diameter",
+    "expected": {
+      "attribute_filters": {
+        "jewelry_type": "ring",
+        "outer_diameter": "8mm"
+      }
+    }
+  },
+  {
+    "id": "follow_up_generation_gold_overflow",
+    "name": "follow_up_generation_gold_overflow",
+    "suite": "parser",
+    "bucket": "follow_up",
+    "kind": "follow_up_generation",
+    "inputs": {
+      "user_text": "I am looking for Gold product",
+      "attribute_filters": {
+        "color": "gold",
+        "material": "gold"
+      },
+      "has_more_results": true,
+      "products": [
+        {
+          "sku": "DGM12-000000",
+          "name": "Gold Circular Barbell",
+          "price": 10.0,
+          "attributes": {
+            "material": "Gold",
+            "color": "Gold"
+          }
+        }
+      ]
+    },
+    "expected": {
+      "first_question": "Try gold pieces"
+    }
+  },
+  {
+    "id": "follow_up_generation_attribute_fallback",
+    "name": "follow_up_generation_attribute_fallback",
+    "suite": "parser",
+    "bucket": "follow_up",
+    "kind": "follow_up_generation",
+    "inputs": {
+      "user_text": "show me products",
+      "attribute_filters": {},
+      "products": [
+        {
+          "sku": "BLK466-F02A12",
+          "name": "Titanium Labret 16g",
+          "price": 8.0,
+          "attributes": {
+            "jewelry_type": "Labret",
+            "material": "Titanium",
+            "gauge": "16g"
+          }
+        },
+        {
+          "sku": "BLK466-F04A12",
+          "name": "Titanium Labret 14g",
+          "price": 8.5,
+          "attributes": {
+            "jewelry_type": "Labret",
+            "material": "Titanium",
+            "gauge": "14g"
+          }
+        }
+      ]
+    },
+    "expected": {
+      "questions_include": [
+        "Try Titanium pieces"
+      ]
+    }
+  },
+  {
+    "id": "product_response_contract_gold_match",
+    "name": "product_response_contract_gold_match",
+    "suite": "response",
+    "bucket": "product_contract",
+    "kind": "response_contract",
+    "actual_response": {
+      "routing": {
+        "workflow": "catalog"
+      },
+      "reply_text": "I found products that match what you're looking for in Gold color with Gold material.",
+      "follow_up_questions": [
+        "Try gold pieces"
+      ],
+      "sources": [],
+      "product_carousel": [
+        {
+          "sku": "DGM12-000000"
+        },
+        {
+          "sku": "DGSC4-000000"
+        }
+      ],
+      "debug": {
+        "reply_mode": "deterministic_product"
+      }
+    },
+    "expected": {
+      "workflow": "catalog",
+      "reply_must_include": [
+        "match what you're looking for",
+        "gold color",
+        "gold material"
+      ],
+      "reply_must_not_include": [
+        "20 matching product(s)"
+      ],
+      "follow_ups_include": [
+        "Try gold pieces"
+      ],
+      "product_count_min": 1,
+      "product_count_max": 10,
+      "top_product_skus_include_any": [
+        "DGM12-000000",
+        "DGSC4-000000"
+      ],
+      "debug_equals": {
+        "reply_mode": "deterministic_product"
+      }
+    }
+  },
+  {
+    "id": "faq_response_contract_return_policy",
+    "name": "faq_response_contract_return_policy",
+    "suite": "response",
+    "bucket": "policy_contract",
+    "kind": "response_contract",
+    "actual_response": {
+      "routing": {
+        "workflow": "knowledge"
+      },
+      "reply_text": "You can return eligible items within 30 days. Items need to meet the return conditions, and our team will guide you through the return process.",
+      "follow_up_questions": [
+        "How do I start a return?"
+      ],
+      "sources": [
+        {
+          "title": "Returns Policy"
+        }
+      ],
+      "product_carousel": [],
+      "debug": {
+        "reply_mode": "llm"
+      }
+    },
+    "expected": {
+      "workflow": "knowledge",
+      "reply_must_include": [
+        "return",
+        "30 days",
+        "conditions",
+        "return process"
+      ],
+      "reply_must_not_include": [
+        "free lifetime returns",
+        "90 days no questions asked"
+      ],
+      "follow_ups_include": [
+        "How do I start a return?"
+      ],
+      "source_count_min": 1,
+      "product_count_max": 0
+    }
+  },
+  {
+    "id": "faq_response_contract_shipping_policy",
+    "name": "faq_response_contract_shipping_policy",
+    "suite": "response",
+    "bucket": "policy_contract",
+    "kind": "response_contract",
+    "actual_response": {
+      "routing": {
+        "workflow": "knowledge"
+      },
+      "reply_text": "Shipping options depend on the destination and service level. We can confirm shipping methods, timing, and customs details before dispatch.",
+      "follow_up_questions": [
+        "Do you ship internationally?"
+      ],
+      "sources": [
+        {
+          "title": "Shipping Policy"
+        }
+      ],
+      "product_carousel": [],
+      "debug": {
+        "reply_mode": "llm"
+      }
+    },
+    "expected": {
+      "workflow": "knowledge",
+      "reply_must_include": [
+        "shipping",
+        "destination",
+        "service level",
+        "customs"
+      ],
+      "reply_must_not_include": [
+        "free worldwide express shipping on every order"
+      ],
+      "follow_ups_include": [
+        "Do you ship internationally?"
+      ],
+      "source_count_min": 1,
+      "product_count_max": 0
+    }
+  },
+  {
+    "id": "faq_response_contract_warranty_policy",
+    "name": "faq_response_contract_warranty_policy",
+    "suite": "response",
+    "bucket": "policy_contract",
+    "kind": "response_contract",
+    "actual_response": {
+      "routing": {
+        "workflow": "knowledge"
+      },
+      "reply_text": "Our warranty policy covers eligible manufacturing issues. The support team can confirm coverage terms and the claim process for your order.",
+      "follow_up_questions": [
+        "How do I make a warranty claim?"
+      ],
+      "sources": [
+        {
+          "title": "Warranty Policy"
+        }
+      ],
+      "product_carousel": [],
+      "debug": {
+        "reply_mode": "llm"
+      }
+    },
+    "expected": {
+      "workflow": "knowledge",
+      "reply_must_include": [
+        "warranty",
+        "manufacturing",
+        "coverage",
+        "claim process"
+      ],
+      "reply_must_not_include": [
+        "lifetime no-questions-asked replacement"
+      ],
+      "follow_ups_include": [
+        "How do I make a warranty claim?"
+      ],
+      "source_count_min": 1,
+      "product_count_max": 0
+    }
+  }
+]

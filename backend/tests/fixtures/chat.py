@@ -1,12 +1,39 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+import json
+from pathlib import Path
 from typing import Any
 
 from app.schemas.chat import ChatComponent, ChatResponse, ChatResponseMeta, ChatRouting
 from app.services.ai.llm_service import llm_service
 from app.services.chat.components.pipeline import ComponentPipelineResult
 from app.services.chat.service import ChatService
+
+
+def load_json_dataset(path: str | Path, *, infer_suite: bool = False) -> list[dict[str, Any]]:
+    dataset_path = Path(path)
+    payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError(f"dataset must be a list: {dataset_path}")
+    cases = [dict(item or {}) for item in payload]
+    if infer_suite:
+        suite = _infer_suite_from_path(dataset_path)
+        for case in cases:
+            case.setdefault("suite", suite)
+            case.setdefault("dataset_path", str(dataset_path))
+    return cases
+
+
+def _infer_suite_from_path(path: Path) -> str:
+    name = path.stem.lower()
+    if "logic" in name:
+        return "ai_logic"
+    if "faq" in name:
+        return "faq"
+    if "product" in name:
+        return "product"
+    return "unknown"
 
 
 class DummyUser:
@@ -37,10 +64,59 @@ class KnowledgeStub:
 def patch_llm_tracking(monkeypatch: Any) -> None:
     async def fake_generate_chat_json(**kwargs: Any) -> dict[str, Any]:
         usage_kind = str(kwargs.get("usage_kind") or "")
-        if usage_kind != "routing_decision":
-            return {}
         messages = list(kwargs.get("messages") or [])
         payload = str(messages[-1].get("content") if messages else "").lower()
+        if usage_kind == "chat_interpretation":
+            if any(token in payload for token in ("stock", "inventory", "availability")):
+                return {
+                    "workflow": "catalog",
+                    "execution_mode": "agentic",
+                    "needs_products": True,
+                    "needs_knowledge": False,
+                    "needs_clarification": False,
+                    "store_overview_request": False,
+                    "reason": "stock_lookup",
+                    "confidence": 0.9,
+                    "requested_fields": [],
+                    "attribute_filters": {},
+                    "wants_image": False,
+                    "semantic_hints": [],
+                    "clarify_focus": "",
+                }
+            if any(token in payload for token in ("policy", "contact", "support")):
+                return {
+                    "workflow": "knowledge",
+                    "execution_mode": "component",
+                    "needs_products": False,
+                    "needs_knowledge": True,
+                    "needs_clarification": False,
+                    "store_overview_request": False,
+                    "knowledge_query": "store policy request",
+                    "reason": "knowledge_request",
+                    "confidence": 0.8,
+                    "requested_fields": [],
+                    "attribute_filters": {},
+                    "wants_image": False,
+                    "semantic_hints": [],
+                    "clarify_focus": "",
+                }
+            return {
+                "workflow": "catalog",
+                "execution_mode": "agentic",
+                "needs_products": True,
+                "needs_knowledge": False,
+                "needs_clarification": False,
+                "store_overview_request": False,
+                "reason": "default_component",
+                "confidence": 0.6,
+                "requested_fields": [],
+                "attribute_filters": {},
+                "wants_image": False,
+                "semantic_hints": [],
+                "clarify_focus": "",
+            }
+        if usage_kind != "routing_decision":
+            return {}
         if any(token in payload for token in ("stock", "inventory", "availability")):
             return {
                 "workflow": "catalog",
@@ -132,7 +208,7 @@ def build_component_pipeline_result(
             routing=ChatRouting(
                 workflow=response_workflow,
                 execution_mode="component",
-                needs_products=response_workflow in {"catalog", "recommendation"},
+                needs_products=response_workflow == "catalog",
                 needs_knowledge=response_workflow == "knowledge",
                 needs_clarification=response_workflow == "fallback",
                 reason="fixture",

@@ -4,7 +4,6 @@ from app.services.chat.components.builders.knowledge_answer import KnowledgeAnsw
 from app.services.chat.components.builders.product_cards import ProductCardsComponent
 from app.services.chat.components.builders.product_detail import ProductDetailComponent
 from app.services.chat.components.builders.query_summary import QuerySummaryComponent
-from app.services.chat.components.builders.recommendations import RecommendationsComponent
 
 __all__ = [
     "ClarifyComponent",
@@ -13,5 +12,4 @@ __all__ = [
     "ProductCardsComponent",
     "ProductDetailComponent",
     "QuerySummaryComponent",
-    "RecommendationsComponent",
 ]

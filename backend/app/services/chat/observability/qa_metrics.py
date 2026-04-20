@@ -56,7 +56,6 @@ def build_chat_qa_metrics(
             or ""
         ).strip() or None,
         "reply_mode": str(debug.get("reply_mode") or "").strip() or None,
-        "recommendation_mode": str(debug.get("recommendation_mode") or "").strip() or None,
         "action_kind": action_kind or None,
         "action_completed": bool(action_completed),
         "has_products": bool(response_products),

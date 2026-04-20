@@ -65,6 +65,9 @@ class AgentOrchestrator:
             items = value.get("items")
             if isinstance(items, list):
                 return len(items)
+            candidates = value.get("candidates")
+            if isinstance(candidates, list):
+                return len(candidates)
             if value.get("found") is True:
                 return 1
             return 0
@@ -102,12 +105,18 @@ class AgentOrchestrator:
                     card = ProductCard.model_validate(item)
                     products[str(card.id)] = card
                 return
-            if tool_name == "get_product_details" and result.get("found"):
+            if tool_name in {"get_product_details", "check_inventory_db"}:
                 payload = result.get("product")
-                if not isinstance(payload, dict):
-                    return
-                card = ProductCard.model_validate(payload)
-                products[str(card.id)] = card
+                if isinstance(payload, dict):
+                    card = ProductCard.model_validate(payload)
+                    products[str(card.id)] = card
+                candidates = result.get("candidates")
+                if isinstance(candidates, list):
+                    for item in candidates:
+                        if not isinstance(item, dict):
+                            continue
+                        card = ProductCard.model_validate(item)
+                        products[str(card.id)] = card
         except Exception:
             return
 

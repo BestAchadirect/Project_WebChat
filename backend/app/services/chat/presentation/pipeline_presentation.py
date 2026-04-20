@@ -22,8 +22,8 @@ from app.services.chat.presentation import (
     follow_up_builder,
     product_contract_builder,
     product_presentation,
-    reply_tone,
 )
+from app.services.chat.components.builders.contextual_messages import generate_contextual_reply
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.pipeline_runtime.state import (
     ComponentPipelineResult,
@@ -31,12 +31,90 @@ from app.services.chat.components.pipeline_runtime.state import (
 )
 from app.services.chat.components.registry import ComponentRegistry
 from app.services.chat.components.types import ComponentSource, ComponentType
+from app.services.chat.routing.contracts import WorkflowResult
 from app.services.chat.text_normalization import normalize_user_text
 from app.services.chat.retrieval.retrieval_outcome import build_retrieval_outcome
 
 
 
 class PipelinePresentationMixin:
+    @staticmethod
+    def _top_source_relevance(sources: Sequence[KnowledgeSource]) -> float:
+            return max((float(getattr(source, "relevance", 0.0) or 0.0) for source in list(sources or [])), default=0.0)
+
+    @classmethod
+    def _verify_workflow_result(
+            cls,
+            *,
+            internal_workflow: str,
+            state: PipelineWorkflowState,
+            detail: Any,
+        ) -> WorkflowResult:
+            workflow = str(internal_workflow or "clarify").strip().lower()
+            answerability = "none"
+            verification_reason = "no_evidence"
+            retrieval_confidence = 0.0
+            evidence = {
+                "product_count": int(len(list(state.presentation.canonical_products or []))),
+                "knowledge_source_count": int(len(list(state.knowledge.sources or []))),
+                "has_knowledge_answer": bool(str(state.knowledge.answer or "").strip()),
+                "ambiguity_reason": str(state.decision.ambiguity_reason or ""),
+            }
+            if workflow in {"company_info", "policy_info"}:
+                retrieval_confidence = cls._top_source_relevance(state.knowledge.sources)
+                if str(state.decision.ambiguity_reason or "").strip():
+                    answerability = "none"
+                    verification_reason = str(state.decision.ambiguity_reason or "knowledge_needs_clarification")
+                elif state.knowledge.sources and str(state.knowledge.answer or "").strip():
+                    answerability = "full" if retrieval_confidence >= 0.6 else "partial"
+                    verification_reason = "knowledge_sources_strong" if answerability == "full" else "knowledge_sources_weak"
+                elif state.knowledge.sources:
+                    answerability = "partial"
+                    verification_reason = "knowledge_sources_without_answer"
+            elif workflow == "mixed":
+                product_ready = bool(list(state.presentation.canonical_products or []))
+                knowledge_ready = bool(str(state.knowledge.answer or "").strip() or list(state.knowledge.sources or []))
+                retrieval_confidence = max(
+                    float(cls._top_source_relevance(state.knowledge.sources)),
+                    1.0 if product_ready else 0.0,
+                )
+                if product_ready and knowledge_ready:
+                    answerability = "full"
+                    verification_reason = "mixed_full"
+                elif product_ready or knowledge_ready:
+                    answerability = "partial"
+                    verification_reason = "mixed_partial"
+            elif workflow in {"catalog_search", "product_detail"}:
+                retrieval_confidence = 1.0 if list(state.presentation.canonical_products or []) else 0.0
+                if str(state.decision.ambiguity_reason or "").strip():
+                    answerability = "none"
+                    verification_reason = str(state.decision.ambiguity_reason or "catalog_no_results")
+                elif list(state.presentation.canonical_products or []):
+                    answerability = "full"
+                    verification_reason = "catalog_results_available" if workflow == "catalog_search" else "detail_result_available"
+                elif bool(getattr(detail, "is_detail_request", False)):
+                    verification_reason = "detail_request_needs_specific_product"
+            elif workflow in {"smalltalk", "off_topic"}:
+                answerability = "full"
+                retrieval_confidence = 1.0
+                verification_reason = "terminal_response"
+            elif workflow == "clarify":
+                answerability = "none"
+                verification_reason = str(state.decision.ambiguity_reason or "clarify_requested")
+
+            return WorkflowResult(
+                internal_workflow=workflow,
+                retrieval_source=str(getattr(state.retrieval.source, "value", state.retrieval.source) or "error"),
+                answerability=answerability,
+                retrieval_confidence=retrieval_confidence,
+                verification_reason=verification_reason,
+                evidence=evidence,
+                render_inputs={
+                    "selected_components": [component.value for component in list(state.presentation.selected_components or [])],
+                    "requested_fields": list(getattr(detail, "requested_fields", []) or []),
+                },
+            )
+
     @staticmethod
     def _combine_mixed_assistant_text(*, product_text: str, knowledge_text: str) -> str:
             product = str(product_text or "").strip()
@@ -125,22 +203,22 @@ class PipelinePresentationMixin:
             )
 
     @classmethod
-    def _build_clarify_policy(
+    async def _build_clarify_policy(
             cls,
             *,
             reason: str,
             user_text: str,
-            tone_pick: Callable[[str, Sequence[str]], str],
+            reply_language: str,
             products: Sequence[Any],
             attribute_filters: Dict[str, str],
             needs_knowledge: bool,
             requested_fields: Sequence[str],
             clarify_focus: str = "",
         ) -> Dict[str, Any]:
-            return clarify_policy.build_clarify_policy(
+            return await clarify_policy.build_clarify_policy(
                 reason=reason,
                 user_text=user_text,
-                tone_pick=tone_pick,
+                reply_language=reply_language,
                 products=products,
                 attribute_filters=attribute_filters,
                 needs_knowledge=needs_knowledge,
@@ -457,19 +535,6 @@ class PipelinePresentationMixin:
             if not concise:
                 return ""
 
-            if len(list_items) >= 2 or re.search(r"^\s*[A-Za-z][A-Za-z\s/&-]{1,32}:\s*", text):
-                opener = reply_tone.pick_variant(
-                    user_text=question,
-                    key="knowledge_answer:intro",
-                    variants=(
-                        "Here's the practical answer",
-                        "The short answer is",
-                        "In brief",
-                    ),
-                )
-                if opener and not concise.lower().startswith(("yes", "no")):
-                    concise = f"{opener}: {concise}"
-
             if len(concise) > max(1, int(max_chars)):
                 trimmed = concise[: max(1, int(max_chars))]
                 if " " in trimmed:
@@ -490,34 +555,6 @@ class PipelinePresentationMixin:
                 if any(token in lower for token in affirmative):
                     concise = f"Yes. {concise}"
             return concise
-
-    @classmethod
-    def _compose_off_topic_reply(
-            cls,
-            *,
-            user_text: str,
-            pick_text: Optional[Callable[[str, Sequence[str]], str]] = None,
-        ) -> str:
-            choose = pick_text or (
-                lambda key, variants: reply_tone.pick_variant(
-                    user_text=user_text,
-                    key=key,
-                    variants=variants,
-                )
-            )
-            intro = choose(
-                "off_topic:intro",
-                [
-                    "I can only help with this store's body jewelry shopping and support.",
-                    "I'm focused on body jewelry products, recommendations, and store support here.",
-                    "I can help with body jewelry products, stock, and store policies in this chat.",
-                ],
-            )
-            redirect = choose(
-                "off_topic:redirect",
-                list(cls._OFF_TOPIC_REDIRECT_OPTIONS),
-            )
-            return f"{intro} {redirect}"
 
     @staticmethod
     def _clean_knowledge_snippet_text(text: str) -> str:
@@ -595,18 +632,6 @@ class PipelinePresentationMixin:
                 concise = " ".join(sentences).strip() if sentences else text.strip()
             if not concise:
                 return ""
-            if heading_stripped or (looks_like_list and len(concise) <= max(120, int(max_chars) // 2)):
-                opener = reply_tone.pick_variant(
-                    user_text=question,
-                    key="knowledge_answer:intro",
-                    variants=(
-                        "Here’s the practical answer",
-                        "The short answer is",
-                        "In brief",
-                    ),
-                )
-                if opener and not concise.lower().startswith(("yes", "no")):
-                    concise = f"{opener}: {concise}"
             if len(concise) > max(1, int(max_chars)):
                 trimmed = concise[: max(1, int(max_chars))]
                 if " " in trimmed:
@@ -710,24 +735,16 @@ class PipelinePresentationMixin:
             return " ".join(parts).strip()
 
     @classmethod
-    def _build_component_contract(
+    async def _build_component_contract(
             cls,
             *,
             context: ComponentContext,
             components,
-            pick_text: Optional[Callable[[str, Sequence[str]], str]] = None,
         ) -> Dict[str, Any]:
             component_list: List[ChatComponent] = [item for item in list(components or []) if isinstance(item, ChatComponent)]
             mapped = cls._components_to_map(component_list)
             query_summary = str(mapped.get("query_summary", {}).get("text") or context.query_summary or "").strip()
             user_text = str(context.user_text or "").strip()
-            choose = pick_text or (
-                lambda key, variants: reply_tone.pick_variant(
-                    user_text=user_text,
-                    key=key,
-                    variants=variants,
-                )
-            )
             assistant_text = ""
             carousel_msg = ""
             display_products: List[Any] = []
@@ -749,10 +766,9 @@ class PipelinePresentationMixin:
                 carousel_msg = str(context.debug.get("detail_carousel_msg") or "").strip()
                 follow_ups.extend(list(context.debug.get("detail_follow_ups") or []))
             elif has_product_cards:
-                product_contract = product_contract_builder.build_product_cards_contract(
+                product_contract = await product_contract_builder.build_product_cards_contract(
                     context=context,
                     mapped=mapped,
-                    choose=choose,
                     build_store_overview_reply=cls._build_store_overview_reply,
                     build_show_more_follow_up=cls._build_show_more_follow_up,
                     build_conversion_follow_ups=cls._build_conversion_follow_ups,
@@ -771,14 +787,23 @@ class PipelinePresentationMixin:
                 )
 
             if not assistant_text:
-                assistant_text = choose(
-                    f"{context.workflow}:default_reply",
-                    [
-                        "I got it. Here's what I can do next.",
-                        "Understood. Here's the best next step.",
-                        "Thanks for the details. Here's what I found.",
-                    ],
+                assistant_text = await generate_contextual_reply(
+                    kind="default",
+                    reply_language=str(getattr(context, "locale", "") or "en-US"),
+                    payload={
+                        "user_text": user_text,
+                        "query_summary": query_summary,
+                        "workflow": str(context.workflow or ""),
+                        "source": str(getattr(context.source, "value", context.source) or ""),
+                        "result_count": int(getattr(context, "result_count", 0) or 0),
+                        "has_products": bool(list(getattr(context, "canonical_products", []) or [])),
+                        "has_knowledge": bool(list(getattr(context, "knowledge_sources", []) or [])),
+                        "attribute_filters": dict(getattr(context, "attribute_filters", {}) or {}),
+                        "sku_tokens": list(getattr(context, "sku_tokens", []) or []),
+                    },
                 )
+                if not assistant_text:
+                    assistant_text = "I got it. Here's what I can do next."
 
             finalized_contract = component_contract_builder.finalize_contract_components(
                 component_list=component_list,
@@ -808,12 +833,12 @@ class PipelinePresentationMixin:
             workflow: str,
             route_decision: routing_policy.WorkflowDecision,
             routing_selection_source: str,
+            internal_workflow: str,
             detail: Any,
             sku_tokens: Sequence[str],
             query_summary: str,
             state: PipelineWorkflowState,
             debug_meta: Dict[str, Any],
-            tone_pick: Callable[[str, Sequence[str]], str],
             tone_snapshot: Callable[[], Dict[str, Any]],
             llm_calls: int,
             embedding_calls: int,
@@ -823,30 +848,29 @@ class PipelinePresentationMixin:
             conversation_state_enabled: bool,
             state_working: Optional[Dict[str, Any]],
         ) -> ComponentPipelineResult:
-            selected_components = state.selected_components
-            canonical_products = state.canonical_products
-            recommendations = state.recommendations
-            knowledge_sources = state.knowledge_sources
-            knowledge_answer = state.knowledge_answer
-            result_count = state.result_count
-            retrieval_source = state.retrieval_source
-            ambiguity_reason = state.ambiguity_reason
-            knowledge_error_message = state.knowledge_error_message
+            selected_components = state.presentation.selected_components
+            canonical_products = state.presentation.canonical_products
+            knowledge_sources = state.knowledge.sources
+            knowledge_answer = state.knowledge.answer
+            result_count = state.retrieval.result_count
+            retrieval_source = state.retrieval.source
+            ambiguity_reason = state.decision.ambiguity_reason
+            knowledge_error_message = state.knowledge.error_message
             retrieval_outcome = build_retrieval_outcome(
                 retrieval_source=retrieval_source,
-                product_ids=list(state.product_ids or []),
+                product_ids=list(state.catalog.product_ids or []),
                 ambiguity_reason=str(ambiguity_reason or ""),
             )
-            state.retrieval_outcome = retrieval_outcome
+            state.retrieval.outcome = retrieval_outcome
             debug_meta["retrieval_outcome"] = retrieval_outcome.to_debug_dict()
             debug_meta["match_tier"] = retrieval_outcome.match_tier
 
             if ComponentType.CLARIFY in selected_components:
-                clarify_policy = self._build_clarify_policy(
+                clarify_policy = await self._build_clarify_policy(
                     reason=str(ambiguity_reason or "missing_details"),
                     user_text=text,
+                    reply_language=locale,
                     clarify_focus=str(getattr(detail, "clarify_focus", "") or ""),
-                    tone_pick=tone_pick,
                     products=canonical_products,
                     attribute_filters=dict(detail.attribute_filters or {}),
                     needs_knowledge=bool(route_decision.needs_knowledge),
@@ -861,6 +885,21 @@ class PipelinePresentationMixin:
                 )
                 debug_meta.update(dict(clarify_policy.get("extra_debug") or {}))
 
+            workflow_result = self._verify_workflow_result(
+                internal_workflow=internal_workflow,
+                state=state,
+                detail=detail,
+            )
+            state.decision.workflow_result = workflow_result
+            state.decision.retrieval_confidence = float(workflow_result.retrieval_confidence or 0.0)
+            state.decision.answerability = str(workflow_result.answerability or "none")
+            state.decision.verification_reason = str(workflow_result.verification_reason or "")
+            debug_meta["internal_workflow"] = workflow_result.internal_workflow
+            debug_meta["retrieval_confidence"] = workflow_result.retrieval_confidence
+            debug_meta["answerability"] = workflow_result.answerability
+            debug_meta["verification_reason"] = workflow_result.verification_reason
+            debug_meta["workflow_evidence"] = dict(workflow_result.evidence or {})
+
             context = ComponentContext(
                 user_text=text,
                 locale=locale,
@@ -869,7 +908,6 @@ class PipelinePresentationMixin:
                 source=retrieval_source,
                 selected_components=selected_components,
                 canonical_products=canonical_products,
-                recommendations=recommendations,
                 knowledge_sources=knowledge_sources,
                 knowledge_answer=knowledge_answer,
                 result_count=result_count,
@@ -887,15 +925,14 @@ class PipelinePresentationMixin:
             )
             spans["response_build_ms"] += (time.perf_counter() - build_started) * 1000.0
 
-            contract = self._build_component_contract(
+            contract = await self._build_component_contract(
                 context=context,
                 components=components,
-                pick_text=lambda key, variants: tone_pick(key, variants),
             )
             product_display_count = len(list(contract.get("product_carousel") or []))
-            product_result_count = int(state.result_count or 0)
+            product_result_count = int(state.retrieval.result_count or 0)
             product_has_more = bool(
-                getattr(state, "pagination_has_more", False)
+                state.catalog.pagination_has_more
                 or (product_result_count > product_display_count)
             )
             total_ms = (time.perf_counter() - started) * 1000.0
@@ -961,9 +998,9 @@ class PipelinePresentationMixin:
                         else ""
                     ),
                     route=workflow,
-                    query_cache_key=str(state.query_cache_key or ""),
-                    query_product_ids=list(getattr(state, "query_product_ids", []) or getattr(state, "product_ids", []) or []),
-                    result_count=int(state.result_count or 0),
+                    query_cache_key=str(state.catalog.query_cache_key or ""),
+                    query_product_ids=list(state.catalog.query_product_ids or state.catalog.product_ids or []),
+                    result_count=int(state.retrieval.result_count or 0),
                     display_offset=int(debug_meta.get("catalog_pagination_offset") or 0),
                     display_limit=int(debug_meta.get("catalog_pagination_limit") or 0),
                     product_ids=state_product_ids,

@@ -23,6 +23,12 @@ from app.services.catalog.search_policy import (
 )
 from app.services.chat.parsing.attribute_normalization import normalize_text
 from app.services.chat.parsing.search_policy import normalize_filter_map
+from app.utils.synonym_rules import (
+    BODY_PART_FALLBACK_TOKENS,
+    FEATURE_FALLBACK_TOKENS,
+    PRESENTATION_TYPE_FALLBACK_TOKENS,
+    THEME_FALLBACK_TOKENS,
+)
 
 
 @dataclass
@@ -58,6 +64,14 @@ class CatalogProductSearchService:
     }
 
     _FILTER_KEY_ALIASES: Dict[str, str] = {
+        "body part": "body_part",
+        "body parts": "body_part",
+        "feature": "feature",
+        "features": "feature",
+        "presentation type": "presentation_type",
+        "presentation types": "presentation_type",
+        "theme": "theme",
+        "themes": "theme",
         "type": "jewelry_type",
         "types": "jewelry_type",
         "diameter": "outer_diameter",
@@ -224,6 +238,38 @@ class CatalogProductSearchService:
             if inferred_type:
                 attrs["jewelry_type"] = inferred_type
 
+        if not str(attrs.get("presentation_type") or "").strip():
+            inferred_presentation_type = self._infer_from_search_text(
+                search_text=search_text,
+                token_map=PRESENTATION_TYPE_FALLBACK_TOKENS,
+            )
+            if inferred_presentation_type:
+                attrs["presentation_type"] = inferred_presentation_type
+
+        if not str(attrs.get("body_part") or "").strip():
+            inferred_body_part = self._infer_from_search_text(
+                search_text=search_text,
+                token_map=BODY_PART_FALLBACK_TOKENS,
+            )
+            if inferred_body_part:
+                attrs["body_part"] = inferred_body_part
+
+        if not str(attrs.get("theme") or "").strip():
+            inferred_theme = self._infer_from_search_text(
+                search_text=search_text,
+                token_map=THEME_FALLBACK_TOKENS,
+            )
+            if inferred_theme:
+                attrs["theme"] = inferred_theme
+
+        if not str(attrs.get("feature") or "").strip():
+            inferred_feature = self._infer_from_search_text(
+                search_text=search_text,
+                token_map=FEATURE_FALLBACK_TOKENS,
+            )
+            if inferred_feature:
+                attrs["feature"] = inferred_feature
+
         return ProductCard(
             id=product.id,
             object_id=product.object_id,
@@ -259,6 +305,11 @@ class CatalogProductSearchService:
     @staticmethod
     def _clean_code_candidate(token: str) -> str:
         return token.strip().strip(".,;:()[]{}")
+
+    @classmethod
+    def _normalize_lookup_code(cls, token: str) -> str:
+        cleaned = cls._clean_code_candidate(str(token or "")).lower()
+        return re.sub(r"[^a-z0-9]+", "", cleaned)
 
     @classmethod
     def _significant_query_terms(cls, text: str) -> List[str]:
@@ -706,7 +757,7 @@ class CatalogProductSearchService:
             distance_by_id = {str(card.id): 0.0 for card in cards}
 
         payload = {
-            "cards": [card.dict() for card in cards],
+            "cards": [card.model_dump() for card in cards],
             "product_ids": [str(pid) for pid in product_ids],
         }
         self._structured_cache_set(cache_key, payload)
@@ -833,6 +884,83 @@ class CatalogProductSearchService:
             return None
         cards = await self._cards_from_products([product])
         return cards[0] if cards else None
+
+    async def resolve_product_reference(
+        self,
+        reference: str,
+        *,
+        max_candidates: int = 5,
+    ) -> Dict[str, Any]:
+        candidate = self._clean_code_candidate(reference)
+        if not candidate:
+            return {"status": "not_found", "reference": reference, "matched_by": ""}
+
+        normalized_candidate = self._normalize_lookup_code(candidate)
+        exact_stmt = (
+            select(Product)
+            .where(Product.is_active.is_(True))
+            .where(
+                or_(
+                    func.lower(Product.sku) == candidate.lower(),
+                    func.lower(Product.master_code) == candidate.lower(),
+                    Product.legacy_sku.any(candidate),
+                )
+            )
+            .limit(max(1, int(max_candidates)))
+        )
+        exact_result = await self.db.execute(exact_stmt)
+        exact_products = list(exact_result.scalars().all())
+        if len(exact_products) == 1:
+            cards = await self._cards_from_products(exact_products)
+            return {
+                "status": "resolved",
+                "reference": candidate,
+                "matched_by": "direct_reference",
+                "product": cards[0] if cards else None,
+            }
+        if len(exact_products) > 1:
+            cards = await self._cards_from_products(exact_products[: max_candidates])
+            return {
+                "status": "ambiguous",
+                "reference": candidate,
+                "matched_by": "direct_reference",
+                "candidates": cards,
+            }
+
+        if normalized_candidate:
+            normalized_stmt = (
+                select(Product)
+                .where(Product.is_active.is_(True))
+                .where(
+                    or_(
+                        func.regexp_replace(func.lower(Product.sku), r"[^a-z0-9]+", "", "g")
+                        == normalized_candidate,
+                        func.regexp_replace(func.lower(Product.master_code), r"[^a-z0-9]+", "", "g")
+                        == normalized_candidate,
+                    )
+                )
+                .limit(max(1, int(max_candidates)))
+            )
+            normalized_result = await self.db.execute(normalized_stmt)
+            normalized_products = list(normalized_result.scalars().all())
+            if len(normalized_products) == 1:
+                cards = await self._cards_from_products(normalized_products)
+                return {
+                    "status": "resolved",
+                    "reference": candidate,
+                    "matched_by": "normalized_reference",
+                    "product": cards[0] if cards else None,
+                }
+            if len(normalized_products) > 1:
+                cards = await self._cards_from_products(normalized_products[: max_candidates])
+                return {
+                    "status": "ambiguous",
+                    "reference": candidate,
+                    "matched_by": "normalized_reference",
+                    "candidates": cards,
+                }
+
+        return {"status": "not_found", "reference": candidate, "matched_by": ""}
 
     async def get_inventory_snapshot(self, sku: str) -> Dict[str, Any]:
         candidate = self._clean_code_candidate(sku)

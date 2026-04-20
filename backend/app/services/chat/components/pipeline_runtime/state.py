@@ -7,6 +7,7 @@ from app.schemas.chat import ChatResponse, KnowledgeSource
 from app.services.chat.components.types import ComponentSource, ComponentType
 from app.services.chat.retrieval.retrieval_outcome import RetrievalOutcome
 from app.services.chat.runtime.capabilities import ChatRuntimeCapabilities
+from app.services.chat.routing.contracts import WorkflowResult
 
 
 @dataclass
@@ -29,26 +30,56 @@ class PipelineExecutionState:
 
 
 @dataclass
-class PipelineWorkflowState:
+class PipelinePresentationState:
     selected_components: List[ComponentType] = field(default_factory=list)
     canonical_products: List[Any] = field(default_factory=list)
-    recommendations: List[Any] = field(default_factory=list)
-    knowledge_sources: List[KnowledgeSource] = field(default_factory=list)
-    knowledge_answer: str = ""
-    result_count: int = 0
+
+
+@dataclass
+class PipelineKnowledgeState:
+    sources: List[KnowledgeSource] = field(default_factory=list)
+    answer: str = ""
+    error_message: str = ""
+
+
+@dataclass
+class PipelineCatalogState:
     product_ids: List[Any] = field(default_factory=list)
     query_product_ids: List[Any] = field(default_factory=list)
     query_embedding: Optional[List[float]] = None
-    retrieval_source: ComponentSource = ComponentSource.ERROR
-    retrieval_outcome: Optional[RetrievalOutcome] = None
-    runtime_capabilities: Optional[ChatRuntimeCapabilities] = None
-    ambiguity_reason: Optional[str] = None
-    knowledge_error_message: str = ""
     handled_attribute_list: bool = False
     attribute_list_target: str = ""
-    semantic_catalog_search_done: bool = False
+    semantic_search_done: bool = False
     query_cache_key: str = ""
     pagination_requested: bool = False
     pagination_offset: int = 0
     pagination_limit: int = 0
     pagination_has_more: bool = False
+
+
+@dataclass
+class PipelineRetrievalState:
+    result_count: int = 0
+    source: ComponentSource = ComponentSource.ERROR
+    outcome: Optional[RetrievalOutcome] = None
+
+
+@dataclass
+class PipelineDecisionRuntimeState:
+    runtime_capabilities: Optional[ChatRuntimeCapabilities] = None
+    ambiguity_reason: Optional[str] = None
+    internal_workflow: str = ""
+    intent_confidence: float = 0.0
+    retrieval_confidence: float = 0.0
+    answerability: str = "none"
+    verification_reason: str = ""
+    workflow_result: Optional[WorkflowResult] = None
+
+
+@dataclass
+class PipelineWorkflowState:
+    presentation: PipelinePresentationState = field(default_factory=PipelinePresentationState)
+    knowledge: PipelineKnowledgeState = field(default_factory=PipelineKnowledgeState)
+    catalog: PipelineCatalogState = field(default_factory=PipelineCatalogState)
+    retrieval: PipelineRetrievalState = field(default_factory=PipelineRetrievalState)
+    decision: PipelineDecisionRuntimeState = field(default_factory=PipelineDecisionRuntimeState)

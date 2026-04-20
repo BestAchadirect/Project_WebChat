@@ -11,11 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.product import Product
 from app.models.product_search_projection import ProductSearchProjection
 from app.services.catalog.attributes_service import eav_service
-from app.services.catalog.search_policy import (
+from app.services.catalog.attribute_sync_service import product_attribute_sync_service
+from app.utils.synonym_rules import (
+    BODY_PART_FALLBACK_TOKENS,
+    FEATURE_FALLBACK_TOKENS,
     JEWELRY_TYPE_FALLBACK_TOKENS,
     MATERIAL_FALLBACK_TOKENS,
+    PRESENTATION_TYPE_FALLBACK_TOKENS,
 )
-from app.services.catalog.attribute_sync_service import product_attribute_sync_service
 
 
 class ProductProjectionSyncService:
@@ -69,6 +72,21 @@ class ProductProjectionSyncService:
         return cls._norm(normalized)
 
     @classmethod
+    def _normalize_presentation_type(cls, value: Any) -> str:
+        normalized = product_attribute_sync_service.normalize_attribute_value("presentation_type", value)
+        return cls._norm(normalized)
+
+    @classmethod
+    def _normalize_body_part(cls, value: Any) -> str:
+        normalized = product_attribute_sync_service.normalize_attribute_value("body_part", value)
+        return cls._norm(normalized)
+
+    @classmethod
+    def _normalize_feature(cls, value: Any) -> str:
+        normalized = product_attribute_sync_service.normalize_attribute_value("feature", value)
+        return cls._norm(normalized)
+
+    @classmethod
     def _normalize_gauge(cls, value: Any) -> str:
         normalized = product_attribute_sync_service.normalize_attribute_value("gauge", value)
         return cls._norm(normalized)
@@ -108,11 +126,38 @@ class ProductProjectionSyncService:
             )
             jewelry_type_norm = cls._norm(inferred)
 
+        presentation_type_norm = cls._normalize_presentation_type(attrs.get("presentation_type"))
+        if not presentation_type_norm:
+            inferred = cls._infer_from_search_text(
+                search_text=search_text_norm,
+                token_map=PRESENTATION_TYPE_FALLBACK_TOKENS,
+            )
+            presentation_type_norm = cls._norm(inferred)
+
+        body_part_norm = cls._normalize_body_part(attrs.get("body_part"))
+        if not body_part_norm:
+            inferred = cls._infer_from_search_text(
+                search_text=search_text_norm,
+                token_map=BODY_PART_FALLBACK_TOKENS,
+            )
+            body_part_norm = cls._norm(inferred)
+
+        feature_norm = cls._normalize_feature(attrs.get("feature"))
+        if not feature_norm:
+            inferred = cls._infer_from_search_text(
+                search_text=search_text_norm,
+                token_map=FEATURE_FALLBACK_TOKENS,
+            )
+            feature_norm = cls._norm(inferred)
+
         return {
             "product_id": product.id,
             "sku_norm": cls._norm(product.sku),
             "material_norm": material_norm or None,
             "jewelry_type_norm": jewelry_type_norm or None,
+            "presentation_type_norm": presentation_type_norm or None,
+            "body_part_norm": body_part_norm or None,
+            "feature_norm": feature_norm or None,
             "gauge_norm": cls._normalize_gauge(attrs.get("gauge")) or None,
             "threading_norm": cls._normalize_threading(attrs.get("threading")) or None,
             "color_norm": cls._normalize_color(attrs.get("color")) or None,
@@ -158,6 +203,9 @@ class ProductProjectionSyncService:
                 "sku_norm": insert_stmt.excluded.sku_norm,
                 "material_norm": insert_stmt.excluded.material_norm,
                 "jewelry_type_norm": insert_stmt.excluded.jewelry_type_norm,
+                "presentation_type_norm": insert_stmt.excluded.presentation_type_norm,
+                "body_part_norm": insert_stmt.excluded.body_part_norm,
+                "feature_norm": insert_stmt.excluded.feature_norm,
                 "gauge_norm": insert_stmt.excluded.gauge_norm,
                 "threading_norm": insert_stmt.excluded.threading_norm,
                 "color_norm": insert_stmt.excluded.color_norm,

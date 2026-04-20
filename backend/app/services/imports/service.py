@@ -23,6 +23,7 @@ from app.models.knowledge import (
     KnowledgeArticle,
     KnowledgeArticleVersion,
     KnowledgeChunk,
+    KnowledgeChunkTag,
     KnowledgeEmbedding,
     KnowledgeUpload,
     KnowledgeUploadStatus,
@@ -37,6 +38,8 @@ from app.services.catalog.projection_service import product_projection_sync_serv
 from app.services.imports.knowledge.chunking import chunk_text
 from app.services.imports.knowledge.embeddings import hash_text
 from app.services.imports.knowledge.parser import parse_csv_knowledge
+from app.services.knowledge.enrichment import enrich_chunk
+from app.services.knowledge.tagging import build_knowledge_chunk_tags
 from app.services.imports.knowledge.upload_history import (
     ensure_upload_path_in_root as ensure_knowledge_upload_path_in_root,
     knowledge_upload_storage_path,
@@ -212,10 +215,10 @@ class DataImportService:
         return (
             "sku,master_code,price,stock_status,stock_qty,description,category,image_url,product_url,object_id,"
             "legacy_sku,visibility,is_featured,priority,search_keywords,attributes_json,"
-            "jewelry_type,material,"
+            "body_part,feature,jewelry_type,material,"
             "length,size,cz_color,design,crystal_color,color,gauge,size_in_pack,rack,height,"
             "packing_option,pincher_size,ring_size,quantity_in_bulk,opal_color,threading,"
-            "outer_diameter,pearl_color"
+            "outer_diameter,pearl_color,presentation_type,theme"
         )
 
     @staticmethod
@@ -1051,6 +1054,13 @@ class DataImportService:
                         chunk_text=c_text,
                         chunk_hash=c_hash
                     )
+                    chunk_tags = build_knowledge_chunk_tags(
+                        article_title=article.title,
+                        article_category=article.category,
+                        chunk_text=c_text,
+                    )
+                    if chunk_tags:
+                        chunk.tags.extend(KnowledgeChunkTag(tag=tag) for tag in chunk_tags)
                     db.add(chunk)
                 await db.commit()
                 
@@ -1128,6 +1138,27 @@ class DataImportService:
                 
                 result = await db.execute(stmt)
                 chunks_to_process = result.scalars().all()
+                article_rows = (
+                    await db.execute(
+                        select(KnowledgeArticle.id, KnowledgeArticle.title, KnowledgeArticle.category).where(
+                            KnowledgeArticle.id.in_(article_ids)
+                        )
+                    )
+                ).all()
+                article_map = {
+                    row.id: {"title": row.title, "category": row.category}
+                    for row in article_rows
+                }
+                existing_tag_rows = (
+                    await db.execute(
+                        select(KnowledgeChunkTag.chunk_id, KnowledgeChunkTag.tag).where(
+                            KnowledgeChunkTag.chunk_id.in_([chunk.id for chunk in chunks_to_process])
+                        )
+                    )
+                ).all()
+                existing_tags: dict[UUID, set[str]] = {}
+                for row in existing_tag_rows:
+                    existing_tags.setdefault(row.chunk_id, set()).add(str(row.tag))
                 
                 total = len(chunks_to_process)
                 processed = 0
@@ -1137,6 +1168,21 @@ class DataImportService:
                 chunks_to_embed: List[KnowledgeChunk] = []
 
                 for chunk in chunks_to_process:
+                    article_info = article_map.get(chunk.article_id, {})
+                    enrichment = await enrich_chunk(
+                        db=db,
+                        chunk_id=chunk.id,
+                        article_title=article_info.get("title"),
+                        article_category=article_info.get("category"),
+                        chunk_text=chunk.chunk_text,
+                        generated_by="import",
+                    )
+                    for tag in enrichment.get("tags", []):
+                        if tag in existing_tags.get(chunk.id, set()):
+                            continue
+                        db.add(KnowledgeChunkTag(chunk_id=chunk.id, tag=tag))
+                        existing_tags.setdefault(chunk.id, set()).add(tag)
+
                     # Check for REUSE
                     # Find ANY existing embedding with same chunk_hash
                     # We need to find a Chunk with same hash that DOES have an embedding

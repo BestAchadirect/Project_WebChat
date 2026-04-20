@@ -61,6 +61,10 @@ _PRODUCT_FOLLOW_UP_HINTS = {
     "material",
     "style",
     "design",
+    "feature",
+    "presentation_type",
+    "body_part",
+    "theme",
     "threading",
     "threadless",
     "internally",
@@ -160,7 +164,7 @@ def _follow_up_score(
         return 0
 
     if family == "product":
-        if has_products and use_products and route_norm in {"catalog", "recommendation"}:
+        if has_products and use_products and route_norm == "catalog":
             score += 5
         elif has_products and use_products:
             score += 3
@@ -169,12 +173,12 @@ def _follow_up_score(
     elif family == "knowledge":
         if use_knowledge or is_policy_like or route_norm == "knowledge":
             score += 5
-        elif route_norm in {"catalog", "recommendation"} and has_products and use_products:
+        elif route_norm == "catalog" and has_products and use_products:
             score += 1
         else:
             score -= 2
     else:
-        if route_norm in {"catalog", "recommendation"} and has_products and use_products:
+        if route_norm == "catalog" and has_products and use_products:
             score += 2
         elif route_norm == "knowledge" and use_knowledge:
             score += 2
@@ -268,7 +272,7 @@ def filter_follow_up_questions(
             candidates[signature] = (score, index, text)
 
     if not candidates:
-        if route_norm in {"catalog", "recommendation", "knowledge"}:
+        if route_norm in {"catalog", "knowledge"}:
             return [text for _index, text in fallback_order[: max(1, int(limit))]]
         return []
 
@@ -304,10 +308,14 @@ def extract_product_attribute_values(
     limit: int = 3,
 ) -> List[str]:
     aliases: Dict[str, Tuple[str, ...]] = {
+        "body_part": ("body_part", "body part"),
+        "feature": ("feature",),
         "jewelry_type": ("jewelry_type", "type"),
         "material": ("material",),
         "gauge": ("gauge", "size"),
         "color": ("color", "cz_color", "opal_color", "crystal_color", "pearl_color"),
+        "presentation_type": ("presentation_type", "presentation type"),
+        "theme": ("theme",),
         "threading": ("threading",),
     }
     alias_keys = aliases.get(key, (key,))
@@ -315,10 +323,14 @@ def extract_product_attribute_values(
     seen: set[str] = set()
     cap = max(1, int(limit or 1))
     for product in list(products or []):
-        attrs = dict(product.attributes or {})
+        attrs = {
+            normalize_text(attr_key): attr_value
+            for attr_key, attr_value in dict(product.attributes or {}).items()
+            if normalize_text(attr_key)
+        }
         raw_value: Any = None
         for alias in alias_keys:
-            candidate = attrs.get(alias)
+            candidate = attrs.get(normalize_text(alias))
             if candidate not in (None, ""):
                 raw_value = candidate
                 break
@@ -348,6 +360,10 @@ def build_product_follow_up_questions(
         return []
 
     context = {
+        "body_part": normalize_follow_up_attr_value(attribute_filters.get("body_part")),
+        "feature": normalize_follow_up_attr_value(attribute_filters.get("feature")),
+        "presentation_type": normalize_follow_up_attr_value(attribute_filters.get("presentation_type")),
+        "theme": normalize_follow_up_attr_value(attribute_filters.get("theme")),
         "jewelry_type": normalize_follow_up_attr_value(attribute_filters.get("jewelry_type")),
         "material": normalize_follow_up_attr_value(attribute_filters.get("material")),
         "gauge": normalize_follow_up_attr_value(attribute_filters.get("gauge")),
@@ -386,6 +402,10 @@ def build_product_follow_up_questions(
         gauge = context["gauge"]
         color = context["color"]
         threading = context["threading"]
+        body_part = context["body_part"]
+        presentation_type = context["presentation_type"]
+        feature = context["feature"]
+        theme = context["theme"]
 
         if jewelry_type and material and gauge:
             _add(f"Show more {material} {jewelry_type} in {gauge}")
@@ -401,6 +421,14 @@ def build_product_follow_up_questions(
             _add(f"Try {material} pieces")
         if gauge and not jewelry_type:
             _add(f"Focus on {gauge} options")
+        if body_part and jewelry_type:
+            _add(f"See {body_part} {jewelry_type}")
+        if presentation_type and jewelry_type:
+            _add(f"Try {presentation_type.lower()} {jewelry_type}")
+        if feature and jewelry_type:
+            _add(f"Try {feature.lower()} {jewelry_type}")
+        if theme and jewelry_type:
+            _add(f"See {theme.lower()} {jewelry_type}")
 
         alt_materials = extract_product_attribute_values(products=products, key="material", limit=3)
         alt_gauges = extract_product_attribute_values(products=products, key="gauge", limit=3)

@@ -32,6 +32,8 @@ class Product(BaseModel):
     master_code: Optional[str] = None
 
     # Extended attributes
+    body_part: Optional[str] = None
+    feature: Optional[str] = None
     jewelry_type: Optional[str] = None
     material: Optional[str] = None
     length: Optional[str] = None
@@ -52,6 +54,8 @@ class Product(BaseModel):
     threading: Optional[str] = None
     outer_diameter: Optional[str] = None
     pearl_color: Optional[str] = None
+    presentation_type: Optional[str] = None
+    theme: Optional[str] = None
 
 class ProductUpdate(BaseModel):
     visibility: Optional[bool] = None
@@ -61,6 +65,8 @@ class ProductUpdate(BaseModel):
     stock_status: Optional[StockStatus] = None
     stock_qty: Optional[int] = None
     description: Optional[str] = None
+    body_part: Optional[str] = None
+    feature: Optional[str] = None
     jewelry_type: Optional[str] = None
     material: Optional[str] = None
     length: Optional[str] = None
@@ -81,6 +87,8 @@ class ProductUpdate(BaseModel):
     threading: Optional[str] = None
     outer_diameter: Optional[str] = None
     pearl_color: Optional[str] = None
+    presentation_type: Optional[str] = None
+    theme: Optional[str] = None
 
 class ProductBulkUpdateRequest(BaseModel):
     product_ids: List[UUID]

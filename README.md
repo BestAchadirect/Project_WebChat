@@ -1,7 +1,27 @@
 ﻿# Project WebChat (AchaDirect)
 
 ## Business Overview
-Project WebChat is AchaDirect's AI-assisted customer chat experience that turns your knowledge base and Magento catalog into accurate, guided conversations. It helps teams answer customer questions, recommend products, and route requests to the right flow, without manual chat scripts.
+Project WebChat is AchaDirect's AI-assisted customer chat experience that turns your knowledge base and Magento catalog into accurate, guided conversations. It helps teams answer customer questions, find matching products, and route requests to the right flow, without manual chat scripts.
+
+## Current Scope
+- Magento-only product direction
+- Single-store direction
+- Read-only AI assistant
+- Product discovery
+- Product recommendation
+- FAQ / policy answering
+- Structured frontend rendering
+
+## Current Data Strategy
+- Current upstream product source: Klevu API
+- Future upstream product source: Magento API
+- AI serving layer: local PostgreSQL database
+
+The intended runtime shape is:
+1. External system syncs into local storage
+2. Backend services read local data
+3. AI tools call backend services
+4. LLM orchestrates tool usage
 
 ### Who it is for
 - AchaDirect ecommerce and support teams
@@ -10,16 +30,16 @@ Project WebChat is AchaDirect's AI-assisted customer chat experience that turns 
 
 ### Key benefits
 - Faster answers with consistent tone and guardrails
-- Better product discovery and recommendations
+- Better product discovery and matching
 - Lower support load with automated, accurate responses
-- Clear admin controls for content, routing, and analytics
+- Clear controls for content, routing, and analytics
 
 ### Core capabilities
 - Knowledge base import (CSV) -> chunking -> embeddings -> RAG answers
 - Magento product import (CSV) -> product embeddings -> product carousel in chat
-- Intent routing with Unified NLU: browse_products, search_specific, knowledge_query, off_topic
+- Structured chat runtime with routing, retrieval, grounded response composition, and an emerging tool-calling path
 
-### Recent improvements (January 2026)
+### Current highlights
 - Smart product search
   - Exact SKU match and master code grouping
   - AI code detection from natural language
@@ -30,6 +50,11 @@ Project WebChat is AchaDirect's AI-assisted customer chat experience that turns 
 
 ## Technical Overview
 FastAPI + PostgreSQL (pgvector) backend with a React admin dashboard.
+
+## Key Docs
+- Repo structure and placement rules: [AGENTS.md](./AGENTS.md)
+- AI implementation guidance: [docs/ai/agent-implementation-plan.md](./docs/ai/agent-implementation-plan.md)
+- Backend setup and backend-specific notes: [backend/README.md](./backend/README.md)
 
 ## Project Structure
 See `AGENTS.md` for the canonical directory structure and responsibilities.
@@ -47,11 +72,11 @@ Project_WebChat/
 ```
 
 Useful docs:
-- Docs index: `docs/README.md`
-- Task system architecture: `docs/architecture/task-system.md`
-- Services redesign: `docs/architecture/services-redesign.md`
-- Database troubleshooting runbook: `docs/runbooks/database-troubleshooting.md`
-- Services deprecation runbook: `docs/runbooks/services-deprecation.md`
+- AI implementation plan: `docs/ai/agent-implementation-plan.md`
+- Backend guide: `backend/README.md`
+
+Note:
+- Older references to a broader `docs/` tree may be stale in the current worktree. Use `AGENTS.md`, this `README.md`, and `docs/ai/agent-implementation-plan.md` as the current top-level guidance.
 
 ## Quick start
 
@@ -115,7 +140,7 @@ Admin: `http://localhost:5173`
 ## Key endpoints
 See `/docs` for the full OpenAPI reference. Common endpoints include:
 - `POST /api/v1/chat/` chat (RAG + product carousel + guardrails)
-- `POST /api/v1/import/knowledge` import KB file (`.csv` / `.docx`)
+- `POST /api/v1/import/knowledge` import KB file (`.csv`)
 - `GET /api/v1/import/knowledge/uploads` list KB upload history
 - `POST /api/v1/import/products` import products CSV
 - `GET /api/v1/import/products/uploads` list product upload history
@@ -125,10 +150,16 @@ See `/docs` for the full OpenAPI reference. Common endpoints include:
 ## Currency (canonical USD + conversion)
 - Products are stored in `BASE_CURRENCY` (default `USD`).
 - Convert display currency using `CURRENCY_RATES_JSON` where rates mean: `1 USD = X units`.
-- Manual migration (Supabase SQL editor): `backend/sql/migrations/2025_12_19_products_currency_usd.sql`
+- Manual SQL migrations: see `backend/sql/migrations/` for current scripts.
 
 ## Product tuning
 The only active product tuning knob is `PRODUCT_DISTANCE_THRESHOLD` (controls how strict vector product matching is in chat).
+
+## AI Implementation Notes
+- The current AI priority is implementation logic, not multi-tenant or cross-platform architecture.
+- The current target is a tool-first, read-only assistant over local data.
+- Avoid adding generic platform abstractions unless a second real platform exists.
+- For execution guidance, use `docs/ai/agent-implementation-plan.md`.
 
 ## Tests
 Unit/service tests live in `backend/tests/` (see `backend/pyproject.toml` pytest config).
@@ -205,17 +236,3 @@ Vite proxies `/api/*` to the local FastAPI backend (port `8000`).
 Notes:
 - `infra/ngrok/start-ngrok.ps1` generates `infra/ngrok/ngrok.local.yml` at runtime (gitignored) to avoid committing the authtoken.
 - If `ngrok` is not on your PATH, set `NGROK_EXE` in the repo root `.env` (example: `NGROK_EXE=C:\Tools\ngrok\ngrok.exe`).
-
-## Troubleshooting
-
-### `ERR_NETWORK` / Network Error (Axios)
-If you see "Network Error" in the frontend (especially via ngrok):
-1. Check backend: ensure `backend` is running on port 8000.
-2. CORS: check `ALLOWED_ORIGINS` in `.env`. For ngrok dev, set `ALLOWED_ORIGINS=*`.
-3. Proxy SSL: in `vite.config.ts`, ensure `secure: false` is set in the proxy config to allow self-signed/local certs.
-4. Redirects (307): ensure your API calls end with a slash if the backend route requires it (or verify your API routes do not enforce trailing slashes).
-   - Example: requesting `/api/v1/products` when `/api/v1/products/` is expected causes a redirect that breaks some proxies.
-
-### `dev.ps1` issues
-- PowerShell execution policy: you may need to run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`.
-- Node/IPv6: the script forces `http://127.0.0.1:8000` for the backend URL to avoid Node.js localhost IPv6 resolution issues on Windows.

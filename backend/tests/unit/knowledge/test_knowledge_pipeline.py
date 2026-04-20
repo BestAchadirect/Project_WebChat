@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 pytest.importorskip("sqlalchemy")
@@ -113,3 +115,46 @@ def test_store_profile_rerank_is_noop_for_store_overview_request() -> None:
     )
 
     assert [item.title for item in ranked] == [item.title for item in sources]
+
+
+@pytest.mark.asyncio
+async def test_search_knowledge_propagates_summary_text_into_sources() -> None:
+    article_id = uuid4()
+    chunk_id = uuid4()
+
+    class _FakeResult:
+        def all(self):
+            return [
+                (
+                    1,
+                    "Shipping details are available in the FAQ body.",
+                    article_id,
+                    chunk_id,
+                    "Shipping Policy",
+                    "Shipping",
+                    "https://www.example.com/shipping",
+                    "Orders usually arrive within 3-5 business days.",
+                    0.27,
+                )
+            ]
+
+    class _FakeDB:
+        async def execute(self, stmt):
+            return _FakeResult()
+
+    pipeline = KnowledgePipeline(db=_FakeDB(), log_event=lambda *args, **kwargs: None)
+
+    sources, best_distance = await pipeline.search_knowledge(
+        "what is your shipping policy",
+        [0.1, 0.2, 0.3],
+        limit=1,
+        must_tags=None,
+        boost_tags=None,
+        store_overview_request=False,
+        run_id=None,
+    )
+
+    assert best_distance == 0.27
+    assert len(sources) == 1
+    assert sources[0].summary == "Orders usually arrive within 3-5 business days."
+    assert sources[0].content_snippet == "Shipping details are available in the FAQ body."

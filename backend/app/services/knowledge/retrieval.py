@@ -12,6 +12,10 @@ def _no_op_log_event(*_: Any, **__: Any) -> None:
     return
 
 
+def _normalize_category(value: Optional[str]) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
 class KnowledgeRetrievalService:
     """Stable facade for knowledge retrieval used by chat and agentic flows."""
 
@@ -30,22 +34,41 @@ class KnowledgeRetrievalService:
         query_embedding: List[float],
         limit: int = 5,
         category: Optional[str] = None,
+        must_tags: Optional[List[str]] = None,
+        boost_tags: Optional[List[str]] = None,
         store_overview_request: bool = False,
         run_id: Optional[str] = None,
     ) -> List[KnowledgeSource]:
+        requested_limit = max(1, int(limit))
+        wanted_category = _normalize_category(category)
+        search_limit = requested_limit
+        if wanted_category:
+            search_limit = max(requested_limit * 3, requested_limit, 10)
         sources, _best = await self._pipeline.search_knowledge(
             query_text=query_text,
             query_embedding=query_embedding,
-            limit=limit,
+            limit=search_limit,
+            must_tags=must_tags,
+            boost_tags=boost_tags,
             store_overview_request=store_overview_request,
             run_id=run_id,
         )
-        if not category:
-            return sources
-        wanted = category.strip().lower()
-        if not wanted:
-            return sources
-        return [source for source in sources if (source.category or "").strip().lower() == wanted]
+        normalized_sources = sorted(
+            list(sources or []),
+            key=lambda source: (
+                -float(getattr(source, "relevance", 0.0) or 0.0),
+                str(getattr(source, "title", "") or "").strip().lower(),
+                str(getattr(source, "source_id", "") or "").strip().lower(),
+            ),
+        )
+        if not wanted_category:
+            return normalized_sources[:requested_limit]
+        filtered = [
+            source
+            for source in normalized_sources
+            if _normalize_category(getattr(source, "category", None)) == wanted_category
+        ]
+        return filtered[:requested_limit]
 
     async def retrieve(
         self,

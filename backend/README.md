@@ -7,7 +7,7 @@ Backend services for the AchaDirect AI chat experience with RAG and Magento prod
 - Vector similarity search with pgvector
 - Magento 2 product search integration
 - OpenAI LLM integration
-- Chat orchestration (knowledge answers + product recommendations)
+- Chat orchestration (knowledge answers + product matching)
 
 ## Prerequisites
 - Python 3.9+
@@ -71,7 +71,7 @@ Then start the server (e.g. `backend\start.ps1` or `uvicorn ...`). The browser w
 main.py                        # FastAPI app entrypoint
 alembic/                       # Alembic migrations
 app/
-  config.py                    # Settings
+  core/config.py               # Settings
   dependencies.py              # DI dependencies
   models/                      # SQLAlchemy models
   schemas/                     # Pydantic schemas
@@ -119,91 +119,24 @@ cd backend
 python scripts/sync_klevu_products.py --worker --once
 ```
 
-## Scripts and Tests Registry (Agent Editing Guide)
-This section is the canonical map for `backend/scripts/` and `backend/tests/`.
+## Scripts and Tests Guide
+- `backend/scripts/` contains manual tooling and maintenance scripts.
+- `backend/tests/` contains automated backend tests by layer (`unit`, `integration`, `api`, `regression`).
+- Avoid maintaining static file registries in this README; they become stale quickly.
 
-Status meaning:
-- `ACTIVE`: tracked file that should be extended when scope matches.
-- `DRAFT`: local file not tracked yet; review before keeping.
-- `GENERATED/INACTIVE`: cache artifact; safe to delete.
+List current scripts/tests when needed:
 
-As of March 6, 2026:
-
-### `backend/scripts/` (manual tooling, not API startup path)
-| Status | File | Purpose |
-|---|---|---|
-| ACTIVE | `scripts/backfill_product_categories.py` | Backfill product category mappings. |
-| ACTIVE | `scripts/backfill_product_embeddings.py` | Backfill missing product embeddings. |
-| ACTIVE | `scripts/backfill_product_embedding_model.py` | Backfill embedding model metadata for products. |
-| ACTIVE | `scripts/backfill_product_projection.py` | Backfill product projection data. |
-| ACTIVE | `scripts/check_db.py` | Quick database connectivity/state check. |
-| ACTIVE | `scripts/check_legacy_imports.py` | Guardrail for banned legacy import paths. |
-| ACTIVE | `scripts/check_product_groups.py` | Validate product grouping consistency. |
-| ACTIVE | `scripts/check_qa_logs.py` | Inspect QA logs for issues. |
-| ACTIVE | `scripts/check_repo_hygiene.py` | Repository hygiene checks. |
-| ACTIVE | `scripts/cleanup_verify_artifacts.py` | Clean local artifacts from verify runs. |
-| ACTIVE | `scripts/count_chunks.py` | Count knowledge chunks/statistics. |
-| ACTIVE | `scripts/debug_retrieval.py` | Debug retrieval results for a query. |
-| ACTIVE | `scripts/inspect_enum.py` | Inspect enum values/state in DB. |
-| ACTIVE | `scripts/kb_coverage.py` | Report knowledge base coverage metrics. |
-| ACTIVE | `scripts/profile_chat_latency.py` | Profile chat latency. |
-| ACTIVE | `scripts/rebuild_product_search_text.py` | Rebuild searchable product text/index field. |
-| ACTIVE | `scripts/sync_klevu_products.py` | Run Klevu product sync flow (manual/full/queued worker). |
-| ACTIVE | `scripts/verify_chat.py` | Manual chat verification utility. |
-| ACTIVE | `scripts/verify_knowledge_v2.py` | Manual knowledge verification utility. |
-| ACTIVE | `scripts/verify_search.py` | Manual product/search verification utility. |
-| ACTIVE | `scripts/maintenance/cleanup_stale_knowledge.py` | Remove stale knowledge artifacts. |
-| DRAFT | `scripts/backfill_category_facet_eav.py` | Backfill EAV facet/category data. |
-| DRAFT | `scripts/check_category_facet_parity.py` | Compare category facet parity. |
-| DRAFT | `scripts/fix_klevu_object_id_overlap.py` | Repair overlapping Klevu object IDs. |
-| DRAFT | `scripts/migrate_simple_sku_object_id_to_klevu_id.py` | Migrate object IDs to Klevu ID format. |
-| DRAFT | `scripts/seed_facet_definitions.py` | Seed facet definition records. |
-| GENERATED/INACTIVE | `scripts/__pycache__/` and `*.pyc` | Python runtime cache; safe to delete. |
-
-### `backend/tests/` (pytest suite)
-| Status | File | Purpose |
-|---|---|---|
-| ACTIVE | `tests/conftest.py` | Shared pytest bootstrap/config. |
-| ACTIVE | `tests/test_agent_orchestrator.py` | Agent orchestration flow tests. |
-| ACTIVE | `tests/test_agent_tools.py` | Agent tools behavior/contracts tests. |
-| ACTIVE | `tests/test_category_taxonomy_service.py` | Category taxonomy service tests. |
-| ACTIVE | `tests/test_chat_component_builders.py` | Chat component builder tests. |
-| ACTIVE | `tests/test_chat_component_cache.py` | Chat component cache tests. |
-| ACTIVE | `tests/test_chat_component_field_resolver.py` | Chat field resolver tests. |
-| ACTIVE | `tests/test_chat_component_planner.py` | Chat planner tests. |
-| ACTIVE | `tests/test_chat_component_registry.py` | Chat component registry tests. |
-| ACTIVE | `tests/test_chat_commerce_intents.py` | Compare/recommend intent runtime tests. |
-| ACTIVE | `tests/test_chat_component_service_mode.py` | Chat service mode tests. |
-| ACTIVE | `tests/test_chat_conversation_state.py` | Conversation state helper/runtime/persistence tests. |
-| ACTIVE | `tests/test_chat_detail_helpers.py` | Chat detail helper tests. |
-| ACTIVE | `tests/test_chat_detail_mode.py` | Chat detail mode tests. |
-| ACTIVE | `tests/test_chat_follow_up_policy.py` | Follow-up policy tests. |
-| ACTIVE | `tests/test_chat_hybrid_routing.py` | Hybrid routing tests. |
-| ACTIVE | `tests/test_chat_performance_guards.py` | Performance guardrail tests. |
-| ACTIVE | `tests/test_chat_runtime_metrics.py` | Runtime metrics tests. |
-| ACTIVE | `tests/test_chat_sku_precheck_policy.py` | SKU precheck policy tests. |
-| ACTIVE | `tests/test_chat_sku_precheck_runtime.py` | SKU precheck runtime tests. |
-| ACTIVE | `tests/test_data_import_helper_compat.py` | Import helper compatibility tests. |
-| ACTIVE | `tests/test_klevu_sync_service.py` | Klevu sync service tests. |
-| ACTIVE | `tests/test_product_embedding_model_filter.py` | Product embedding model filter tests. |
-| ACTIVE | `tests/test_product_projection_service.py` | Product projection service tests. |
-| ACTIVE | `tests/test_response_consistency.py` | Response consistency tests. |
-| ACTIVE | `tests/test_service_adapters.py` | Service adapter compatibility tests. |
-| DRAFT | `tests/test_attributes_service_facets.py` | Attribute/facet service tests. |
-| DRAFT | `tests/test_products_filter_modes.py` | Product filter mode tests. |
-| GENERATED/INACTIVE | `tests/__pycache__/` and `*.pyc` | Pytest/Python cache; safe to delete. |
-
-### Agent Rules To Prevent File Sprawl
-- Always modify an existing script/test first when domain matches.
-- Create a new file only for a genuinely new domain with no suitable existing file.
-- If a new file is created, update this registry in the same change.
-- Delete stale one-off scripts/tests after migration is complete.
-- Never commit generated caches (`__pycache__/`, `*.pyc`).
+```bash
+cd backend
+rg --files scripts
+rg --files tests -g "test_*.py"
+```
 
 ## Additional Docs
 - Docs index: `../docs/README.md`
 - Task system architecture: `../docs/architecture/task-system.md`
-- Services redesign: `../docs/architecture/services-redesign.md`
+- Runtime contract: `../docs/architecture/chat-runtime-contract.md`
+- Test strategy: `../docs/architecture/test-strategy.md`
 - Database troubleshooting runbook: `../docs/runbooks/database-troubleshooting.md`
 - Services deprecation runbook: `../docs/runbooks/services-deprecation.md`
 

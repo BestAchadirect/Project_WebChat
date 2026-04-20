@@ -17,7 +17,6 @@ class ComponentContext:
     source: ComponentSource
     selected_components: List[ComponentType]
     canonical_products: List[CanonicalProduct] = field(default_factory=list)
-    recommendations: List[CanonicalProduct] = field(default_factory=list)
     knowledge_sources: List[KnowledgeSource] = field(default_factory=list)
     knowledge_answer: str = ""
     result_count: int = 0

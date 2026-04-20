@@ -28,7 +28,7 @@ Do not move or rename directories unless explicitly requested.
   `backend/app/services/ai`, `backend/app/services/chat`, `backend/app/services/catalog`,
   `backend/app/services/knowledge`, `backend/app/services/imports`,
   `backend/app/services/tasks`, `backend/app/services/tickets`, `backend/app/services/legacy`.
-- Keep compatibility wrappers in `backend/app/services/*.py` during deprecation window; new code must import domain paths.
+- Canonical domain imports under `backend/app/services/<domain>/` are required; do not add legacy wrapper modules back.
 - Chat component builders and registry stay in `backend/app/services/chat/components/`.
 - Chat pipeline orchestration internals belong in `backend/app/services/chat/components/pipeline_runtime/`.
 - Keep the public component pipeline entrypoint at `backend/app/services/chat/components/pipeline.py`.
@@ -41,7 +41,11 @@ Do not move or rename directories unless explicitly requested.
 - Frontend hooks/types/utils: `frontend-admin/src/hooks/`, `frontend-admin/src/types/`, `frontend-admin/src/utils/`.
 - Shared contracts: `shared/types/`.
 - Deployment and local infra scripts: `infra/`.
-- Architecture and runbooks: `docs/`.
+- Architecture docs: `docs/architecture/`.
+- AI agent/prompt docs: `docs/ai/`.
+- Current AI implementation guidance lives in `docs/ai/agent-implementation-plan.md`.
+- Runbooks: `docs/runbooks/`.
+- Reference docs: `docs/reference/`.
 
 ## Test Location Policy
 - New backend unit and service tests should go in `backend/tests/`.
@@ -88,4 +92,4 @@ Do not move or rename directories unless explicitly requested.
 
 ## Ownership
 - Owner: Project maintainers.
-- Last reviewed: 2026-03-24.
+- Last reviewed: 2026-04-06.

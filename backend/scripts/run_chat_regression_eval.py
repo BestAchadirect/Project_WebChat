@@ -14,16 +14,22 @@ def main() -> int:
     parser.add_argument(
         "--dataset",
         type=str,
-        default=str(regression_eval.default_dataset_path()),
-        help="Path to the regression dataset JSON file.",
+        default="",
+        help="Optional path to a regression dataset JSON file. Defaults to the built-in routing/parser datasets.",
     )
     args = parser.parse_args()
 
-    dataset_path = Path(args.dataset).resolve()
+    dataset_arg = str(args.dataset or "").strip()
+    dataset_path = Path(dataset_arg).resolve() if dataset_arg else None
     cases = regression_eval.load_regression_cases(dataset_path)
     summary = regression_eval.run_regression_suite(cases)
 
-    print(f"Dataset: {dataset_path}")
+    if dataset_path is not None:
+        print(f"Dataset: {dataset_path}")
+    else:
+        print("Datasets:")
+        for path in regression_eval.default_dataset_paths():
+            print(f"- {path}")
     print(
         f"Total: {summary['total']} | Passed: {summary['passed']} | Failed: {summary['failed']}"
     )

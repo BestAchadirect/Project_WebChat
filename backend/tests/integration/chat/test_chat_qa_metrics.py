@@ -34,7 +34,7 @@ def test_build_chat_qa_metrics_extracts_turn_observability() -> None:
         reply_text="I found products that match what you're looking for.",
         carousel_msg="",
         product_carousel=[_product()],
-        routing=ChatRouting(workflow="recommendation", execution_mode="component", needs_products=True),
+        routing=ChatRouting(workflow="catalog", execution_mode="component", needs_products=True),
         sources=[
             KnowledgeSource(
                 source_id="product_listings",
@@ -50,10 +50,9 @@ def test_build_chat_qa_metrics_extracts_turn_observability() -> None:
             )
         ],
         debug={
-            "workflow": "recommendation",
+            "workflow": "catalog",
             "workflow_path": "component_primary",
-            "reply_mode": "deterministic_recommendation",
-            "recommendation_mode": "similar_items",
+            "reply_mode": "deterministic_catalog",
             "component_mode": "legacy",
             "retrieval_gate": {"use_products": True, "use_knowledge": False, "is_policy_like": False},
             "latency_spans": {"total_ms": 123.4},
@@ -63,13 +62,13 @@ def test_build_chat_qa_metrics_extracts_turn_observability() -> None:
     )
 
     metrics = qa_metrics.build_chat_qa_metrics(
-        user_text="recommend titanium labrets",
+        user_text="show titanium labrets",
         response=response,
         channel="widget",
     )
 
-    assert metrics["workflow"] == "recommendation"
-    assert metrics["response_workflow"] == "recommendation"
+    assert metrics["workflow"] == "catalog"
+    assert metrics["response_workflow"] == "catalog"
     assert metrics["status"] == "success"
     assert metrics["has_products"] is True
     assert metrics["product_count"] == 1

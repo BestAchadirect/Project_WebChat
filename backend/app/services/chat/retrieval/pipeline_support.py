@@ -14,6 +14,17 @@ from app.services.chat.text_normalization import normalize_user_text
 
 
 class PipelineSupportMixin:
+    _ATTRIBUTE_LIST_BROADEN_KEYS = {
+        "body_part",
+        "color",
+        "feature",
+        "jewelry_type",
+        "material",
+        "presentation_type",
+        "theme",
+        "threading",
+    }
+
     async def _load_featured_product_ids(self, *, limit: int = 40) -> List[str]:
             if not hasattr(self.db, "execute"):
                 return []
@@ -62,29 +73,40 @@ class PipelineSupportMixin:
                 "gauge": ProductSearchProjection.gauge_norm,
                 "threading": ProductSearchProjection.threading_norm,
                 "jewelry_type": ProductSearchProjection.jewelry_type_norm,
+                "presentation_type": ProductSearchProjection.presentation_type_norm,
+                "body_part": ProductSearchProjection.body_part_norm,
+                "feature": ProductSearchProjection.feature_norm,
             }
             target_col = projection_cols.get(str(target or "").strip().lower())
             if target_col is None:
                 return []
 
-            stmt = select(target_col).where(
-                ProductSearchProjection.is_active.is_(True),
-                target_col.is_not(None),
-                target_col != "",
-            )
-            for raw_key, raw_value in dict(attribute_filters or {}).items():
-                key = str(raw_key or "").strip().lower()
-                if key == str(target or "").strip().lower():
-                    continue
-                value = normalize_user_text(str(raw_value or ""))
-                if not value:
-                    continue
-                filter_col = projection_cols.get(key)
-                if filter_col is None:
-                    continue
-                stmt = stmt.where(filter_col == value)
+            def _base_stmt():
+                return select(target_col).where(
+                    ProductSearchProjection.is_active.is_(True),
+                    target_col.is_not(None),
+                    target_col != "",
+                )
 
-            stmt = stmt.group_by(target_col).order_by(target_col.asc()).limit(max(1, int(limit)))
+            def _apply_filters(*, broadening: bool) -> Any:
+                stmt = _base_stmt()
+                for raw_key, raw_value in dict(attribute_filters or {}).items():
+                    key = str(raw_key or "").strip().lower()
+                    if key == str(target or "").strip().lower():
+                        continue
+                    value = normalize_user_text(str(raw_value or ""))
+                    if not value:
+                        continue
+                    filter_col = projection_cols.get(key)
+                    if filter_col is None:
+                        continue
+                    if broadening and key in self._ATTRIBUTE_LIST_BROADEN_KEYS:
+                        stmt = stmt.where(filter_col.ilike(f"%{value}%"))
+                    else:
+                        stmt = stmt.where(filter_col == value)
+                return stmt.group_by(target_col).order_by(target_col.asc()).limit(max(1, int(limit)))
+
+            stmt = _apply_filters(broadening=False)
             try:
                 result = await self.db.execute(stmt)
             except Exception:
@@ -100,7 +122,26 @@ class PipelineSupportMixin:
                     continue
                 seen.add(key)
                 values.append(self._display_attribute_value(text))
-            return values
+            if values or not attribute_filters:
+                return values
+
+            broad_stmt = _apply_filters(broadening=True)
+            try:
+                broad_result = await self.db.execute(broad_stmt)
+            except Exception:
+                return values
+            broad_values: List[str] = []
+            broad_seen: set[str] = set()
+            for raw in list(broad_result.scalars().all() or []):
+                text = str(raw or "").strip()
+                if not text:
+                    continue
+                key = text.lower()
+                if key in broad_seen:
+                    continue
+                broad_seen.add(key)
+                broad_values.append(self._display_attribute_value(text))
+            return broad_values
 
     async def _load_recent_product_ids_for_image_followup(
             self,
@@ -148,6 +189,19 @@ class PipelineSupportMixin:
                     return deduped_ids
             return []
 
+    @staticmethod
+    def _format_knowledge_source_context(source: KnowledgeSource) -> str:
+        title = str(getattr(source, "title", "") or "").strip()
+        summary = str(getattr(source, "summary", "") or "").strip()
+        snippet = str(getattr(source, "content_snippet", "") or "").strip()
+        if summary:
+            if snippet and snippet != summary:
+                return f"- {title} | enrichment summary: {summary} | raw excerpt: {snippet}"
+            return f"- {title} | enrichment summary: {summary}"
+        if snippet:
+            return f"- {title} | raw excerpt: {snippet}"
+        return f"- {title}"
+
     async def _knowledge_answer_once(
             self,
             *,
@@ -167,7 +221,7 @@ class PipelineSupportMixin:
 
             snippets = "\n".join(
                 [
-                    f"- {source.title}: {source.content_snippet}"
+                    self._format_knowledge_source_context(source)
                     for source in (sources or [])[:5]
                 ]
             )
@@ -176,6 +230,7 @@ class PipelineSupportMixin:
                     "role": "system",
                     "content": (
                         "Answer strictly from provided context. "
+                        "Prefer the enrichment summary when it is present; use the raw chunk excerpt only if the summary is missing or insufficient. "
                         "Use a natural, shopper-friendly tone that adapts to the user's phrasing. "
                         "Start with the direct answer. Do not use filler like 'Here is what I found'. "
                         "If multiple sources support the same answer, synthesize them into one short summary before replying. "

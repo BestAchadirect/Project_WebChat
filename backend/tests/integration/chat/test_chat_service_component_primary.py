@@ -22,8 +22,6 @@ async def test_chat_service_component_mode_returns_component_pipeline_response(
         assert str(getattr(route_override, "workflow", "")) in {
             "catalog",
             "knowledge",
-            "recommendation",
-            "smalltalk",
             "off_topic",
             "fallback",
         }
@@ -230,6 +228,59 @@ async def test_process_chat_falls_back_to_component_when_agentic_returns_none(
     assert response.reply_text == "component fallback response"
     assert response.debug.get("component_mode") == "primary"
     assert bool((response.debug.get("agentic") or {}).get("fallback_to_component")) is True
+    assert (response.debug.get("agentic") or {}).get("fallback_reason") == "empty_result"
+    assert (response.debug.get("agentic") or {}).get("failure_reason") == "agentic_failed:empty_result"
+
+
+@pytest.mark.asyncio
+async def test_process_chat_falls_back_to_component_when_agentic_uses_no_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_agentic_workflow(
+        self,
+        *,
+        user_text: str,
+        conversation_id: int,
+        run_id: str,
+        channel: str,
+        reply_language: str,
+    ):
+        return AgentRunResult(
+            final_reply="I think the shipping policy is standard.",
+            used_tools=False,
+            product_carousel=[],
+            sources=[],
+            trace=[],
+        )
+
+    async def fake_component_pipeline(self, *, request, conversation_id, run_id, **kwargs):
+        return build_component_pipeline_result(
+            request=request,
+            conversation_id=conversation_id,
+            reply_text="component fallback after no tool usage",
+            response_workflow="knowledge",
+            source="knowledge",
+        )
+
+    patch_chat_service_lifecycle(monkeypatch)
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", True)
+    monkeypatch.setattr(settings, "AGENTIC_ALLOWED_CHANNELS", "widget")
+    monkeypatch.setattr(ChatService, "_run_agentic_workflow", fake_agentic_workflow)
+    monkeypatch.setattr(ChatService, "_run_component_pipeline", fake_component_pipeline)
+
+    service = ChatService(db=object())
+    response = await service.process_chat(
+        ChatRequest(user_id="guest-agent-2b", message="what is your shipping policy?", locale="en-US"),
+        channel="widget",
+    )
+
+    assert response.reply_text == "component fallback after no tool usage"
+    assert response.debug.get("component_mode") == "primary"
+    assert bool((response.debug.get("agentic") or {}).get("selected")) is True
+    assert bool((response.debug.get("agentic") or {}).get("fallback_to_component")) is True
+    assert (response.debug.get("agentic") or {}).get("fallback_reason") == "no_tool_usage"
+    assert (response.debug.get("agentic") or {}).get("failure_reason") == "agentic_failed:no_tool_usage"
+    assert response.routing.workflow == "knowledge"
 
 
 @pytest.mark.asyncio
@@ -270,4 +321,53 @@ async def test_process_chat_falls_back_to_component_when_agentic_errors(
     assert response.debug.get("component_mode") == "primary"
     assert bool((response.debug.get("agentic") or {}).get("fallback_to_component")) is True
     assert (response.debug.get("agentic") or {}).get("fallback_reason") == "agentic_error"
+    assert response.debug.get("agentic_failure_reason") == "agentic_failed:RuntimeError"
+    assert (response.debug.get("agentic") or {}).get("failure_reason") == "agentic_failed:RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_process_chat_tries_agentic_first_for_supported_knowledge_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, int] = {"agentic": 0, "component": 0}
+
+    async def fake_agentic_workflow(
+        self,
+        *,
+        user_text: str,
+        conversation_id: int,
+        run_id: str,
+        channel: str,
+        reply_language: str,
+    ):
+        calls["agentic"] += 1
+        return None
+
+    async def fake_component_pipeline(self, *, request, conversation_id, run_id, **kwargs):
+        calls["component"] += 1
+        return build_component_pipeline_result(
+            request=request,
+            conversation_id=conversation_id,
+            reply_text="knowledge component fallback response",
+            response_workflow="knowledge",
+            source="knowledge",
+        )
+
+    patch_chat_service_lifecycle(monkeypatch)
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", True)
+    monkeypatch.setattr(settings, "AGENTIC_ALLOWED_CHANNELS", "widget")
+    monkeypatch.setattr(ChatService, "_run_agentic_workflow", fake_agentic_workflow)
+    monkeypatch.setattr(ChatService, "_run_component_pipeline", fake_component_pipeline)
+
+    service = ChatService(db=object())
+    response = await service.process_chat(
+        ChatRequest(user_id="guest-agent-4", message="how can i contact support?", locale="en-US"),
+        channel="widget",
+    )
+
+    assert calls == {"agentic": 1, "component": 1}
+    assert response.reply_text == "knowledge component fallback response"
+    assert response.routing.workflow == "knowledge"
+    assert bool((response.debug.get("agentic") or {}).get("selected")) is True
+    assert bool((response.debug.get("agentic") or {}).get("fallback_to_component")) is True
 

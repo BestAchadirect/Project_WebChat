@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.chat.components.pipeline import ComponentPipeline
+from app.services.chat.presentation import clarify_policy
 
 
 def test_apply_hard_constraint_gate_keeps_only_matching_cards() -> None:
@@ -52,12 +55,25 @@ def test_apply_soft_hint_gate_keeps_partial_matches_when_no_full_match_exists() 
     assert meta["semantic_soft_constraint_rejection_reason"] == ""
 
 
-def test_build_clarify_policy_semantic_concept_unclear_uses_focus_specific_copy() -> None:
-    result = ComponentPipeline._build_clarify_policy(
+@pytest.mark.asyncio
+async def test_build_clarify_policy_semantic_concept_unclear_uses_focus_specific_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_contextual_reply(*, kind, reply_language, payload):
+        assert kind == "clarify"
+        assert payload.get("clarify_focus") == "condition"
+        assert payload.get("clarify_instruction")
+        assert payload.get("clarify_question") == "What condition are you looking for?"
+        assert "suggested_examples" not in payload
+        return "What condition are you looking for?"
+
+    monkeypatch.setattr(clarify_policy, "generate_contextual_reply", fake_generate_contextual_reply)
+
+    result = await ComponentPipeline._build_clarify_policy(
         reason="semantic_concept_unclear",
-        clarify_focus="sterilization_meaning",
+        clarify_focus="condition",
         user_text="I want to buy sterilization product",
-        tone_pick=lambda _key, variants: variants[0],
+        reply_language="en-US",
         products=[],
         attribute_filters={},
         needs_knowledge=False,
@@ -65,17 +81,19 @@ def test_build_clarify_policy_semantic_concept_unclear_uses_focus_specific_copy(
     )
 
     assert result["reason"] == "semantic_concept_unclear"
-    assert "pre-sterilized jewelry" in result["message"]
-    assert "surgical steel jewelry" in result["message"]
+    assert result["message"] == "What condition are you looking for?"
+    assert result["questions"] == []
+    assert result["suggestions"] == []
     assert result["extra_debug"]["clarify_mode"] == "strict_ambiguity"
     assert result["extra_debug"]["clarify_best_effort_help"] is False
 
 
-def test_build_clarify_policy_structured_no_match_is_best_effort_helpful() -> None:
-    result = ComponentPipeline._build_clarify_policy(
+@pytest.mark.asyncio
+async def test_build_clarify_policy_structured_no_match_is_best_effort_helpful() -> None:
+    result = await ComponentPipeline._build_clarify_policy(
         reason="structured_no_match",
         user_text="show me something elegant for helix",
-        tone_pick=lambda _key, variants: variants[0],
+        reply_language="en-US",
         products=[],
         attribute_filters={},
         needs_knowledge=False,
@@ -89,11 +107,12 @@ def test_build_clarify_policy_structured_no_match_is_best_effort_helpful() -> No
     assert result["extra_debug"]["clarify_best_effort_help"] is True
 
 
-def test_build_clarify_policy_knowledge_unavailable_uses_contact_focus_followups() -> None:
-    result = ComponentPipeline._build_clarify_policy(
+@pytest.mark.asyncio
+async def test_build_clarify_policy_knowledge_unavailable_uses_contact_focus_followups() -> None:
+    result = await ComponentPipeline._build_clarify_policy(
         reason="knowledge_unavailable",
         user_text="How can I contact your sales team?",
-        tone_pick=lambda _key, variants: variants[0],
+        reply_language="en-US",
         products=[],
         attribute_filters={},
         needs_knowledge=True,

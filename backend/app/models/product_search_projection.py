@@ -19,6 +19,9 @@ class ProductSearchProjection(Base):
     sku_norm = Column(String(255), nullable=False, index=True)
     material_norm = Column(String(255), nullable=True, index=True)
     jewelry_type_norm = Column(String(255), nullable=True, index=True)
+    presentation_type_norm = Column(String(255), nullable=True, index=True)
+    body_part_norm = Column(String(255), nullable=True, index=True)
+    feature_norm = Column(String(255), nullable=True, index=True)
     gauge_norm = Column(String(64), nullable=True, index=True)
     threading_norm = Column(String(128), nullable=True, index=True)
     color_norm = Column(String(255), nullable=True, index=True)
@@ -37,6 +40,9 @@ class ProductSearchProjection(Base):
             "is_active",
             "material_norm",
             "jewelry_type_norm",
+            "presentation_type_norm",
+            "body_part_norm",
+            "feature_norm",
             "gauge_norm",
             "threading_norm",
             "color_norm",

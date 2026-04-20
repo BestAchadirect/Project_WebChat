@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Dict, Sequence
+from typing import Any, Dict
 
+from app.services.chat.components.builders.contextual_messages import generate_contextual_reply
 from app.services.chat.components.pipeline_runtime.state import PipelineWorkflowState
 from app.services.chat.components.pipeline_runtime.workflow_catalog import PipelineWorkflowCatalogMixin
 from app.services.chat.components.pipeline_runtime.workflow_knowledge import PipelineWorkflowKnowledgeMixin
 from app.services.chat.components.types import ComponentSource, ComponentType
+
 
 class PipelineWorkflowHandlersMixin(PipelineWorkflowCatalogMixin, PipelineWorkflowKnowledgeMixin):
     async def _handle_terminal_workflows(
@@ -14,58 +16,55 @@ class PipelineWorkflowHandlersMixin(PipelineWorkflowCatalogMixin, PipelineWorkfl
             *,
             state: PipelineWorkflowState,
             text: str,
+            locale: str,
             workflow: str,
-            detail: Any,
-            unique_sku_tokens: Sequence[str],
-            result_fetch_limit: int,
-            conversation_id: int,
             debug_meta: Dict[str, Any],
             spans: Dict[str, float],
             external_call_counts: Dict[str, int],
-            tone_pick: Callable[[str, Sequence[str]], str],
-        ) -> bool:
-            if workflow == "smalltalk":
-                state.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
-                state.knowledge_answer = tone_pick(
-                    "smalltalk:redirect",
-                    [
-                        "Hi. Tell me what body jewelry you need, like type, material, gauge, or SKU.",
-                        "Happy to help. Share the product type, material, gauge, or SKU and I will narrow it down.",
-                        "Sure, tell me what you're looking for and I can find options by type, material, or SKU.",
-                    ],
-                )
-                state.retrieval_source = ComponentSource.TOOL
-                return True
-
+        ) -> tuple[bool, int]:
             if workflow == "off_topic":
-                state.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
-                state.knowledge_answer = self._compose_off_topic_reply(
-                    user_text=text,
-                    pick_text=lambda key, variants: tone_pick(key, variants),
+                llm_started = time.perf_counter()
+                reply = await generate_contextual_reply(
+                    kind=workflow,
+                    reply_language=str(locale or "en-US").strip() or "en-US",
+                    payload={
+                        "workflow": str(workflow or "").strip(),
+                        "locale": str(locale or "en-US").strip() or "en-US",
+                        "user_text": str(text or "").strip(),
+                        "assistant_scope": "body jewelry products, stock, pricing, materials, sizes/gauge, and store policies/info",
+                    },
                 )
-                state.retrieval_source = ComponentSource.ERROR
-                state.result_count = 0
-                return True
+                spans["llm_answer_ms"] += (time.perf_counter() - llm_started) * 1000.0
+                state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
+                state.knowledge.answer = reply or "I can help with body jewelry products and store support in this chat."
+                state.retrieval.source = ComponentSource.ERROR
+                state.retrieval.result_count = 0
+                if reply:
+                    external_call_counts["llm_terminal_reply"] = int(external_call_counts.get("llm_terminal_reply", 0)) + 1
+                    debug_meta["terminal_reply_source"] = "llm"
+                    return True, 1
+                debug_meta["terminal_reply_source"] = "fallback"
+                return True, 0
 
-            return False
+            return False, 0
 
     async def _handle_pre_catalog_workflows(
             self,
             *,
             state: PipelineWorkflowState,
-            text: str,
             workflow: str,
-            detail: Any,
             store_overview_request: bool,
-            unique_sku_tokens: Sequence[str],
             result_fetch_limit: int,
             debug_meta: Dict[str, Any],
             spans: Dict[str, float],
         ) -> None:
-            if store_overview_request:
-                featured_started = time.perf_counter()
-                state.product_ids = await self._load_featured_product_ids(limit=result_fetch_limit)
-                spans["db_product_lookup_ms"] += (time.perf_counter() - featured_started) * 1000.0
-                state.result_count = len(state.product_ids)
-                state.retrieval_source = ComponentSource.SQL
-                debug_meta["store_overview_candidate_count"] = int(state.result_count)
+            if workflow != "catalog":
+                return
+            if not store_overview_request:
+                return
+            featured_started = time.perf_counter()
+            state.catalog.product_ids = await self._load_featured_product_ids(limit=result_fetch_limit)
+            spans["db_product_lookup_ms"] += (time.perf_counter() - featured_started) * 1000.0
+            state.retrieval.result_count = len(state.catalog.product_ids)
+            state.retrieval.source = ComponentSource.SQL
+            debug_meta["store_overview_candidate_count"] = int(state.retrieval.result_count)

@@ -38,6 +38,9 @@ def test_projection_row_normalizes_structured_attributes() -> None:
         attributes={
             "material": "Surgical Steel",
             "jewelry_type": "barbells",
+            "presentation_type": "sold by pack",
+            "body_part": "upper lip / monroe",
+            "feature": "pvd plated",
             "gauge": "16 gauge",
             "threading": "internally threaded",
             "color": "Black",
@@ -48,8 +51,11 @@ def test_projection_row_normalizes_structured_attributes() -> None:
     row = ProductProjectionSyncService._build_projection_row(product=product, eav_attrs={})
 
     assert row["sku_norm"] == "br-001"
-    assert row["material_norm"] == "steel"
+    assert row["material_norm"] == "surgical steel"
     assert row["jewelry_type_norm"] == "barbell"
+    assert row["presentation_type_norm"] == "sold by pack"
+    assert row["body_part_norm"] == "upper lip / monroe"
+    assert row["feature_norm"] == "pvd plated"
     assert row["gauge_norm"] == "16g"
     assert row["threading_norm"] == "internal"
     assert row["color_norm"] == "black"
@@ -61,13 +67,16 @@ def test_projection_row_uses_search_text_fallback_when_material_missing() -> Non
     product = _product(
         sku="X-OPAL-1",
         attributes={},
-        search_text="implant grade titanium g23 circular barbell opal",
+        search_text="implant grade titanium g23 circular barbell opal sold by pack upper lip / monroe pvd plated",
     )
 
     row = ProductProjectionSyncService._build_projection_row(product=product, eav_attrs={})
 
     assert row["material_norm"] == "titanium g23"
     assert row["jewelry_type_norm"] == "circular barbell"
+    assert row["presentation_type_norm"] == "sold by pack"
+    assert row["body_part_norm"] == "upper lip / monroe"
+    assert row["feature_norm"] == "pvd plated"
 
 
 def test_projection_row_prefers_eav_value_over_json_attributes() -> None:

@@ -271,6 +271,18 @@ class DetailResponseBuilder:
             )
             if highlights:
                 lines.append("Key details: " + " | ".join(highlights))
+        elif requested_set.intersection({"price", "stock"}) and display_items:
+            detail_bits: List[str] = []
+            first = display_items[0]
+            if "price" in requested_set:
+                price_value = str(getattr(first, "price", "") or "").strip()
+                if price_value:
+                    detail_bits.append(f"Price: {price_value}")
+            if "stock" in requested_set:
+                stock_value = "in stock" if bool(getattr(first, "in_stock", False)) else "out of stock"
+                detail_bits.append(f"Stock: {stock_value}")
+            if detail_bits:
+                lines.append("Key details: " + " | ".join(detail_bits))
         reply_text = "\n".join(lines)
 
         show_cards = True

@@ -24,14 +24,14 @@ def finalize_contract_components(
 ) -> Dict[str, Any]:
     deduped_follow_ups = dedupe_follow_up_questions(list(follow_ups or []), limit=5)
     rebuilt_components: List[ChatComponent] = []
+    clarify_present = False
     for component in list(component_list or []):
         kind = component_type_name(component)
         if kind in {"assistant_message", "quick_replies"}:
             continue
         if kind == "clarify":
+            clarify_present = True
             clarify_data = dict(getattr(component, "data", {}) or {})
-            if deduped_follow_ups:
-                clarify_data["suggestions"] = list(deduped_follow_ups)
             rebuilt_components.append(
                 ChatComponent(type=ChatComponentType.CLARIFY, data=clarify_data)
             )
@@ -42,7 +42,7 @@ def finalize_contract_components(
     if assistant_component is not None:
         rebuilt_components.insert(0, assistant_component)
 
-    quick_replies = quick_replies_component(list(deduped_follow_ups or []))
+    quick_replies = None if clarify_present else quick_replies_component(list(deduped_follow_ups or []))
     if quick_replies is not None:
         rebuilt_components.append(quick_replies)
 

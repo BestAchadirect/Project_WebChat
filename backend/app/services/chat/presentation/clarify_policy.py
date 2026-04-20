@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Sequence
 
 from app.prompts.ambiguity import get_ambiguity_policy
+from app.services.chat.components.builders.contextual_messages import generate_contextual_reply
 from app.services.chat.text_normalization import normalize_user_text
 
 
@@ -217,6 +218,8 @@ def clarify_mode_for_reason(reason: str) -> str:
         return "strict_knowledge"
     if reason_norm == "pagination_exhausted":
         return "pagination_exhausted"
+    if reason_norm == "pagination_stale":
+        return "pagination_stale"
     if reason_norm == "fallback_gibberish":
         return "gibberish"
     if reason_norm in {"structured_no_match", "attribute_list_no_results"}:
@@ -224,11 +227,11 @@ def clarify_mode_for_reason(reason: str) -> str:
     return "broad_help"
 
 
-def build_clarify_policy(
+async def build_clarify_policy(
     *,
     reason: str,
     user_text: str,
-    tone_pick: Callable[[str, Sequence[str]], str],
+    reply_language: str,
     products: Sequence[Any],
     attribute_filters: Dict[str, str],
     needs_knowledge: bool,
@@ -259,25 +262,49 @@ def build_clarify_policy(
         "clarify_best_effort_help": bool(best_effort_help),
     }
 
+    async def _contextual_message(*, fallback: str, payload: Dict[str, Any]) -> str:
+        generated = await generate_contextual_reply(
+            kind="clarify",
+            reply_language=reply_language,
+            payload=payload,
+        )
+        return str(generated or fallback).strip()
+
     if reason_norm in {"attribute_list_no_results", "structured_no_match"}:
         if reason_norm == "attribute_list_no_results":
-            message = tone_pick(
-                "clarify:attribute_list_no_results",
-                [
-                    "I couldn't find that exact filter, but I can still help narrow it down with one detail like material, style, or gauge.",
-                    "That filter is too narrow right now. Share one broader detail and I'll find close options.",
-                    "No matching attribute options yet. Try one broader detail and I'll refine it for you.",
-                ],
+            message = await _contextual_message(
+                fallback="What material, style, or gauge should I use to narrow this down?",
+                payload={
+                    "reason": reason_norm,
+                    "user_text": user_text,
+                    "clarify_focus": clarify_focus,
+                    "attribute_filters": attribute_filters,
+                    "requested_fields": list(requested_fields or []),
+                    "suggested_questions": ["Which filter should I broaden?"],
+                    "suggested_examples": [
+                        "Share material",
+                        "Share style",
+                        "Share gauge",
+                    ],
+                },
             )
             questions = ["Which filter should I broaden?"]
         else:
-            message = tone_pick(
-                "clarify:structured_no_match:humanized",
-                [
-                    "I can still help find something close. Share one detail like material, style, or gauge and I'll narrow the search.",
-                    "No exact match yet, but I can find alternatives. Tell me one preference and I'll refine it.",
-                    "I can help from here. Give me one detail like material, style, or gauge and I'll show the closest options.",
-                ],
+            message = await _contextual_message(
+                fallback="What material, style, or gauge should I use to narrow this down?",
+                payload={
+                    "reason": reason_norm,
+                    "user_text": user_text,
+                    "clarify_focus": clarify_focus,
+                    "attribute_filters": attribute_filters,
+                    "requested_fields": list(requested_fields or []),
+                    "suggested_questions": ["Which detail should I use to continue?"],
+                    "suggested_examples": [
+                        "Share material",
+                        "Share style",
+                        "Share gauge",
+                    ],
+                },
             )
             questions = ["Which detail should I use to continue?"]
         suggestions = build_product_clarify_follow_ups(
@@ -290,22 +317,36 @@ def build_clarify_policy(
         focus = str(clarify_focus or "").strip().lower()
         policy = get_ambiguity_policy(focus)
         if policy:
-            message = tone_pick(
-                str(policy.get("message_key") or f"clarify:{reason_norm}:{focus or 'default'}"),
-                list(policy.get("message_variants") or []),
+            extra_debug["ambiguity_focus_family"] = str(policy.get("focus_family") or focus or "")
+            message = await _contextual_message(
+                fallback=str(policy.get("message_hint") or "What detail should I use to narrow this down?"),
+                payload={
+                    "reason": reason_norm,
+                    "user_text": user_text,
+                    "clarify_focus": focus,
+                    "policy_family": str(policy.get("focus_family") or focus or ""),
+                    "clarify_question": str(policy.get("message_hint") or ""),
+                    "clarify_instruction": "Write a direct customer-facing question. Use the supplied clarify_question if it is present, and keep it natural.",
+                    "attribute_filters": attribute_filters,
+                },
             )
-            questions = list(policy.get("questions") or [])
-            suggestions = list(policy.get("suggestions") or [])
+            questions = []
+            suggestions = []
         else:
-            message = tone_pick(
-                "clarify:semantic_concept_unclear",
-                [
-                    "I need one detail to interpret that product concept correctly. Can you be a bit more specific?",
-                    "That concept can mean a few different things. Tell me which type you want and I'll narrow it down.",
-                    "I can help, but I need one more detail about what you mean before I show products.",
-                ],
+            extra_debug["ambiguity_focus_family"] = focus
+            message = await _contextual_message(
+                fallback="What detail should I use to narrow this down?",
+                payload={
+                    "reason": reason_norm,
+                    "user_text": user_text,
+                    "clarify_focus": focus,
+                    "clarify_question": "What detail should I use to narrow this down?",
+                    "clarify_instruction": "Write a direct customer-facing question. Use the supplied clarify_question if it is present, and keep it natural.",
+                    "attribute_filters": attribute_filters,
+                },
             )
-            questions = ["Which product concept should I focus on?"]
+            questions = []
+            suggestions = []
     elif reason_norm in {"detail_no_match", "detail_request_needs_specific_product"}:
         requested = {str(item or "").strip().lower() for item in list(requested_fields or []) if str(item or "").strip()}
         jewelry_type = str((attribute_filters or {}).get("jewelry_type") or "").strip().lower()
@@ -317,14 +358,40 @@ def build_clarify_policy(
             action = "check the price"
         elif "stock" in requested:
             action = "check the stock"
-        message = tone_pick(
-            f"clarify:{reason_norm}",
-            [
-                f"I'm not sure which {subject} you mean. Share a SKU or add details like material, gauge, size, or color, and I can {action}.",
-                f"I need one exact product to {action}. Share a SKU or fewer filters so I can continue.",
-                f"Please share a SKU or more specific product details so I can {action}.",
-            ],
-        )
+        if reason_norm == "detail_no_match":
+            message = await _contextual_message(
+                fallback=f"I couldn't find a product that matches those details. Share a SKU or more specific details and I can {action}.",
+                payload={
+                    "reason": reason_norm,
+                    "user_text": user_text,
+                    "clarify_focus": clarify_focus,
+                    "attribute_filters": attribute_filters,
+                    "requested_fields": list(requested_fields or []),
+                    "suggested_questions": ["Which exact product should I use?"],
+                    "suggested_examples": [
+                        "Share a SKU",
+                        "Add material",
+                        "Add size",
+                    ],
+                },
+            )
+        else:
+            message = await _contextual_message(
+                fallback=f"I'm not sure which {subject} you mean. Share a SKU or add more details and I can {action}.",
+                payload={
+                    "reason": reason_norm,
+                    "user_text": user_text,
+                    "clarify_focus": clarify_focus,
+                    "attribute_filters": attribute_filters,
+                    "requested_fields": list(requested_fields or []),
+                    "suggested_questions": ["Which exact product should I use?"],
+                    "suggested_examples": [
+                        "Share a SKU",
+                        "Add material",
+                        "Add size",
+                    ],
+                },
+            )
         questions = ["Which exact product should I use?"]
     elif reason_norm == "pagination_exhausted":
         material = display_attribute_value(str((attribute_filters or {}).get("material") or ""))
@@ -335,19 +402,46 @@ def build_clarify_policy(
             scope_label = f"{scope_label} matches"
         else:
             scope_label = "matching products"
-        message = tone_pick(
-            "clarify:pagination_exhausted",
-            [
-                f"I reached the end of the {scope_label} I found.",
-                f"I've shown the last page of {scope_label} I found.",
-                f"If you want, I can still help narrow by material, style, or gauge.",
-            ],
+        message = await _contextual_message(
+            fallback=(
+                f"I reached the end of the current {scope_label} I found, but I can broaden the search if you'd like."
+            ),
+            payload={
+                "reason": reason_norm,
+                "user_text": user_text,
+                "clarify_focus": clarify_focus,
+                "attribute_filters": attribute_filters,
+                "suggested_questions": [],
+                "suggested_examples": [
+                    "Show titanium jewelry",
+                    "Show gold jewelry",
+                    "Show labret",
+                ],
+            },
         )
         questions = []
         suggestions = build_pagination_exhausted_follow_ups(
             attribute_filters=attribute_filters,
             limit=3,
         )
+    elif reason_norm == "pagination_stale":
+        message = await _contextual_message(
+            fallback="That pagination button is already outdated. Please use the latest Show more button.",
+            payload={
+                "reason": reason_norm,
+                "user_text": user_text,
+                "clarify_focus": clarify_focus,
+                "attribute_filters": attribute_filters,
+                "requested_fields": list(requested_fields or []),
+                "suggested_questions": [],
+                "suggested_examples": [
+                    "Use the latest Show more button",
+                    "Ask for a fresh search",
+                ],
+            },
+        )
+        questions = []
+        suggestions = []
     elif reason_norm in {"knowledge_needs_clarification", "knowledge_unavailable"}:
         current_focus = knowledge_clarify_focus(
             user_text=user_text,
@@ -368,24 +462,41 @@ def build_clarify_policy(
             warranty_terms=warranty_terms,
         )
         if current_focus in {"contact", "location"}:
-            key = "clarify:knowledge_contact_context" if reason_norm == "knowledge_needs_clarification" else "clarify:knowledge_contact_unavailable"
-            message = tone_pick(
-                key,
-                [
-                    "I can help with contact details. Do you need our sales email, phone number, or showroom address?",
-                    "I can share that. Do you want email, phone, or showroom address?",
-                    "Tell me whether you need email, phone, or showroom address and I will help.",
-                ],
+            message = await _contextual_message(
+                fallback="I can help with contact details. Do you need our sales email, phone number, or showroom address?",
+                payload={
+                    "reason": reason_norm,
+                    "user_text": user_text,
+                    "clarify_focus": current_focus,
+                    "knowledge_question": current_question,
+                    "suggested_questions": [current_question],
+                    "suggested_examples": [
+                        "Sales email",
+                        "Phone number",
+                        "Showroom address",
+                    ],
+                },
             )
         else:
-            key = "clarify:knowledge_context" if reason_norm == "knowledge_needs_clarification" else "clarify:knowledge_unavailable"
-            message = tone_pick(
-                key,
-                [
-                    f"I can help with that. {current_question}",
-                    f"To answer accurately, I need one detail. {current_question}",
-                    f"Let's narrow this quickly. {current_question}",
-                ],
+            message = await _contextual_message(
+                fallback=f"I can help with that. {current_question}",
+                payload={
+                    "reason": reason_norm,
+                    "user_text": user_text,
+                    "clarify_focus": current_focus,
+                    "knowledge_question": current_question,
+                    "suggested_questions": [current_question],
+                    "suggested_examples": list(build_knowledge_clarify_follow_ups(
+                        user_text=user_text,
+                        location_terms=location_terms,
+                        contact_terms=contact_terms,
+                        shipping_terms=shipping_terms,
+                        refund_terms=refund_terms,
+                        payment_terms=payment_terms,
+                        warranty_terms=warranty_terms,
+                        limit=3,
+                    )),
+                },
             )
         questions = [current_question]
         suggestions = build_knowledge_clarify_follow_ups(
@@ -400,13 +511,20 @@ def build_clarify_policy(
         )
         extra_debug["knowledge_clarify_focus"] = current_focus
     elif reason_norm in {"routing_fallback", "fallback_uncertain"}:
-        message = tone_pick(
-            "clarify:fallback_uncertain",
-            [
-                "I can help right away. Tell me whether you need products, policy details, or contact info.",
-                "I can assist with products, policy, or contact details. Which one should I focus on?",
-                "Tell me your main goal and I'll route this correctly: products, policy, or contact.",
-            ],
+        message = await _contextual_message(
+            fallback="I can help right away. Tell me whether you need products, policy details, or contact info.",
+            payload={
+                "reason": reason_norm,
+                "user_text": user_text,
+                "clarify_focus": clarify_focus,
+                "attribute_filters": attribute_filters,
+                "suggested_questions": ["What do you want help with right now?"],
+                "suggested_examples": [
+                    "Show titanium jewelry",
+                    "How can I contact you?",
+                    "What is your shipping policy?",
+                ],
+            },
         )
         questions = ["What do you want help with right now?"]
         suggestions = [
@@ -415,13 +533,20 @@ def build_clarify_policy(
             "What is your shipping policy?",
         ]
     elif reason_norm == "fallback_gibberish":
-        message = tone_pick(
-            "clarify:fallback_gibberish",
-            [
-                "I didn't catch that message. Can you rephrase it in a few words?",
-                "That came through unclear. Please rephrase what you need.",
-                "I couldn't parse that yet. Can you type it again with what you want help with?",
-            ],
+        message = await _contextual_message(
+            fallback="I didn't catch that message. Can you rephrase it in a few words?",
+            payload={
+                "reason": reason_norm,
+                "user_text": user_text,
+                "clarify_focus": clarify_focus,
+                "attribute_filters": attribute_filters,
+                "suggested_questions": ["Can you rephrase your request?"],
+                "suggested_examples": [
+                    "Show titanium jewelry",
+                    "How can I contact you?",
+                    "Do you have in-stock products?",
+                ],
+            },
         )
         questions = ["Can you rephrase your request?"]
         suggestions = [
@@ -431,15 +556,18 @@ def build_clarify_policy(
         ]
 
     if not message:
-        message = tone_pick(
-            f"clarify:{reason_norm}:default",
-            [
-                "Share a little more detail so I can match the right products.",
-                "I can help faster if you add one or two more details.",
-                "Give me a bit more detail and I will narrow this down.",
-            ],
+        message = await _contextual_message(
+            fallback="What detail should I use to narrow this down?",
+            payload={
+                "reason": reason_norm,
+                "user_text": user_text,
+                "clarify_focus": clarify_focus,
+                "attribute_filters": attribute_filters,
+                "suggested_questions": list(questions or []),
+                "suggested_examples": list(suggestions or []),
+            },
         )
-    if not questions and reason_norm != "pagination_exhausted":
+    if not questions and reason_norm not in {"pagination_exhausted", "pagination_stale", "semantic_concept_unclear"}:
         questions = ["Which detail should I use to continue?"]
     if not suggestions:
         if reason_norm in {"structured_no_match", "detail_no_match", "detail_request_needs_specific_product", "attribute_list_no_results"}:
@@ -449,6 +577,8 @@ def build_clarify_policy(
                 needs_knowledge=bool(needs_knowledge),
                 limit=3,
             )
+        elif reason_norm in {"pagination_stale", "semantic_concept_unclear"}:
+            suggestions = []
         else:
             suggestions = build_knowledge_clarify_follow_ups(
                 user_text=user_text,

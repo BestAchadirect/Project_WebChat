@@ -3,7 +3,16 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
-from app.services.chat.parsing.attribute_normalization import normalize_text
+from app.services.chat.parsing.attribute_normalization import (
+    normalize_catalog_family_value,
+    normalize_text,
+)
+from app.utils.synonym_rules import (
+    ATTRIBUTE_LIST_QUERY_SYNONYMS,
+    ATTRIBUTE_LIST_TARGETS,
+    BODY_PART_SUITABILITY_AMBIGUOUS_MODIFIERS,
+    BODY_PART_SUITABILITY_TERMS,
+)
 
 ALLOWED_PRODUCT_FILTERS = frozenset(
     {
@@ -11,28 +20,22 @@ ALLOWED_PRODUCT_FILTERS = frozenset(
         "max_price",
         "stock_status",
         "category",
+        "body_part",
+        "feature",
+        "presentation_type",
         "material",
         "jewelry_type",
         "color",
+        "theme",
     }
 )
 
-ATTRIBUTE_LIST_TERMS = {
-    "material": "material",
-    "materials": "material",
-    "color": "color",
-    "colors": "color",
-    "gauge": "gauge",
-    "gauges": "gauge",
-    "threading": "threading",
-    "threadings": "threading",
-    "type": "jewelry_type",
-    "types": "jewelry_type",
-}
-
 HARD_FILTER_KEYS = frozenset(
     {
+        "body_part",
         "gauge",
+        "feature",
+        "presentation_type",
         "threading",
         "size",
         "length",
@@ -45,19 +48,33 @@ HARD_FILTER_KEYS = frozenset(
 
 
 def detect_attribute_list_target(text: str) -> str:
+    if not is_attribute_list_query(text):
+        return ""
     normalized = normalize_text(text)
-    if not normalized:
-        return ""
-    asks_for_list = bool(
-        re.search(r"\b(what|which|list|show|available|sell|have|offer|carry)\b", normalized)
-        or normalized.endswith("?")
-    )
-    if not asks_for_list:
-        return ""
-    for token, target in ATTRIBUTE_LIST_TERMS.items():
+    for token, target in ATTRIBUTE_LIST_QUERY_SYNONYMS.items():
         if re.search(rf"\b{re.escape(token)}\b", normalized):
             return target
     return ""
+
+
+def is_attribute_list_query(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+    return bool(
+        re.search(r"\b(what|which|list|show|available|sell|have|offer|carry)\b", normalized)
+        or normalized.endswith("?")
+    )
+
+
+def needs_body_part_suitability_clarification(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+    modifier_hit = any(re.search(rf"\b{re.escape(modifier)}\b", normalized) for modifier in BODY_PART_SUITABILITY_AMBIGUOUS_MODIFIERS)
+    if not modifier_hit:
+        return False
+    return any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in BODY_PART_SUITABILITY_TERMS)
 
 
 def split_hard_and_soft_filters(
@@ -106,7 +123,8 @@ def normalize_filter_map(
             trimmed = value.strip()
             if not trimmed:
                 continue
-            clean[clean_key] = trimmed
+            family_value = normalize_catalog_family_value(key=clean_key, value=trimmed)
+            clean[clean_key] = family_value or trimmed
         else:
             clean[clean_key] = value
     return clean

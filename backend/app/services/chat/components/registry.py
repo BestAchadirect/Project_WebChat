@@ -11,7 +11,6 @@ from app.services.chat.components.builders import (
     ProductCardsComponent,
     ProductDetailComponent,
     QuerySummaryComponent,
-    RecommendationsComponent,
 )
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.types import ComponentType
@@ -22,7 +21,6 @@ class ComponentRegistry:
         ComponentType.QUERY_SUMMARY: QuerySummaryComponent,
         ComponentType.PRODUCT_CARDS: ProductCardsComponent,
         ComponentType.PRODUCT_DETAIL: ProductDetailComponent,
-        ComponentType.RECOMMENDATIONS: RecommendationsComponent,
         ComponentType.CLARIFY: ClarifyComponent,
         ComponentType.KNOWLEDGE_ANSWER: KnowledgeAnswerComponent,
         ComponentType.ERROR: ErrorComponent,

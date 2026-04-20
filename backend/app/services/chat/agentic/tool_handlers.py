@@ -22,9 +22,13 @@ def product_card_matches_filters(card: ProductCard, filters: Dict[str, Any]) -> 
     max_price = filters.get("max_price")
     stock_status = filters.get("stock_status")
     category = filters.get("category")
+    body_part = filters.get("body_part")
+    feature = filters.get("feature")
+    presentation_type = filters.get("presentation_type")
     material = filters.get("material")
     jewelry_type = filters.get("jewelry_type")
     color = filters.get("color")
+    theme = filters.get("theme")
 
     if min_price is not None:
         try:
@@ -47,9 +51,13 @@ def product_card_matches_filters(card: ProductCard, filters: Dict[str, Any]) -> 
 
     for key, expected in (
         ("category", category),
+        ("body_part", body_part),
+        ("feature", feature),
+        ("presentation_type", presentation_type),
         ("material", material),
         ("jewelry_type", jewelry_type),
         ("color", color),
+        ("theme", theme),
     ):
         if expected is None:
             continue

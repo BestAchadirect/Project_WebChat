@@ -3,7 +3,12 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Mapping, Optional, Sequence
 
-from app.services.chat.text_normalization import normalize_db_value, normalize_user_text
+from app.services.chat.text_normalization import normalize_user_text
+from app.utils.synonym_rules import (
+    CATALOG_FAMILY_SYNONYMS,
+    normalize_design_family_value,
+    normalize_family_value,
+)
 
 _MEASUREMENT_KEYS = {
     "gauge",
@@ -14,6 +19,15 @@ _MEASUREMENT_KEYS = {
     "pincher_size",
 }
 
+_COMPACT_WHITESPACE_KEYS = {"ring_size", "size_in_pack", "quantity_in_bulk", "rack"}
+
+
+def _collapse_whitespace(value: Any) -> str:
+    return re.sub(r"\s+", " ", normalize_text(value)).strip()
+
+
+def _normalize_color_like_value(value: Any) -> str:
+    return re.sub(r"^(?:in|with)\s+", "", normalize_text(value)).strip()
 
 def normalize_text(value: Any) -> str:
     return normalize_user_text(value)
@@ -53,6 +67,10 @@ def normalize_gauge_token(value: Any) -> str:
     return ""
 
 
+def normalize_catalog_family_value(*, key: str, value: Any) -> str:
+    return normalize_text(normalize_family_value(family=key, value=value))
+
+
 def normalize_measurement_token(value: Any) -> str:
     text = normalize_text(value)
     if not text:
@@ -85,14 +103,18 @@ def normalize_attribute_value(
         text = normalize_text(mapped)
     if clean_key == "gauge":
         return normalize_gauge_token(text) or text
+    if clean_key in CATALOG_FAMILY_SYNONYMS:
+        return normalize_catalog_family_value(key=clean_key, value=text) or text
     if clean_key in _MEASUREMENT_KEYS:
         return normalize_measurement_token(text)
-    if clean_key in {"ring_size", "size_in_pack", "quantity_in_bulk", "rack"}:
-        return re.sub(r"\s+", " ", text)
+    if clean_key == "design":
+        return normalize_design_family_value(text) or text
+    if clean_key in _COMPACT_WHITESPACE_KEYS:
+        return _collapse_whitespace(text)
     if clean_key == "category":
         return re.sub(r"\s*;;\s*", ";;", text)
     if clean_key == "color" or clean_key.endswith("_color"):
-        return re.sub(r"^(?:in|with)\s+", "", text).strip()
+        return _normalize_color_like_value(text)
     return text
 
 
