@@ -5,39 +5,117 @@
 - Data source now: Klevu-backed local data
 - Data source later: Magento API sync into local DB
 - Priority: AI implementation logic first
+- Active tracker: sprint-first (`docs/ai/tracking/sprints/`)
 
 ## Phase Board
 | Phase | Title | Status | Owner | Notes |
 |---|---|---|---|---|
-| 1 | Primary orchestration | `completed` | AI/runtime | Tool path is now primary for supported read-only requests, with explicit fallback coverage |
-| 2 | Tool promotion | `completed` | AI/runtime | Read-only tools now have tighter contracts, resilient lookup behavior, normalized outputs, and focused coverage |
-| 3 | Thin routing | `pending` | AI/runtime | Reduce routing to guardrails and fast-path hints |
-| 4 | Orchestration contracts | `pending` | AI/runtime | Standardize orchestrator input/output and fallback contract |
-| 5 | AI tests | `pending` | AI/tests | Add focused tests for tool path behavior |
+| 1 | Foundation and agentic adoption | `completed` | AI/runtime | The initial AI-first foundation is in place through completed sprint history |
+| 2 | Runtime consolidation | `completed` | AI/runtime | Runtime ownership, fallback narrowing, and orchestrator/tool boundary consolidation are complete |
+| 3 | Hardening and expansion | `in_progress` | AI/runtime + AI/tests | Current tracked focus after runtime consolidation |
 
-## Immediate Next Task
-- Start Phase 3: audit routing logic that should remain as deterministic guardrails versus logic that should be downgraded to hints
+## Active Sprint
+- None
 
-## Phase 2 Summary
-- [x] 2.1 Audit current tool contracts and argument gaps
-- [x] 2.2 Tighten product search tool arguments
-- [x] 2.3 Improve product detail and inventory lookup resilience
-- [x] 2.4 Improve knowledge search tool behavior
-- [x] 2.5 Normalize tool outputs for orchestration and rendering
-- [x] 2.6 Add focused tool-path tests
+## Last Completed Sprint
+- [Sprint: Grounded Response Quality](</c:/Project_WebChat/docs/ai/tracking/sprints/sprint-grounded-response-quality/README.md>)
+- [Sprint: Evaluation Observability Hardening](</c:/Project_WebChat/docs/ai/tracking/sprints/sprint-evaluation-observability-hardening/README.md>)
+- [Sprint: Long-Context Robustness and Adversarial Evaluation](</c:/Project_WebChat/docs/ai/tracking/sprints/sprint-long-context-robustness-and-adversarial-evaluation/README.md>)
+- [Sprint: Context Correctness Evaluation](</c:/Project_WebChat/docs/ai/tracking/sprints/sprint-context-correctness-evaluation/README.md>)
+- Previous completed sprint:
+  - [Sprint: Orchestrator Boundary Finalization](</c:/Project_WebChat/docs/ai/tracking/sprints/sprint-orchestrator-boundary-finalization/README.md>)
 
-## Latest Findings
-- Agentic fallback behavior in `unified_chat_runtime` is already usable; the main blocker is preselection, not fallback mechanics.
-- The suitability gate has been widened for supported read-only catalog and knowledge requests.
-- `decision_engine.build_decision_state()` already prefers agentic once the widened suitability gate passes; that behavior is now covered by focused tests.
-- Runtime fallback behavior is now covered for success, `None`, `no_tool_usage`, and exception paths.
-- Debug fidelity is now covered: fallback transitions preserve both a human-readable `fallback_reason` and a machine-readable `failure_reason`.
-- The remaining component-first list is now explicit and short: off-topic/smalltalk, fallback/clarify, understanding-failure cases, and feature/channel guardrail cases.
-- The `search_products` contract is now typed and schema-bounded.
-- Detail and inventory tools are no longer exact-SKU-only; they now distinguish resolved vs ambiguous reference handling.
-- Knowledge search now broadens category-filtered retrieval and returns stable, trimmed output.
-- Tool outputs now share a stable envelope and ambiguous product candidates are renderable by the orchestrator.
-- Phase 2 is complete: the read-only tool layer now has tighter contracts, resilient lookup behavior, normalized envelopes, and focused coverage.
+## Inactive Sprints
+
+### Completed
+- [Sprint: AI Runtime Foundation](</c:/Project_WebChat/docs/ai/tracking/sprints/sprint-ai-runtime-foundation/README.md>)
+- [Sprint: Customer Response Accuracy](</c:/Project_WebChat/docs/ai/tracking/sprints/sprint-customer-response-accuracy/README.md>)
+- [Sprint: Runtime Ownership Consolidation](</c:/Project_WebChat/docs/ai/tracking/sprints/sprint-runtime-ownership-consolidation/README.md>)
+- [Sprint: Fallback Clarify Segmentation](</c:/Project_WebChat/docs/ai/tracking/sprints/sprint-fallback-clarify-segmentation/README.md>)
+- [Sprint: Orchestrator Boundary Finalization](</c:/Project_WebChat/docs/ai/tracking/sprints/sprint-orchestrator-boundary-finalization/README.md>)
+- [Sprint: Long-Context Robustness and Adversarial Evaluation](</c:/Project_WebChat/docs/ai/tracking/sprints/sprint-long-context-robustness-and-adversarial-evaluation/README.md>)
+
+### Pending
+- None
+
+### Blocked
+- None
+
+## Immediate Next Step
+- Keep tracking docs aligned to `docs/ai/agent-implementation-plan.md`.
+- Select the next Phase 3 hardening follow-up.
+
+## Tracking Policy
+- `phases/` is the higher-level project status model.
+- `sprints/` is the default place for active implementation work.
+- `tasks/` is reserved for smaller follow-up work that does not need a sprint.
+- Sprint status is managed here, not in `docs/ai/agent-implementation-plan.md`.
+
+## Historical Sprint Highlights
+- The original foundational implementation work is now grouped under:
+  - [Sprint: AI Runtime Foundation](</c:/Project_WebChat/docs/ai/tracking/sprints/sprint-ai-runtime-foundation/README.md>)
+- That sprint includes the historical execution tasks for:
+  - primary orchestration
+  - tool promotion
+  - thin routing
+  - orchestration contracts
+  - AI tests
+
+## Current High-Signal Notes
+- The strongest current architectural truth remains the same: the system is viable and agent-ready with moderate changes, but reasoning is still fragmented across routing and component knowledge logic.
+- The runtime-ownership-consolidation sprint is now completed.
+- `understanding.py` moved to a hint-first LLM contract:
+  - the prompt now asks for explicit hint booleans
+  - `_llm_understanding()` now prefers explicit hint payloads over weak workflow labels
+  - deterministic understanding now derives compatibility workflow from hints through a shared helper instead of separate staged returns
+  - the remaining live-path `workflow_hypothesis` reads are now compatibility/debug only
+- `decision_engine.py` now selects execution from route capability and tool suitability rather than staged workflow ownership.
+- `workflow_knowledge.py` now separates retrieval, evidence evaluation, answer attempts, and degrade policy more cleanly.
+- The orchestrator now consumes normalized tool-result artifacts from the tool layer instead of owning raw per-tool payload branching in the core loop.
+- Fallback semantics are more coherent across agentic, component, and runtime-error paths.
+- The fallback-clarify-segmentation sprint is now completed:
+  - broad fallback reasons are now segmented into explicit customer-input classes
+  - knowledge clarify and knowledge unavailable remain distinct through the knowledge path
+  - clarify policy now emits explicit category/debug metadata and stronger category-specific copy
+  - clarify rendering now skips unnecessary contextual rewrites when policy copy is already strong
+- Focused verification passed:
+  - `39 passed` on the unit chat routing/knowledge/agentic suites
+  - `15 passed` on the integration chat agentic/component suites
+- Focused verification for fallback/clarify segmentation passed:
+  - `72 passed` on focused unit + integration fallback/clarify suites
+  - `13 passed` on the broader component-primary integration suite
+- The orchestrator-boundary-finalization sprint is now completed:
+  - typed tool artifacts are normalized at the tool registry boundary
+  - the orchestrator merges normalized artifacts instead of parsing raw tool payload shape
+  - focused verification passed with `23 passed`
+  - broader verification passed with `46 passed`
+- The Context Correctness Evaluation sprint is now completed:
+  - seeded DB context follow-ups now cover product, policy, mixed-topic, and no-anchor cases
+  - the accuracy evaluator now scores context anchors directly
+  - regression and DB-grounded suites both pass
+- The Long-Context Robustness and Adversarial Evaluation sprint is now completed:
+  - long-context decay and re-anchoring cases are now covered by dedicated seeded scenarios
+  - adversarial prompt-injection, jailbreak, redirect, and unsafe refusal cases are now covered
+  - trend reporting now surfaces long-context and adversarial groups directly
+  - a repeatable performance guardrail now exists for a representative chat path
+- The Evaluation Observability Hardening sprint is now completed:
+  - accuracy eval returns repeatable failure clusters for baseline comparison
+  - borderline cases have a reusable manual review rubric
+  - the deterministic performance guard now checks stable signal shape rather than raw latency values
+- Phase 2 runtime consolidation is complete.
+- The Conversation State Diagnostics sprint produced the first diagnostics slice:
+  - QA metrics now expose conversation-state enabled/written/version signals
+  - the diagnostics summary now tracks state-enabled rows and loaded versions
+- Phase 3 hardening and expansion remains active, with grounded response quality as the current follow-up.
+- Grounded Response Quality is now active as the correctness-focused Phase 3 sprint:
+  - it adds structured search planning, evidence grounding, safe fallback, and natural evidence-bound response composition
+  - the goal is to stop incorrect or weakly related retrieved data from reaching customer-facing answers
+  - search plan, grounding contract, catalog enforcement, knowledge/mixed grounding, agentic metadata, and QA metric aggregation are implemented
+  - grounding-specific natural response composition is implemented
+  - DB-grounded verification passed with local Supabase Postgres on `localhost:54322`
+  - post-completion smoke testing fixed explicit product-browse routing, return-policy routing, mixed payment/product routing, broad rescue compatibility, and attribute-list overreach
+- The historical AI runtime foundation work is complete and preserved in sprint history.
+- The customer-response-accuracy sprint is complete and remains useful as a finished evaluation-hardening reference.
 
 ## Not In Scope For This Tracker
 - Multi-tenant support

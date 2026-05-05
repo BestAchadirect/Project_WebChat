@@ -9,6 +9,15 @@ It defines what to optimize for in the current phase, what not to build, and the
 Tracking files for implementation status live in:
 - `docs/ai/tracking/project-status.md`
 - `docs/ai/tracking/phases/`
+- `docs/ai/tracking/sprints/`
+
+Use the tracking docs this way:
+- `project-status.md`: current dashboard, including active vs inactive sprint state
+- `phases/`: project-level stage model
+- `sprints/`: execution packages and sprint task lists
+
+This file is the stable implementation guide.
+It should define direction, priorities, and decision rules, but it should not manage sprint status directly.
 
 ## Current Scope
 - Magento-only product direction

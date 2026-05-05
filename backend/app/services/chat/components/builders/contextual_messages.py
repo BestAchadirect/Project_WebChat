@@ -78,13 +78,31 @@ def _default_payload(context: ComponentContext, payload: Mapping[str, Any] | Non
 
 
 def _clarify_payload(context: ComponentContext) -> Dict[str, Any]:
+    from app.services.chat.presentation import clarify_policy
+
     debug = dict(context.debug or {})
+    clarify_reason = _normalize_text(debug.get("clarify_reason")) or _normalize_text(context.ambiguity_reason)
+    clarify_category = _normalize_text(debug.get("clarify_category")) or clarify_policy.clarify_category_for_reason(clarify_reason)
+    clarify_rewrite_allowed = bool(
+        debug.get(
+            "clarify_rewrite_allowed",
+            clarify_policy.clarify_rewrite_allowed_for_reason(clarify_reason),
+        )
+    )
+    system_weakness_reasons = {"knowledge_unavailable", "routing_fallback"}
+    is_system_weakness = clarify_reason in system_weakness_reasons or clarify_category == "knowledge_unavailable"
     return {
         "user_text": _normalize_text(context.user_text),
         "query_summary": _normalize_text(context.query_summary),
         "workflow": _normalize_text(context.workflow),
         "ambiguity_reason": _normalize_text(context.ambiguity_reason),
-        "clarify_reason": _normalize_text(debug.get("clarify_reason")),
+        "clarify_reason": clarify_reason,
+        "clarify_category": clarify_category,
+        "clarify_mode": _normalize_text(debug.get("clarify_mode")),
+        "clarify_best_effort_help": bool(debug.get("clarify_best_effort_help")),
+        "clarify_rewrite_allowed": clarify_rewrite_allowed,
+        "clarify_is_system_weakness": is_system_weakness,
+        "clarify_is_user_ambiguity": not is_system_weakness,
         "attribute_filters": dict(context.attribute_filters or {}),
         "sku_tokens": list(context.sku_tokens or []),
         "suggested_questions": [str(item) for item in list(debug.get("clarify_questions") or [])[:3]],
@@ -121,8 +139,9 @@ async def _generate_json_reply(
             ],
             model=model,
             temperature=float(getattr(settings, "CHAT_CONTEXTUAL_COMPONENT_COPY_TEMPERATURE", 0.2)),
-            max_tokens=int(getattr(settings, "CHAT_CONTEXTUAL_COMPONENT_COPY_MAX_TOKENS", 100)),
+            max_tokens=max(180, int(getattr(settings, "CHAT_CONTEXTUAL_COMPONENT_COPY_MAX_TOKENS", 100))),
             usage_kind=usage_kind,
+            reasoning_effort="minimal",
         )
     except Exception as exc:
         logger.warning("contextual component copy failed for %s: %s", usage_kind, exc)

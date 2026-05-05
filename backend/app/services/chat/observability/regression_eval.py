@@ -1,6 +1,7 @@
 import json
 import asyncio
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from types import SimpleNamespace
@@ -8,12 +9,14 @@ from uuid import uuid4
 from unittest.mock import patch
 
 from app.schemas.chat import ProductCard
+from app.services.ai.llm_service import llm_service
 import app.services.chat.retrieval.follow_up_policy as follow_up_policy
-import app.services.chat.routing.routing_policy as routing_policy
-import app.services.chat.runtime.capabilities as runtime_capabilities
 from app.services.chat.observability import runtime_metrics
 from app.services.chat.parsing.detail_query_parser import DetailQueryParser
 from app.services.chat.parsing.parser_rule_types import ParserRuleSet
+from app.services.chat.routing.decision_engine import build_decision_state
+from app.services.chat.routing.understanding import build_understanding_result
+from app.services.chat.runtime.capabilities import build_chat_runtime_capabilities
 from app.services.chat.service import ChatService
 
 
@@ -180,11 +183,23 @@ def _evaluate_follow_up_generation(*, case: Dict[str, Any], name: str) -> Dict[s
 
 def _evaluate_routing_decision(*, case: Dict[str, Any], name: str) -> Dict[str, Any]:
     inputs = dict(case.get("inputs") or {})
-    payloads = list(case.get("llm_responses") or [])
-    if not payloads and case.get("llm_response") is not None:
-        payloads = [case.get("llm_response")]
+    payloads = list(case.get("understanding_llm_responses") or [])
+    if not payloads and case.get("understanding_llm_response") is not None:
+        payloads = [case.get("understanding_llm_response")]
+    expected = dict(case.get("expected") or {})
     if not payloads:
-        raise ValueError(f"routing_decision case missing llm_responses: {name}")
+        internal_workflow = str(expected.get("workflow_hypothesis") or expected.get("internal_workflow") or "clarify")
+        payloads = [
+            {
+                "workflow_hypothesis": internal_workflow,
+                "needs_products": bool(expected.get("needs_products")),
+                "needs_knowledge": bool(expected.get("needs_knowledge")),
+                "store_overview_request": bool(expected.get("store_overview_request")),
+                "knowledge_query": str(expected.get("knowledge_query") or ""),
+                "reason": str(expected.get("reason") or internal_workflow),
+                "confidence": float(expected.get("confidence") or 0.0),
+            }
+        ]
 
     calls: Dict[str, int] = {"count": 0}
     token_usage_estimate = _empty_token_usage_estimate()
@@ -205,72 +220,64 @@ def _evaluate_routing_decision(*, case: Dict[str, Any], name: str) -> Dict[str, 
             error = str(payload.get("error") or "").strip().lower()
             if error in {"timeout", "timeouterror"}:
                 raise asyncio.TimeoutError()
-            raise RuntimeError(str(payload.get("error") or "routing_error"))
+            raise RuntimeError(str(payload.get("error") or "understanding_error"))
         return dict(payload or {})
 
-    timeout_retry_enabled = bool(case.get("timeout_retry_enabled", False) or len(payloads) > 1)
-    min_confidence = float(case.get("min_confidence", 0.7))
-    soft_min_confidence = float(case.get("soft_min_confidence", 0.55))
-    timeout_retry_ms = int(case.get("timeout_retry_ms", 1800))
-
-    routing_settings = SimpleNamespace(
-        CHAT_LLM_ROUTING_ENABLED=True,
-        CHAT_LLM_ROUTING_MIN_CONFIDENCE=min_confidence,
-        CHAT_LLM_ROUTING_SOFT_MIN_CONFIDENCE=soft_min_confidence,
-        CHAT_LLM_ROUTING_TIMEOUT_RETRY_ENABLED=timeout_retry_enabled,
-        CHAT_LLM_ROUTING_TIMEOUT_RETRY_MS=timeout_retry_ms,
-    )
-    capability_settings = SimpleNamespace(
-        CHAT_LLM_ROUTING_ENABLED=True,
-        CHAT_LLM_ROUTING_MODEL="",
-        CHAT_LLM_ROUTING_MAX_TOKENS=180,
-        CHAT_LLM_ROUTING_TEMPERATURE=0.0,
-        CHAT_LLM_ROUTING_TIMEOUT_MS=5000,
-        CHAT_LLM_ROUTING_TIMEOUT_RETRY_ENABLED=timeout_retry_enabled,
-        CHAT_LLM_ROUTING_TIMEOUT_RETRY_MS=timeout_retry_ms,
-        CHAT_LLM_ROUTING_MIN_CONFIDENCE=min_confidence,
-        CHAT_AGENTIC_MIN_CONFIDENCE=0.8,
-        AGENTIC_FUNCTION_CALLING_ENABLED=False,
-        AGENTIC_ALLOWED_CHANNELS="widget",
+    capability_overrides = dict(case.get("capabilities") or {})
+    capabilities = replace(
+        build_chat_runtime_capabilities(),
+        agentic_function_calling_enabled=bool(
+            capability_overrides.get("agentic_function_calling_enabled", True)
+        ),
+        agentic_allowed_channels=str(capability_overrides.get("agentic_allowed_channels", "widget")),
     )
 
     with ExitStack() as stack:
-        stack.enter_context(patch.object(routing_policy, "settings", routing_settings))
-        stack.enter_context(patch.object(runtime_capabilities, "settings", capability_settings))
-        stack.enter_context(patch.object(routing_policy.llm_service, "generate_chat_json", fake_generate_chat_json))
-        decision = asyncio.run(
-            routing_policy.decide_execution_mode_with_llm(
-                text=str(inputs.get("text") or ""),
-                channel=inputs.get("channel"),
-                locale=inputs.get("locale"),
-                detail_has_filters=bool(inputs.get("detail_has_filters", False)),
-                detail_request=bool(inputs.get("detail_request", False)),
+        if payloads:
+            stack.enter_context(patch.object(llm_service, "generate_chat_json", fake_generate_chat_json))
+        understanding = asyncio.run(
+            build_understanding_result(
+                user_text=str(inputs.get("text") or ""),
+                channel=str(inputs.get("channel") or "widget"),
+                locale=str(inputs.get("locale") or "en-US"),
                 sku_tokens=list(inputs.get("sku_tokens") or []),
             )
         )
+        decision_state = build_decision_state(
+            understanding=understanding,
+            user_text=str(inputs.get("text") or ""),
+            channel=str(inputs.get("channel") or "widget"),
+            capabilities=capabilities,
+        )
 
-    public_routing = decision.to_public_routing()
+    public_routing = decision_state.execution_decision.to_public_routing() if decision_state.execution_decision else None
     actual = {
-        "workflow": str(public_routing.workflow or ""),
-        "execution_mode": str(public_routing.execution_mode or ""),
-        "needs_products": bool(public_routing.needs_products),
-        "needs_knowledge": bool(public_routing.needs_knowledge),
-        "needs_clarification": bool(public_routing.needs_clarification),
-        "store_overview_request": bool(public_routing.store_overview_request),
-        "knowledge_query": str(decision.route_decision.knowledge_query or ""),
-        "reason": str(public_routing.reason or ""),
-        "confidence": float(public_routing.confidence or 0.0),
-        "selection_source": str(public_routing.selection_source or ""),
-        "llm_workflow": str(decision.llm_workflow or ""),
-        "llm_execution_mode": str(decision.llm_execution_mode or ""),
-        "llm_reason": str(decision.llm_reason or ""),
-        "llm_confidence": float(decision.llm_confidence or 0.0),
-        "confidence_gate_applied": bool(decision.confidence_gate_applied),
-        "timeout_retry_used": bool(decision.timeout_retry_used),
-        "tool_suitable": bool(decision.tool_suitable),
+        "workflow": str((public_routing.workflow if public_routing else "") or ""),
+        "execution_mode": str((public_routing.execution_mode if public_routing else "") or ""),
+        "needs_products": bool(public_routing.needs_products) if public_routing else False,
+        "needs_knowledge": bool(public_routing.needs_knowledge) if public_routing else False,
+        "needs_clarification": bool(public_routing.needs_clarification) if public_routing else False,
+        "store_overview_request": bool(public_routing.store_overview_request) if public_routing else False,
+        "knowledge_query": str(decision_state.knowledge_query or ""),
+        "reason": str((public_routing.reason if public_routing else "") or ""),
+        "confidence": float((public_routing.confidence if public_routing else 0.0) or 0.0),
+        "selection_source": str((public_routing.selection_source if public_routing else "") or ""),
+        "internal_workflow": str(decision_state.internal_workflow or ""),
+        "workflow_hypothesis": str(understanding.workflow_hypothesis or ""),
+        "understanding_source": str(understanding.debug.get("understanding_source") or ""),
+        "llm_call_count": int(understanding.llm_call_count or 0),
+        "failure_reason": str(understanding.failure_reason or ""),
+        "tool_suitable": bool(
+            decision_state.execution_decision.tool_suitable if decision_state.execution_decision else False
+        ),
+        "feature_enabled": bool(
+            decision_state.execution_decision.feature_enabled if decision_state.execution_decision else False
+        ),
+        "channel_allowed": bool(
+            decision_state.execution_decision.channel_allowed if decision_state.execution_decision else False
+        ),
         "token_usage_estimate": token_usage_estimate,
     }
-    expected = dict(case.get("expected") or {})
     return _build_result(name=name, kind="routing_decision", actual=actual, expected=expected)
 
 

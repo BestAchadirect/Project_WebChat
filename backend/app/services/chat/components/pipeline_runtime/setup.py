@@ -1,20 +1,192 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from app.core.config import settings
 from app.services.chat.components.pipeline_runtime.state import PipelineExecutionState
 from app.services.chat.components.types import ComponentSource
 from app.services.chat.parsing import parser_rule_cache
 from app.services.chat.parsing.detail_query_parser import DetailQueryParser
+from app.services.chat.parsing.llm_attribute_extractor import enrich_product_attribute_filters
 from app.services.chat.presentation import reply_tone
 from app.services.chat.presentation import product_presentation
 from app.services.chat.routing import routing_policy
+from app.services.chat.routing import signals as routing_signals
 from app.services.chat.routing.contracts import DecisionState
 from app.services.chat.runtime.capabilities import ChatRuntimeCapabilities, build_chat_runtime_capabilities
 from app.services.chat.runtime import alias_cache, conversation_state
+from app.services.chat.runtime.search_plan import SearchPlan, build_search_plan
 from app.services.chat.text_normalization import normalize_user_text
+
+_CONTEXTUAL_PRODUCT_FOLLOW_UP_MARKERS = (
+    "what about",
+    "how about",
+    "see more",
+    "more of this",
+    "the other",
+    "another",
+    "same",
+    " one",
+    " ones",
+)
+_CONTEXT_MERGE_ANCHOR_KEYS = (
+    "jewelry_type",
+    "category",
+    "body_part",
+    "gauge",
+    "threading",
+    "size",
+    "diameter",
+    "length",
+)
+_CONTEXTUAL_FILTER_HINTS = (
+    ("rose gold", "material", "rose gold"),
+    ("titanium", "material", "titanium"),
+    ("steel", "material", "steel"),
+    ("gold", "material", "gold"),
+    ("silver", "color", "silver"),
+    ("black", "color", "black"),
+    ("white", "color", "white"),
+    ("clear", "color", "clear"),
+    ("opal color", "opal_color", "opal"),
+)
+_CATALOG_FILTER_HINTS = _CONTEXTUAL_FILTER_HINTS + (
+    ("nose screw", "jewelry_type", "nose screw"),
+    ("nose stud", "jewelry_type", "nose stud"),
+    ("labrets", "jewelry_type", "labret"),
+    ("labret", "jewelry_type", "labret"),
+    ("barbells", "jewelry_type", "barbell"),
+    ("barbell", "jewelry_type", "barbell"),
+    ("rings", "jewelry_type", "ring"),
+    ("ring", "jewelry_type", "ring"),
+)
+
+
+def _looks_like_contextual_product_follow_up(text: str) -> bool:
+    normalized = " ".join(str(text or "").strip().lower().split())
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _CONTEXTUAL_PRODUCT_FOLLOW_UP_MARKERS)
+
+
+def _contains_filter_hint(text: str, needle: str) -> bool:
+    clean_needle = str(needle or "").strip().lower()
+    if not clean_needle:
+        return False
+    return bool(re.search(rf"(?<![a-z0-9]){re.escape(clean_needle)}(?![a-z0-9])", text))
+
+
+def _merge_contextual_catalog_filters(
+    *,
+    current_filters: Dict[str, Any],
+    previous_filters: Dict[str, Any],
+    user_text: str,
+) -> tuple[Dict[str, Any], bool]:
+    if not previous_filters:
+        return dict(current_filters or {}), False
+    if not _looks_like_contextual_product_follow_up(user_text):
+        return dict(current_filters or {}), False
+
+    merged = dict(current_filters or {})
+    normalized = " ".join(str(user_text or "").strip().lower().split())
+    for needle, key, value in _CONTEXTUAL_FILTER_HINTS:
+        if key in merged:
+            continue
+        if _contains_filter_hint(normalized, needle):
+            merged[key] = value
+            break
+    if not merged and previous_filters:
+        merged = dict(previous_filters or {})
+    if not merged:
+        return dict(current_filters or {}), False
+
+    for key in _CONTEXT_MERGE_ANCHOR_KEYS:
+        if key in merged:
+            continue
+        previous_value = str(previous_filters.get(key) or "").strip()
+        if previous_value:
+            merged[key] = previous_value
+    return merged, merged != dict(current_filters or {})
+
+
+def _merge_catalog_filter_hints(
+    *,
+    current_filters: Dict[str, Any],
+    user_text: str,
+) -> tuple[Dict[str, Any], bool]:
+    normalized = " ".join(str(user_text or "").strip().lower().split())
+    if not normalized:
+        return dict(current_filters or {}), False
+    merged = dict(current_filters or {})
+    for needle, key, value in _CATALOG_FILTER_HINTS:
+        if key in merged:
+            continue
+        if _contains_filter_hint(normalized, needle):
+            merged[key] = value
+    return merged, merged != dict(current_filters or {})
+
+
+def _pending_task_is_filled_by_current_turn(
+    *,
+    pending_task: Dict[str, Any],
+    decision_state: Optional[DecisionState],
+    product_anchor_present: bool,
+) -> bool:
+    task = dict(pending_task or {})
+    missing_slot = str(task.get("missing_slot") or "").strip().lower()
+    if missing_slot != "product_anchor":
+        return False
+    intent = str(getattr(decision_state, "intent", "") or "").strip().lower()
+    if intent != "product_information":
+        return False
+    return bool(product_anchor_present)
+
+
+def _pending_task_should_clear_for_topic_change(
+    *,
+    pending_task: Dict[str, Any],
+    decision_state: Optional[DecisionState],
+    route_decision: routing_policy.WorkflowDecision,
+) -> bool:
+    if not dict(pending_task or {}):
+        return False
+    intent = str(getattr(decision_state, "intent", "") or "").strip().lower()
+    if intent in {"off_topic", "general_talking"}:
+        return True
+    if str(route_decision.workflow or "").strip().lower() == "knowledge":
+        return True
+    return False
+
+
+def _has_product_anchor(
+    *,
+    text: str,
+    detail: Any,
+    sku_tokens: Sequence[str],
+    contextual_filters_applied: bool,
+) -> bool:
+    if list(sku_tokens or []):
+        return True
+    if bool(contextual_filters_applied):
+        return True
+
+    if bool(getattr(detail, "is_detail_request", False)):
+        return True
+    if dict(getattr(detail, "attribute_filters", {}) or {}):
+        return True
+    if bool(getattr(detail, "wants_image", False)):
+        return True
+
+    normalized = normalize_user_text(text)
+    if not normalized:
+        return False
+    return bool(
+        routing_signals.has_specific_product_hint_signal(normalized)
+        or routing_signals.has_explicit_product_browse_signal(normalized)
+        or routing_signals.looks_like_product_search(normalized)
+    )
 
 
 @dataclass
@@ -52,6 +224,7 @@ class PipelineRunSetup:
     execution_state: PipelineExecutionState
     tone_controller: PipelineToneController
     runtime_capabilities: ChatRuntimeCapabilities
+    search_plan: SearchPlan
     llm_call_count: int = 0
     internal_workflow: str = ""
     decision_state: Optional[DecisionState] = None
@@ -95,10 +268,26 @@ class PipelineSetupMixin:
             conversation_state_enabled = bool(capabilities.chat_conversation_state_enabled)
             state_working: Optional[Dict[str, Any]] = None
             conversation_state_filter_merge_applied = False
+            hinted_filters, hint_applied = _merge_catalog_filter_hints(
+                current_filters=dict(detail.attribute_filters or {}),
+                user_text=text,
+            )
+            if hint_applied:
+                detail = replace(detail, attribute_filters=hinted_filters)
             if conversation_state_enabled:
                 state_working = await self._load_conversation_state(conversation_id=conversation_id)
             conversation_memory = conversation_state.load_memory_state(state_working)
             conversation_continuation = conversation_state.load_continuation_state(state_working)
+            pending_task = conversation_state.load_pending_task(state_working)
+            if conversation_state_enabled and state_working is not None:
+                merged_filters, merge_applied = _merge_contextual_catalog_filters(
+                    current_filters=dict(detail.attribute_filters or {}),
+                    previous_filters=dict(conversation_memory.last_attribute_filters or {}),
+                    user_text=text,
+                )
+                if merge_applied:
+                    detail = replace(detail, attribute_filters=merged_filters)
+                    conversation_state_filter_merge_applied = True
             catalog_pagination_requested = bool(client_action_norm == "catalog_pagination")
             catalog_pagination_stale_requested = False
             catalog_pagination_offset = int(conversation_continuation.last_display_offset or 0)
@@ -142,6 +331,12 @@ class PipelineSetupMixin:
             else:
                 debug_state_version = conversation_state.CONVERSATION_STATE_VERSION
                 tone_recent = []
+            product_anchor_present = _has_product_anchor(
+                text=text,
+                detail=detail,
+                sku_tokens=unique_sku_tokens,
+                contextual_filters_applied=bool(conversation_state_filter_merge_applied),
+            )
             route_decision = route_decision_override
             if route_decision is None:
                 route_decision = routing_policy.WorkflowDecision(
@@ -168,14 +363,87 @@ class PipelineSetupMixin:
                     reason="catalog_pagination_continuation",
                     confidence=max(float(route_decision.confidence or 0.0), 0.9),
                 )
+            elif route_decision.workflow == "catalog" and not product_anchor_present:
+                route_decision = replace(
+                    route_decision,
+                    workflow="fallback",
+                    source=ComponentSource.ERROR,
+                    needs_products=False,
+                    needs_knowledge=False,
+                    needs_clarification=True,
+                    store_overview_request=False,
+                    knowledge_query="",
+                    reason="fallback_vague_store_request",
+                    confidence=min(float(route_decision.confidence or 0.0), 0.5),
+                )
+            pending_task_resume: Dict[str, Any] = {}
+            pending_task_cleared = False
+            pending_task_advanced = False
+            if conversation_state_enabled and state_working is not None and pending_task:
+                if _pending_task_is_filled_by_current_turn(
+                    pending_task=pending_task,
+                    decision_state=decision_state_override,
+                    product_anchor_present=product_anchor_present,
+                ):
+                    pending_task_resume = dict(pending_task)
+                    state_working = conversation_state.clear_pending_task(state_working)
+                    pending_task_cleared = True
+                    if route_decision.workflow != "catalog":
+                        route_decision = replace(
+                            route_decision,
+                            workflow="catalog",
+                            source=ComponentSource.SQL,
+                            needs_products=True,
+                            needs_knowledge=False,
+                            needs_clarification=False,
+                            store_overview_request=False,
+                            knowledge_query="",
+                            reason="pending_task_resumed",
+                            confidence=max(float(route_decision.confidence or 0.0), 0.8),
+                        )
+                elif _pending_task_should_clear_for_topic_change(
+                    pending_task=pending_task,
+                    decision_state=decision_state_override,
+                    route_decision=route_decision,
+                ):
+                    state_working = conversation_state.clear_pending_task(state_working)
+                    pending_task_cleared = True
+                else:
+                    state_working = conversation_state.advance_pending_task_turn(state_working)
+                    pending_task_advanced = True
 
             workflow = route_decision.workflow
             internal_workflow = str(internal_workflow_override or getattr(decision_state_override, "internal_workflow", "") or workflow)
+            search_plan = build_search_plan(
+                user_text=text,
+                workflow=workflow,
+                detail=detail,
+                sku_tokens=unique_sku_tokens,
+                knowledge_query=str(route_decision.knowledge_query or ""),
+                conversation_anchor={
+                    "last_attribute_filters": dict(conversation_memory.last_attribute_filters or {}),
+                    "last_route": str(conversation_memory.last_route or ""),
+                },
+                context_allowed=bool(conversation_state_filter_merge_applied),
+                context_reason=(
+                    "contextual_filter_merge"
+                    if conversation_state_filter_merge_applied
+                    else ""
+                ),
+            )
             execution_state = PipelineExecutionState(
                 debug_meta={
                     "component_pipeline_enabled": True,
                     "component_workflow": workflow,
                     "internal_workflow": internal_workflow,
+                    "response_intent": str(getattr(decision_state_override, "intent", "") or ""),
+                    "response_subintent": str(getattr(decision_state_override, "subintent", "") or ""),
+                    "response_policy": str(getattr(decision_state_override, "response_policy", "") or ""),
+                    "response_user_goal": str(getattr(decision_state_override, "user_goal", "") or ""),
+                    "response_product_query": str(getattr(decision_state_override, "product_query", "") or ""),
+                    "response_clarify_question": str(getattr(decision_state_override, "clarify_question", "") or ""),
+                    "response_pending_task_type": str(getattr(decision_state_override, "pending_task_type", "") or ""),
+                    "response_missing_slot": str(getattr(decision_state_override, "missing_slot", "") or ""),
                     "workflow_needs_products": bool(route_decision.needs_products),
                     "workflow_needs_knowledge": bool(route_decision.needs_knowledge),
                     "workflow_needs_clarification": bool(route_decision.needs_clarification),
@@ -187,9 +455,18 @@ class PipelineSetupMixin:
                     "conversation_state_filter_merge_applied": bool(conversation_state_filter_merge_applied),
                     "conversation_state_loaded_version": int(debug_state_version),
                     "conversation_state_written": False,
+                    "pending_task_loaded": bool(pending_task),
+                    "pending_task_resumed": bool(pending_task_resume),
+                    "pending_task_cleared": bool(pending_task_cleared),
+                    "pending_task_advanced": bool(pending_task_advanced),
+                    "pending_task_type": str((pending_task_resume or pending_task).get("task_type") or ""),
+                    "pending_task_missing_slot": str((pending_task_resume or pending_task).get("missing_slot") or ""),
+                    "pending_task_original_question": str((pending_task_resume or pending_task).get("original_question") or ""),
+                    "catalog_product_anchor_present": bool(product_anchor_present),
                     "detail_requested_fields": list(detail.requested_fields or []),
                     "intent_confidence": float(getattr(decision_state_override, "intent_confidence", 0.0) or 0.0),
                     "decision_answerability": str(getattr(decision_state_override, "answerability", "none") or "none"),
+                    "search_plan": search_plan.to_debug_dict(),
                 },
                 spans={
                     "workflow_routing_ms": 0.0,
@@ -238,6 +515,7 @@ class PipelineSetupMixin:
                 execution_state=execution_state,
                 tone_controller=tone_controller,
                 runtime_capabilities=capabilities,
+                search_plan=search_plan,
                 llm_call_count=llm_call_count,
                 internal_workflow=internal_workflow,
                 decision_state=decision_state_override,

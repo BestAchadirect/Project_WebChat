@@ -23,6 +23,8 @@ from app.services.chat.parsing.detail_query_parser import DetailQuery
 from app.services.chat.retrieval.product_detail_resolver import ProductDetailResolver
 from app.services.chat.retrieval.result_policy import classify_match_tier
 from app.services.chat.presentation import component_contract
+from app.services.chat.service import ChatService
+from tests.fixtures.chat import DummyConversation, build_component_pipeline_result, patch_chat_service_lifecycle
 
 
 class _RedisStub:
@@ -88,7 +90,7 @@ def _workflow_decision(
     store_overview_request: bool = False,
 ) -> routing_policy.WorkflowDecision:
     source = ComponentSource.KNOWLEDGE if workflow == "knowledge" else ComponentSource.SQL
-    if workflow in {"fallback", "off_topic"}:
+    if workflow in {"fallback", "general_talking", "off_topic"}:
         source = ComponentSource.ERROR
     return routing_policy.WorkflowDecision(
         workflow=workflow,
@@ -771,6 +773,73 @@ async def test_component_pipeline_sterilization_with_opal_returns_clarify(
 
 
 @pytest.mark.asyncio
+async def test_component_pipeline_semantic_ambiguity_skips_attribute_list_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CatalogStub:
+        async def structured_count(self, **kwargs):
+            return 0
+
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(product_ids=[], cards=[], distance_by_id={}, best_distance=None)
+
+        async def lexical_search(self, **kwargs):
+            return SimpleNamespace(product_ids=[], cards=[], distance_by_id={}, best_distance=None)
+
+        async def structured_search(self, **kwargs):
+            return SimpleNamespace(product_ids=[]), {}
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
+        return DetailQuery(
+            requested_fields=[],
+            attribute_filters={},
+            semantic_hints=["sterilization"],
+            clarify_focus="condition",
+            wants_image=False,
+            is_detail_request=False,
+        )
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("attribute list target inference should be skipped for semantic ambiguity")
+
+    async def fail_attribute_list_workflow(*args, **kwargs):
+        raise AssertionError("attribute list workflow should be skipped for semantic ambiguity")
+
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
+        fake_parse,
+    )
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline_runtime.core.detect_attribute_list_target",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline_runtime.core.infer_attribute_list_target",
+        fail_if_called,
+    )
+    monkeypatch.setattr(ComponentPipeline, "_handle_attribute_list_workflow", fail_attribute_list_workflow)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Can i see product with sterilization?", locale="en-US"),
+        conversation_id=77,
+        run_id="run-semantic-ambiguity-skip-attribute-list",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    assert result.response.routing.workflow == "catalog"
+    assert any(component.type.value == "clarify" for component in result.response.components)
+    assert result.debug.get("attribute_list_target_source") is None
+    assert result.debug.get("clarify_reason") == "semantic_concept_unclear"
+
+
+@pytest.mark.asyncio
 async def test_component_pipeline_high_risk_knowledge_error_returns_clarify(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -938,10 +1007,13 @@ async def test_component_pipeline_off_topic_uses_terminal_llm_reply_without_retr
     assert "I can't help with coding here, but I can help with body jewelry products and store policies." in reply
     assert captured["usage_kind"] == "chat_component_off_topic_copy"
     assert captured["workflow"] == "off_topic"
+    component_types = [component.type.value for component in result.response.components]
+    assert "knowledge_answer" not in component_types
+    assert component_types == ["assistant_message", "query_summary"]
 
 
 @pytest.mark.asyncio
-async def test_component_pipeline_off_topic_uses_terminal_llm_reply_without_retrieval(
+async def test_component_pipeline_general_talking_uses_terminal_llm_reply_without_retrieval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pipeline = ComponentPipeline(
@@ -964,8 +1036,8 @@ async def test_component_pipeline_off_topic_uses_terminal_llm_reply_without_retr
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="Hi there", locale="en-US"),
         conversation_id=77,
-        run_id="run-off-topic",
-        route_decision_override=_workflow_decision("off_topic"),
+        run_id="run-general-talking",
+        route_decision_override=_workflow_decision("general_talking"),
     )
 
     reply = str(result.response.reply_text or "")
@@ -979,14 +1051,14 @@ async def test_component_pipeline_off_topic_uses_terminal_llm_reply_without_retr
         "Achadirect support",
     ]
 
-    assert result.response.routing.workflow == "off_topic"
+    assert result.response.routing.workflow == "general_talking"
     assert result.debug.get("component_source") == "error"
     assert result.debug.get("terminal_reply_source") == "llm"
     assert result.embedding_calls == 0
     assert result.llm_calls == 2
     assert any(candidate in reply.lower() for candidate in scope_candidates)
-    assert captured["usage_kind"] == "chat_component_off_topic_copy"
-    assert captured["workflow"] == "off_topic"
+    assert captured["usage_kind"] == "chat_component_default_copy"
+    assert captured["workflow"] == "general_talking"
 
 
 @pytest.mark.asyncio
@@ -1015,12 +1087,12 @@ async def test_component_pipeline_off_topic_uses_terminal_llm_with_requested_loc
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="Hi there", locale="th-TH"),
         conversation_id=77,
-        run_id="run-off-topic-th",
-        route_decision_override=_workflow_decision("off_topic"),
+        run_id="run-general-talking-th",
+        route_decision_override=_workflow_decision("general_talking"),
     )
 
     reply = str(result.response.reply_text or "")
-    assert result.response.routing.workflow == "off_topic"
+    assert result.response.routing.workflow == "general_talking"
     assert result.debug.get("component_source") == "error"
     assert result.debug.get("terminal_reply_source") == "llm"
     assert result.embedding_calls == 0
@@ -1054,12 +1126,12 @@ async def test_component_pipeline_off_topic_uses_terminal_llm_for_any_locale(
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="Hi there", locale="es-ES"),
         conversation_id=77,
-        run_id="run-off-topic-es",
-        route_decision_override=_workflow_decision("off_topic"),
+        run_id="run-general-talking-es",
+        route_decision_override=_workflow_decision("general_talking"),
     )
 
     reply = str(result.response.reply_text or "")
-    assert result.response.routing.workflow == "off_topic"
+    assert result.response.routing.workflow == "general_talking"
     assert result.debug.get("component_source") == "error"
     assert result.debug.get("terminal_reply_source") == "llm"
     assert result.embedding_calls == 0
@@ -1070,7 +1142,7 @@ async def test_component_pipeline_off_topic_uses_terminal_llm_for_any_locale(
 
 
 @pytest.mark.asyncio
-async def test_component_pipeline_fallback_uncertain_uses_generic_clarify_message() -> None:
+async def test_component_pipeline_fallback_vague_store_request_uses_scope_clarify_message() -> None:
     pipeline = ComponentPipeline(
         db=object(),
         catalog_search=SimpleNamespace(),
@@ -1085,17 +1157,16 @@ async def test_component_pipeline_fallback_uncertain_uses_generic_clarify_messag
         route_decision_override=_workflow_decision("fallback"),
     )
 
-    fallback_variants = {
-        "I can help right away. Tell me whether you need products, policy details, or contact info.",
-        "I can assist with products, policy, or contact details. Which one should I focus on?",
-        "Tell me your main goal and I'll route this correctly: products, policy, or contact.",
-    }
-
     assert result.response.routing.workflow == "fallback"
     assert any(component.type.value == "clarify" for component in result.response.components)
-    assert result.response.reply_text in fallback_variants
-    assert result.debug.get("clarify_reason") == "fallback_uncertain"
+    assert result.response.reply_text
+    assert any(
+        term in result.response.reply_text.lower()
+        for term in ("product", "body jewelry", "store", "shipping", "contact")
+    )
+    assert result.debug.get("clarify_reason") == "fallback_vague_store_request"
     assert result.debug.get("tone_key") == ""
+    assert result.debug.get("clarify_category") == "vague_store_request"
     assert result.debug.get("clarify_mode") == "broad_help"
     assert result.debug.get("clarify_best_effort_help") is True
 
@@ -1123,5 +1194,68 @@ async def test_component_pipeline_fallback_gibberish_asks_rephrase() -> None:
     assert result.debug.get("tone_key") == ""
     assert result.debug.get("clarify_mode") == "gibberish"
     assert result.debug.get("clarify_best_effort_help") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.performance
+async def test_chat_service_component_path_is_repeatable_under_repeated_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_component_pipeline(self, *, request, conversation_id, run_id, **kwargs):
+        del self, conversation_id, run_id, kwargs
+        return build_component_pipeline_result(
+            request=request,
+            conversation_id=77,
+            reply_text="I found titanium labrets.",
+            response_workflow="catalog",
+            source="sql",
+            response_debug={"reply_mode": "deterministic_product"},
+            product_carousel=[
+                {
+                    "id": "33333333-3333-3333-3333-333333333333",
+                    "sku": "EVAL-TI-LAB-1",
+                    "name": "Titanium Labret",
+                    "price": 19.5,
+                    "currency": "USD",
+                    "stock_status": "in_stock",
+                    "attributes": {"material": "titanium"},
+                }
+            ],
+        )
+
+    patch_chat_service_lifecycle(
+        monkeypatch,
+        conversation=DummyConversation(conversation_id=77),
+    )
+    monkeypatch.setattr(ChatService, "_run_component_pipeline", fake_component_pipeline)
+
+    service = ChatService(db=object())
+    snapshots: list[dict[str, object]] = []
+    for _ in range(3):
+        response = await service.process_chat(
+            ChatRequest(user_id="perf-user", message="show titanium labrets", locale="en-US"),
+            channel="widget",
+        )
+        snapshots.append(
+            {
+                "workflow": response.routing.workflow,
+                "reply_text": response.reply_text,
+                "product_skus": [card.sku for card in response.product_carousel],
+                "source_titles": [source.title for source in response.sources],
+                "llm_calls": int(getattr(response.meta, "llm_calls", 0) or 0),
+                "embedding_calls": int(getattr(response.meta, "embedding_calls", 0) or 0),
+                "latency_span_keys": sorted(dict(response.debug or {}).get("latency_spans", {}).keys()),
+                "latency_span_count": len(dict(response.debug or {}).get("latency_spans", {})),
+            }
+        )
+        assert response.meta is not None
+        assert int(getattr(response.meta, "llm_calls", 0) or 0) == 0
+        assert int(getattr(response.meta, "embedding_calls", 0) or 0) == 0
+        latency_spans = dict(response.debug or {}).get("latency_spans", {})
+        assert isinstance(latency_spans, dict)
+        assert latency_spans
+        assert all(isinstance(value, (int, float)) and value >= 0 for value in latency_spans.values())
+
+    assert snapshots[0] == snapshots[1] == snapshots[2]
 
 

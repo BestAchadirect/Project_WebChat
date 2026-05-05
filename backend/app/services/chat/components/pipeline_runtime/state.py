@@ -7,6 +7,8 @@ from app.schemas.chat import ChatResponse, KnowledgeSource
 from app.services.chat.components.types import ComponentSource, ComponentType
 from app.services.chat.retrieval.retrieval_outcome import RetrievalOutcome
 from app.services.chat.runtime.capabilities import ChatRuntimeCapabilities
+from app.services.chat.runtime.grounding import GroundingDecision
+from app.services.chat.runtime.search_plan import SearchPlan
 from app.services.chat.routing.contracts import WorkflowResult
 
 
@@ -67,8 +69,19 @@ class PipelineRetrievalState:
 @dataclass
 class PipelineDecisionRuntimeState:
     runtime_capabilities: Optional[ChatRuntimeCapabilities] = None
+    search_plan: Optional[SearchPlan] = None
+    grounding_decision: Optional[GroundingDecision] = None
+    knowledge_grounding_decision: Optional[GroundingDecision] = None
     ambiguity_reason: Optional[str] = None
     internal_workflow: str = ""
+    intent: str = ""
+    subintent: str = ""
+    user_goal: str = ""
+    product_query: str = ""
+    response_policy: str = ""
+    clarify_question: str = ""
+    pending_task_type: str = ""
+    missing_slot: str = ""
     intent_confidence: float = 0.0
     retrieval_confidence: float = 0.0
     answerability: str = "none"

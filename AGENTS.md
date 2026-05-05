@@ -44,6 +44,7 @@ Do not move or rename directories unless explicitly requested.
 - Architecture docs: `docs/architecture/`.
 - AI agent/prompt docs: `docs/ai/`.
 - Current AI implementation guidance lives in `docs/ai/agent-implementation-plan.md`.
+- AI tracking docs stay under `docs/ai/tracking/`, with status files at that folder root, phase docs in `docs/ai/tracking/phases/`, cross-sprint task docs in `docs/ai/tracking/tasks/`, and sprint packages in `docs/ai/tracking/sprints/`.
 - Runbooks: `docs/runbooks/`.
 - Reference docs: `docs/reference/`.
 
@@ -92,4 +93,4 @@ Do not move or rename directories unless explicitly requested.
 
 ## Ownership
 - Owner: Project maintainers.
-- Last reviewed: 2026-04-06.
+- Last reviewed: 2026-04-21.

@@ -146,6 +146,7 @@ class ComponentPipeline(
             fallback_workflow = setup.fallback_workflow
             source = setup.source
             decision_state = setup.decision_state
+            search_plan = setup.search_plan
 
             execution_state = setup.execution_state
             debug_meta = execution_state.debug_meta
@@ -171,29 +172,41 @@ class ComponentPipeline(
             query_summary = text if text else "Please provide a question."
             display_limit = product_presentation.PRODUCT_DISPLAY_LIMIT
             result_fetch_limit = max(display_limit * 6, 20)
-            attribute_list_target = detect_attribute_list_target(text)
-            attribute_list_target_source = "deterministic" if attribute_list_target else ""
-            if (
-                not attribute_list_target
-                and workflow == "catalog"
-                and is_attribute_list_query(text)
-            ):
-                attribute_list_result = await infer_attribute_list_target(
-                    user_text=text,
-                    workflow=workflow,
-                )
-                attribute_list_target = str(attribute_list_result.target or "").strip().lower()
-                attribute_list_target_source = "llm" if attribute_list_target else "none"
-                if int(attribute_list_result.llm_call_count or 0) > 0:
-                    llm_calls += int(attribute_list_result.llm_call_count or 0)
-                    external_call_counts["llm_attribute_list_target"] = int(attribute_list_result.llm_call_count or 0)
-                debug_meta.update(dict(attribute_list_result.debug or {}))
+            detail_semantic_hints = [
+                str(item or "").strip()
+                for item in list(getattr(detail, "semantic_hints", []) or [])
+                if str(item or "").strip()
+            ]
+            detail_clarify_focus = str(getattr(detail, "clarify_focus", "") or "").strip()
+            attribute_list_target = ""
+            attribute_list_target_source = ""
+            attribute_list_allowed = not detail_semantic_hints and not detail_clarify_focus
+            if attribute_list_allowed:
+                attribute_list_target = detect_attribute_list_target(text)
+                attribute_list_target_source = "deterministic" if attribute_list_target else ""
+                if (
+                    not attribute_list_target
+                    and workflow == "catalog"
+                    and is_attribute_list_query(text)
+                    and not dict(getattr(detail, "attribute_filters", {}) or {})
+                ):
+                    attribute_list_result = await infer_attribute_list_target(
+                        user_text=text,
+                        workflow=workflow,
+                    )
+                    attribute_list_confidence = float(getattr(attribute_list_result, "confidence", 0.0) or 0.0)
+                    if attribute_list_confidence >= float(getattr(setup.runtime_capabilities, "chat_attribute_interpretation_min_confidence", 0.55) or 0.55):
+                        attribute_list_target = str(attribute_list_result.target or "").strip().lower()
+                        attribute_list_target_source = "llm" if attribute_list_target else "none"
+                    if int(attribute_list_result.llm_call_count or 0) > 0:
+                        llm_calls += int(attribute_list_result.llm_call_count or 0)
+                        external_call_counts["llm_attribute_list_target"] = int(attribute_list_result.llm_call_count or 0)
+                    debug_meta.update(dict(attribute_list_result.debug or {}))
             if attribute_list_target_source:
                 debug_meta["attribute_list_target_source"] = attribute_list_target_source
             if (
                 workflow == "catalog"
                 and not catalog_pagination_requested
-                and not str(getattr(detail, "clarify_focus", "") or "").strip()
                 and needs_body_part_suitability_clarification(text)
             ):
                 detail = replace(detail, clarify_focus="body_part")
@@ -203,19 +216,32 @@ class ComponentPipeline(
                 retrieval=PipelineRetrievalState(source=source),
                 decision=PipelineDecisionRuntimeState(
                     runtime_capabilities=setup.runtime_capabilities,
+                    search_plan=search_plan,
                     internal_workflow=internal_workflow,
+                    intent=str(getattr(decision_state, "intent", "") or ""),
+                    subintent=str(getattr(decision_state, "subintent", "") or ""),
+                    user_goal=str(getattr(decision_state, "user_goal", "") or ""),
+                    product_query=str(getattr(decision_state, "product_query", "") or ""),
+                    response_policy=str(getattr(decision_state, "response_policy", "") or ""),
+                    clarify_question=str(getattr(decision_state, "clarify_question", "") or ""),
+                    pending_task_type=str(getattr(decision_state, "pending_task_type", "") or ""),
+                    missing_slot=str(getattr(decision_state, "missing_slot", "") or ""),
                     intent_confidence=float(getattr(decision_state, "intent_confidence", 0.0) or 0.0),
                     answerability=str(getattr(decision_state, "answerability", "none") or "none"),
                 ),
             )
             if not catalog_pagination_requested and ambiguity_blocks_retrieval(getattr(detail, "clarify_focus", "")):
-                state.decision.ambiguity_reason = "semantic_concept_unclear"
+                state.decision.ambiguity_reason = (
+                    "structured_no_match"
+                    if bool(debug_meta.get("product_suitability_gate_used"))
+                    else "semantic_concept_unclear"
+                )
                 state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
                 state.presentation.canonical_products = []
                 state.retrieval.result_count = 0
                 debug_meta["semantic_guardrail_reason"] = "semantic_hint_clarify"
                 debug_meta["semantic_hint_clarify_used"] = True
-                debug_meta["clarify_reason"] = "semantic_concept_unclear"
+                debug_meta["clarify_reason"] = state.decision.ambiguity_reason
             if catalog_pagination_stale_requested:
                 state.catalog.pagination_requested = True
                 state.catalog.pagination_offset = catalog_pagination_offset
@@ -256,6 +282,7 @@ class ComponentPipeline(
                     text=text,
                     locale=locale,
                     workflow=workflow,
+                    internal_workflow=internal_workflow,
                     debug_meta=debug_meta,
                     spans=spans,
                     external_call_counts=external_call_counts,

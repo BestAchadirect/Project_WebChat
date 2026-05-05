@@ -26,8 +26,19 @@ def build_chat_qa_metrics(
 ) -> Dict[str, Any]:
     debug = dict(getattr(response, "debug", {}) or {})
     retrieval_gate = debug.get("retrieval_gate") if isinstance(debug.get("retrieval_gate"), dict) else {}
+    grounding = debug.get("grounding") if isinstance(debug.get("grounding"), dict) else {}
+    knowledge_grounding = debug.get("knowledge_grounding") if isinstance(debug.get("knowledge_grounding"), dict) else {}
     latency = debug.get("latency_spans") if isinstance(debug.get("latency_spans"), dict) else {}
     agentic = debug.get("agentic") if isinstance(debug.get("agentic"), dict) else {}
+    conversation_state_enabled = bool(debug.get("conversation_state_enabled", False))
+    conversation_state_written = bool(debug.get("conversation_state_written", False))
+    conversation_state_filter_merge_applied = bool(
+        debug.get("conversation_state_filter_merge_applied", False)
+    )
+    try:
+        conversation_state_loaded_version = int(debug.get("conversation_state_loaded_version", 0) or 0)
+    except Exception:
+        conversation_state_loaded_version = 0
     meta = getattr(response, "meta", None)
     meta_source = getattr(meta, "source", None) if meta is not None else None
     routing = getattr(response, "routing", None)
@@ -66,8 +77,34 @@ def build_chat_qa_metrics(
         "use_products": bool(retrieval_gate.get("use_products", False)),
         "use_knowledge": bool(retrieval_gate.get("use_knowledge", False)),
         "is_policy_like": bool(retrieval_gate.get("is_policy_like", False)),
+        "grounding_status": str(
+            grounding.get("status")
+            or knowledge_grounding.get("status")
+            or debug.get("grounding_status")
+            or debug.get("knowledge_grounding_status")
+            or ""
+        ).strip() or None,
+        "grounding_safe_action": str(
+            grounding.get("safe_customer_action")
+            or knowledge_grounding.get("safe_customer_action")
+            or debug.get("grounding_safe_action")
+            or debug.get("knowledge_grounding_safe_action")
+            or ""
+        ).strip() or None,
+        "grounding_reason_count": len(
+            list(
+                grounding.get("reasons")
+                or knowledge_grounding.get("reasons")
+                or debug.get("grounding_reasons")
+                or debug.get("knowledge_grounding_reasons")
+                or []
+            )
+        ),
         "agentic_used_tools": bool(agentic.get("used_tools", False)),
         "conversation_state_written": bool(debug.get("conversation_state_written", False)),
+        "conversation_state_enabled": conversation_state_enabled,
+        "conversation_state_filter_merge_applied": conversation_state_filter_merge_applied,
+        "conversation_state_loaded_version": conversation_state_loaded_version,
         "tone_repeat_hit": int(debug.get("tone_repeat_hit", 0) or 0),
         "tone_filler_stripped": int(debug.get("tone_filler_stripped", 0) or 0),
         "external_call_count": int(debug.get("external_call_count", 0) or 0),
@@ -100,6 +137,12 @@ def summarize_chat_metrics(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     totals_by_status: Dict[str, int] = {}
     totals_by_workflow: Dict[str, int] = {}
     totals_by_action: Dict[str, int] = {}
+    conversation_state_enabled = 0
+    conversation_state_written = 0
+    conversation_state_filter_merge_applied = 0
+    conversation_state_loaded_versions: Dict[str, int] = {}
+    totals_by_grounding_status: Dict[str, int] = {}
+    totals_by_grounding_action: Dict[str, int] = {}
     action_completed = 0
     tone_repeat_hits = 0
     tone_filler_stripped = 0
@@ -115,8 +158,27 @@ def summarize_chat_metrics(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         totals_by_workflow[workflow] = totals_by_workflow.get(workflow, 0) + 1
         if action_kind:
             totals_by_action[action_kind] = totals_by_action.get(action_kind, 0) + 1
+        grounding_status = str(metrics.get("grounding_status") or "").strip()
+        if grounding_status:
+            totals_by_grounding_status[grounding_status] = totals_by_grounding_status.get(grounding_status, 0) + 1
+        grounding_action = str(metrics.get("grounding_safe_action") or "").strip()
+        if grounding_action:
+            totals_by_grounding_action[grounding_action] = totals_by_grounding_action.get(grounding_action, 0) + 1
         if bool(metrics.get("action_completed", False)):
             action_completed += 1
+        if bool(metrics.get("conversation_state_enabled", False)):
+            conversation_state_enabled += 1
+        if bool(metrics.get("conversation_state_written", False)):
+            conversation_state_written += 1
+        if bool(metrics.get("conversation_state_filter_merge_applied", False)):
+            conversation_state_filter_merge_applied += 1
+        try:
+            loaded_version = int(metrics.get("conversation_state_loaded_version", 0) or 0)
+        except Exception:
+            loaded_version = 0
+        if loaded_version > 0:
+            key = str(loaded_version)
+            conversation_state_loaded_versions[key] = conversation_state_loaded_versions.get(key, 0) + 1
         tone_repeat_hits += int(metrics.get("tone_repeat_hit", 0) or 0)
         tone_filler_stripped += int(metrics.get("tone_filler_stripped", 0) or 0)
 
@@ -125,7 +187,13 @@ def summarize_chat_metrics(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "by_status": dict(sorted(totals_by_status.items())),
         "by_workflow": dict(sorted(totals_by_workflow.items())),
         "by_action_kind": dict(sorted(totals_by_action.items())),
+        "by_grounding_status": dict(sorted(totals_by_grounding_status.items())),
+        "by_grounding_safe_action": dict(sorted(totals_by_grounding_action.items())),
         "action_completed": action_completed,
+        "conversation_state_enabled": conversation_state_enabled,
+        "conversation_state_written": conversation_state_written,
+        "conversation_state_filter_merge_applied": conversation_state_filter_merge_applied,
+        "conversation_state_loaded_versions": dict(sorted(conversation_state_loaded_versions.items())),
         "tone_repeat_hit": tone_repeat_hits,
         "tone_filler_stripped": tone_filler_stripped,
     }

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.schemas.chat import KnowledgeSource, ProductCard
 from app.services.catalog.product_search import CatalogProductSearchService
 from app.services.chat.routing import routing_policy
 from app.services.chat.agentic.tool_handlers import (
@@ -28,6 +30,16 @@ SUPPORTED_TOOLS = {
     TOOL_SEARCH_KNOWLEDGE_BASE,
     TOOL_CHECK_INVENTORY_DB,
 }
+
+
+@dataclass(frozen=True)
+class NormalizedAgentToolResult:
+    tool_name: str
+    status: str
+    result_count: int = 0
+    products: List[ProductCard] = field(default_factory=list)
+    sources: List[KnowledgeSource] = field(default_factory=list)
+
 
 class SearchProductFilters(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -267,6 +279,95 @@ class AgentToolRegistry:
             "category": str(getattr(source, "category", "") or "").strip() or None,
             "relevance": getattr(source, "relevance", 0.0),
         }
+
+    @staticmethod
+    def _result_status(result: Dict[str, Any]) -> str:
+        return str(result.get("status") or ("error" if "error" in result else "ok")).strip().lower()
+
+    @staticmethod
+    def _result_count(result: Any) -> int:
+        if isinstance(result, dict):
+            total_items = result.get("totalItems")
+            if isinstance(total_items, int):
+                return max(0, total_items)
+            items = result.get("items")
+            if isinstance(items, list):
+                return len(items)
+            if result.get("product") is not None:
+                return 1
+            candidates = result.get("candidates")
+            if isinstance(candidates, list):
+                return len(candidates)
+            if result.get("found") is True:
+                return 1
+            return 0
+        if isinstance(result, list):
+            return len(result)
+        return 0
+
+    @staticmethod
+    def _normalize_product_cards(items: Any) -> List[ProductCard]:
+        normalized: List[ProductCard] = []
+        if not isinstance(items, list):
+            return normalized
+        for item in items:
+            try:
+                normalized.append(item if isinstance(item, ProductCard) else ProductCard.model_validate(item))
+            except Exception:
+                continue
+        return normalized
+
+    @staticmethod
+    def _normalize_knowledge_sources(items: Any) -> List[KnowledgeSource]:
+        normalized: List[KnowledgeSource] = []
+        if not isinstance(items, list):
+            return normalized
+        for index, item in enumerate(items, start=1):
+            try:
+                if isinstance(item, KnowledgeSource):
+                    normalized.append(item)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                payload = dict(item)
+                if "content_snippet" not in payload:
+                    payload["content_snippet"] = str(payload.get("snippet") or "")
+                if "source_id" not in payload or not str(payload.get("source_id") or "").strip():
+                    payload["source_id"] = f"kb_{index}"
+                if "title" not in payload or not str(payload.get("title") or "").strip():
+                    payload["title"] = "Knowledge"
+                if "relevance" not in payload:
+                    payload["relevance"] = 0.0
+                normalized.append(KnowledgeSource.model_validate(payload))
+            except Exception:
+                continue
+        return normalized
+
+    @classmethod
+    def normalize_tool_result(cls, *, tool_name: str, result: Dict[str, Any]) -> NormalizedAgentToolResult:
+        status = cls._result_status(result)
+        result_count = cls._result_count(result)
+        products: List[ProductCard] = []
+        sources: List[KnowledgeSource] = []
+
+        if tool_name == TOOL_SEARCH_PRODUCTS:
+            products = cls._normalize_product_cards(result.get("items"))
+        elif tool_name in {TOOL_GET_PRODUCT_DETAILS, TOOL_CHECK_INVENTORY_DB}:
+            payload = result.get("product")
+            if payload is not None:
+                products = cls._normalize_product_cards([payload])
+            elif isinstance(result.get("candidates"), list):
+                products = cls._normalize_product_cards(result.get("candidates"))
+        elif tool_name == TOOL_SEARCH_KNOWLEDGE_BASE:
+            sources = cls._normalize_knowledge_sources(result.get("items"))
+
+        return NormalizedAgentToolResult(
+            tool_name=tool_name,
+            status=status,
+            result_count=result_count,
+            products=products,
+            sources=sources,
+        )
 
     async def search_products(self, args: SearchProductsArgs) -> Dict[str, Any]:
         max_items = max(1, int(getattr(settings, "AGENTIC_MAX_TOOL_RESULT_ITEMS", 10)))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import case, select
@@ -202,6 +203,125 @@ class PipelineSupportMixin:
             return f"- {title} | raw excerpt: {snippet}"
         return f"- {title}"
 
+    @staticmethod
+    def _knowledge_fact_corpus(sources: List[KnowledgeSource]) -> str:
+        parts: List[str] = []
+        for source in list(sources or [])[:3]:
+            parts.extend(
+                [
+                    str(getattr(source, "title", "") or ""),
+                    str(getattr(source, "summary", "") or ""),
+                    str(getattr(source, "content_snippet", "") or ""),
+                    str(getattr(source, "url", "") or ""),
+                ]
+            )
+        return " ".join(part for part in parts if part).lower()
+
+    @staticmethod
+    def _normalize_fact_phrase(value: str) -> str:
+        text = str(value or "").strip().lower()
+        text = re.sub(r"[\u2010-\u2015-]+", " ", text)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip(" .,;:()[]{}")
+
+    @classmethod
+    def _unsupported_knowledge_facts(
+            cls,
+            *,
+            answer: str,
+            sources: List[KnowledgeSource],
+        ) -> List[str]:
+            answer_text = str(answer or "")
+            if not answer_text.strip():
+                return []
+
+            source_text = cls._knowledge_fact_corpus(sources)
+            source_text_normalized = cls._normalize_fact_phrase(source_text)
+            source_digits = re.sub(r"\D+", "", source_text)
+            unsupported: List[str] = []
+
+            def _add_fact(kind: str, value: str) -> None:
+                clean = str(value or "").strip().strip(".,;:)]}")
+                if not clean:
+                    return
+                item = f"{kind}:{clean}"
+                if item not in unsupported:
+                    unsupported.append(item)
+
+            for email in re.findall(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", answer_text):
+                if email.lower() not in source_text:
+                    _add_fact("email", email)
+
+            for url in re.findall(r"(?i)\bhttps?://[^\s),;]+", answer_text):
+                if url.lower().rstrip("/") not in source_text:
+                    _add_fact("url", url)
+
+            phone_candidates = re.findall(
+                r"(?<!\w)(?:\+\d[\d\s().-]{6,}\d|\d[\d\s().-]{7,}\d)(?!\w)",
+                answer_text,
+            )
+            for phone in phone_candidates:
+                digits = re.sub(r"\D+", "", phone)
+                if len(digits) >= 7 and digits not in source_digits:
+                    _add_fact("phone", phone)
+
+            quantified_pattern = re.compile(
+                r"(?i)(?:\b(?:usd|eur|gbp|thb|baht)\s*\d[\d,]*(?:\.\d+)?\b|"
+                r"\$\s*\d[\d,]*(?:\.\d+)?\b|"
+                r"\b\d[\d,]*(?:\.\d+)?\s*(?:business\s+days?|days?|hours?|hrs?|months?|years?|baht|usd|thb|%|percent)\b)"
+            )
+            for match in quantified_pattern.findall(answer_text):
+                phrase = cls._normalize_fact_phrase(match)
+                if phrase and phrase not in source_text_normalized:
+                    _add_fact("quantity", match)
+
+            return unsupported
+
+    @staticmethod
+    def _summarize_knowledge_reply(answer: str) -> str:
+        text = re.sub(r"(?m)^\s*(?:[•\-\*]|\d+\.)\s*", "", str(answer or ""))
+        text = " ".join(text.split())
+        if not text:
+            return ""
+
+        text = re.sub(r"^\s*here is what i found:\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"^\s*(?:yes|no)\b[\s,;:—–-]*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"^\s*[^A-Za-z0-9]+", "", text)
+
+        sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+        summary = " ".join(sentences[:2]).strip() if sentences else text[:280].strip()
+        if len(summary) > 320:
+            trimmed = summary[:320]
+            if " " in trimmed:
+                trimmed = trimmed.rsplit(" ", 1)[0]
+            summary = trimmed.rstrip(" ,;:") + "."
+        return f"{summary}." if summary else ""
+
+    @staticmethod
+    def _polish_knowledge_answer(
+            *,
+            answer: str,
+            question: str = "",
+            max_sentences: int = 2,
+            max_chars: int = 320,
+        ) -> str:
+            del question
+            text = re.sub(r"(?m)^\s*(?:[\-\*]|\d+\.)\s*", "", str(answer or ""))
+            text = " ".join(text.split()).strip()
+            if not text:
+                return ""
+            text = re.sub(r"^\s*[^A-Za-z0-9]+", "", text)
+            text = re.sub(r"^\s*[A-Za-z][A-Za-z\s]{1,40}:\s+", "", text)
+            sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+            polished = " ".join(sentences[: max(1, int(max_sentences))]).strip() if sentences else text
+            if len(polished) > max(1, int(max_chars)):
+                trimmed = polished[: max(1, int(max_chars))]
+                if " " in trimmed:
+                    trimmed = trimmed.rsplit(" ", 1)[0]
+                polished = trimmed.rstrip(" ,;:")
+            polished = polished.rstrip(".!?")
+            return f"{polished}." if polished else ""
+
     async def _knowledge_answer_once(
             self,
             *,
@@ -222,7 +342,7 @@ class PipelineSupportMixin:
             snippets = "\n".join(
                 [
                     self._format_knowledge_source_context(source)
-                    for source in (sources or [])[:5]
+                    for source in (sources or [])[:3]
                 ]
             )
             messages = [
@@ -230,6 +350,8 @@ class PipelineSupportMixin:
                     "role": "system",
                     "content": (
                         "Answer strictly from provided context. "
+                        "Use the smallest set of sources that directly answer the user's question. "
+                        "Do not mix unrelated policy, contact, or showroom details into the answer. "
                         "Prefer the enrichment summary when it is present; use the raw chunk excerpt only if the summary is missing or insufficient. "
                         "Use a natural, shopper-friendly tone that adapts to the user's phrasing. "
                         "Start with the direct answer. Do not use filler like 'Here is what I found'. "
@@ -254,19 +376,37 @@ class PipelineSupportMixin:
                     ),
                 },
             ]
-            data = await llm_service.generate_chat_json(
-                messages,
-                model=getattr(settings, "RAG_ANSWER_MODEL", None) or settings.OPENAI_MODEL,
-                temperature=0.2,
-                usage_kind="component_knowledge_answer",
-            )
-            answer = str(data.get("reply", "") or "").strip()
-            answer = self._polish_knowledge_answer(
+            try:
+                data = await llm_service.generate_chat_json(
+                    messages,
+                    model=getattr(settings, "RAG_ANSWER_MODEL", None) or settings.OPENAI_MODEL,
+                    temperature=0.2,
+                    max_tokens=int(getattr(settings, "CHAT_KNOWLEDGE_ANSWER_JSON_MAX_TOKENS", 700)),
+                    reasoning_effort="minimal",
+                    usage_kind="component_knowledge_answer",
+                )
+            except Exception as exc:
+                if debug_meta is not None:
+                    debug_meta["component_knowledge_answer_fallback_reason"] = str(exc)
+                answer = self._build_grounded_knowledge_fallback_answer(
+                    question=question,
+                    sources=sources,
+                )
+                return answer, False
+            answer = self._summarize_knowledge_reply(str(data.get("reply", "") or "").strip())
+            unsupported_facts = self._unsupported_knowledge_facts(
                 answer=answer,
-                question=question,
-                max_sentences=4,
-                max_chars=int(getattr(settings, "CHAT_KNOWLEDGE_ANSWER_MAX_CHARS", 420)),
+                sources=sources,
             )
+            if unsupported_facts:
+                if debug_meta is not None:
+                    debug_meta["component_knowledge_answer_rejected"] = True
+                    debug_meta["component_knowledge_answer_rejection_reason"] = "unsupported_factual_claim"
+                    debug_meta["component_knowledge_answer_unsupported_facts"] = list(unsupported_facts)
+                answer = self._build_grounded_knowledge_fallback_answer(
+                    question=question,
+                    sources=sources,
+                )
             if not answer:
                 answer = self._build_grounded_knowledge_fallback_answer(
                     question=question,

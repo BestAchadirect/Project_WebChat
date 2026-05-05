@@ -16,6 +16,8 @@ from app.schemas.chat import (
 )
 from app.services.chat.presentation import component_contract
 from app.services.chat.presentation.response_consistency import ResponseConsistencyPolicy
+from app.services.chat.runtime.agentic_adapter import build_agentic_response
+from app.services.chat.agentic.orchestrator import AgentRunResult
 
 
 def _product_card() -> ProductCard:
@@ -200,3 +202,28 @@ def test_component_helpers_build_canonical_payloads() -> None:
         "type": "quick_replies",
         "data": {"items": ["Show more titanium labrets"]},
     }
+
+
+def test_agentic_response_round_trips_through_shared_component_contract() -> None:
+    card = _product_card()
+    response = build_agentic_response(
+        conversation_id=7,
+        routing=ChatRouting(workflow="catalog", execution_mode="agentic", needs_products=True),
+        query_summary="show titanium labrets",
+        agentic_result=AgentRunResult(
+            final_reply="Here are titanium labrets that match.",
+            used_tools=True,
+            product_carousel=[card],
+            follow_up_questions=["Show more titanium labrets"],
+            trace=[{"tool": "search_products", "status": "ok"}],
+        ),
+    )
+
+    assert component_contract.assistant_text_from_response(response) == "Here are titanium labrets that match."
+    assert [item.id for item in component_contract.product_cards_from_response(response)] == [card.id]
+    assert component_contract.follow_up_questions_from_response(response) == ["Show more titanium labrets"]
+    assert [component.type.value for component in response.components] == [
+        "assistant_message",
+        "product_cards",
+        "quick_replies",
+    ]

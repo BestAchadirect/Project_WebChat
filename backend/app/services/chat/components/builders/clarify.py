@@ -5,6 +5,7 @@ from app.services.chat.components.base import BaseComponent
 from app.services.chat.components.builders.contextual_messages import generate_contextual_component_message
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.types import ComponentType
+from app.services.chat.presentation import clarify_policy
 
 
 class ClarifyComponent(BaseComponent):
@@ -17,11 +18,17 @@ class ClarifyComponent(BaseComponent):
         if debug_reason:
             reason = debug_reason
         message = str(debug_meta.get("clarify_message") or "").strip()
-        if not message:
+        rewrite_allowed = bool(
+            debug_meta.get(
+                "clarify_rewrite_allowed",
+                clarify_policy.clarify_rewrite_allowed_for_reason(reason),
+            )
+        )
+        if not message or rewrite_allowed:
             message = await generate_contextual_component_message(
                 kind="clarify",
                 context=context,
-            )
+            ) or message
         if not message:
             message = "What detail should I use to narrow this down?"
         return ChatComponent(

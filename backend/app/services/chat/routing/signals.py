@@ -184,6 +184,47 @@ PRODUCT_HINT_TERMS = (
     "helix",
     "septum",
 )
+PRODUCT_ATTRIBUTE_HINT_TERMS = (
+    "gold",
+    "rose gold",
+    "silver",
+    "black",
+    "white",
+    "steel",
+    "opal",
+    "clear",
+)
+PRODUCT_CONTEXT_FOLLOW_UP_MARKERS = (
+    "what about",
+    "how about",
+    "what about the",
+    "how about the",
+    "the other",
+    "another",
+    " one",
+    " ones",
+)
+PRODUCT_CORRECTION_MARKERS = (
+    "no i mean",
+    "no, i mean",
+    "i mean",
+    "actually",
+    "not policy",
+    "not the policy",
+    "not about policy",
+)
+EXPLICIT_PRODUCT_BROWSE_MARKERS = (
+    "see product",
+    "see products",
+    "show product",
+    "show products",
+    "buy product",
+    "buy products",
+    "product with",
+    "products with",
+    "want to see product",
+    "want to see products",
+)
 POLICY_TAGS = {
     "shipping",
     "refund",
@@ -274,6 +315,60 @@ SMALLTALK_EXACT = {
     "okay",
 }
 SMALLTALK_PREFIXES = ("hi ", "hello ", "hey ", "thanks ", "thank you ")
+OFF_TOPIC_VERBS = (
+    "write",
+    "debug",
+    "fix",
+    "review",
+    "build",
+    "generate",
+    "create",
+    "code",
+    "program",
+)
+OFF_TOPIC_TECH_MARKERS = (
+    "python",
+    "javascript",
+    "typescript",
+    "java code",
+    "react app",
+    "sql query",
+    "api endpoint",
+    "script",
+    "programming",
+    "software",
+    "bug",
+    "stack trace",
+)
+OFF_TOPIC_SERVICE_MARKERS = (
+    "book a flight",
+    "flight ticket",
+    "hotel booking",
+    "weather forecast",
+    "news update",
+)
+PROMPT_INJECTION_MARKERS = (
+    "ignore all previous instructions",
+    "ignore previous instructions",
+    "hidden system prompt",
+    "system prompt",
+    "reveal your prompt",
+    "show me your prompt",
+    "full prompt",
+)
+JAILBREAK_MARKERS = (
+    "developer mode",
+    "jailbreak",
+    "dan mode",
+    "ignore the store",
+)
+UNSAFE_OFF_TOPIC_MARKERS = (
+    "phishing",
+    "malware",
+    "steal credentials",
+    "credential theft",
+    "scam email",
+)
 
 
 def normalize_signal_text(text: str | None) -> str:
@@ -320,7 +415,7 @@ def build_tag_matches(text: str) -> list[str]:
 
 def has_company_signal(text: str, knowledge_tags: Sequence[str]) -> bool:
     tag_set = {str(tag or "").strip().lower() for tag in list(knowledge_tags or []) if str(tag or "").strip()}
-    return bool(tag_set.intersection({"contact", "store_overview"})) or contains_marker(text, COMPANY_MARKERS)
+    return bool(tag_set.intersection({"contact"})) or contains_marker(text, COMPANY_MARKERS)
 
 
 def has_policy_signal(text: str, knowledge_tags: Sequence[str]) -> bool:
@@ -331,11 +426,45 @@ def has_policy_signal(text: str, knowledge_tags: Sequence[str]) -> bool:
 def looks_like_product_search(text: str) -> bool:
     if not text:
         return False
+    if any(marker in text for marker in EXPLICIT_PRODUCT_BROWSE_MARKERS):
+        return True
     if any(marker in text for marker in PRODUCT_REQUEST_MARKERS):
         return True
     if any(marker in text for marker in WEAK_PRODUCT_REQUEST_MARKERS):
         return any(term in text for term in PRODUCT_HINT_TERMS)
+    if any(marker in text for marker in PRODUCT_CONTEXT_FOLLOW_UP_MARKERS):
+        return any(term in text for term in PRODUCT_HINT_TERMS + PRODUCT_ATTRIBUTE_HINT_TERMS)
     return any(term in text for term in PRODUCT_HINT_TERMS)
+
+
+def has_product_correction_override(text: str) -> bool:
+    normalized = normalize_signal_text(text)
+    if not normalized:
+        return False
+    has_correction = contains_any_substring(normalized, PRODUCT_CORRECTION_MARKERS)
+    has_explicit_product_browse = contains_any_substring(normalized, EXPLICIT_PRODUCT_BROWSE_MARKERS)
+    return bool(has_correction and has_explicit_product_browse)
+
+
+def has_explicit_product_browse_signal(text: str) -> bool:
+    normalized = normalize_signal_text(text)
+    if not normalized:
+        return False
+    return bool(
+        contains_any_substring(normalized, EXPLICIT_PRODUCT_BROWSE_MARKERS)
+        or contains_any_substring(normalized, PRODUCT_REQUEST_MARKERS)
+    )
+
+
+def has_specific_product_hint_signal(text: str) -> bool:
+    normalized = normalize_signal_text(text)
+    if not normalized:
+        return False
+    specific_terms = tuple(term for term in PRODUCT_HINT_TERMS if term != "jewelry")
+    return bool(
+        contains_marker(normalized, specific_terms)
+        or contains_marker(normalized, PRODUCT_ATTRIBUTE_HINT_TERMS)
+    )
 
 
 def looks_like_product_detail(text: str, sku_tokens: Sequence[str]) -> bool:
@@ -357,6 +486,97 @@ def is_smalltalk(text: str) -> bool:
     if text in SMALLTALK_EXACT:
         return True
     return any(text.startswith(prefix) for prefix in SMALLTALK_PREFIXES)
+
+
+def is_off_topic_request(text: str) -> bool:
+    if not text:
+        return False
+    if classify_adversarial_request(text):
+        return True
+    if any(marker in text for marker in OFF_TOPIC_SERVICE_MARKERS):
+        return True
+    has_tech_marker = any(marker in text for marker in OFF_TOPIC_TECH_MARKERS)
+    if has_tech_marker and any(verb in text for verb in OFF_TOPIC_VERBS):
+        return True
+    return False
+
+
+def classify_adversarial_request(text: str) -> str:
+    normalized = normalize_signal_text(text)
+    if not normalized:
+        return ""
+    if contains_any_substring(normalized, JAILBREAK_MARKERS):
+        return "jailbreak_attempt_detected"
+    if contains_any_substring(normalized, PROMPT_INJECTION_MARKERS):
+        return "prompt_injection_detected"
+    if contains_any_substring(normalized, UNSAFE_OFF_TOPIC_MARKERS):
+        return "unsafe_request_detected"
+    return ""
+
+
+def _is_gibberish_text(text: str) -> bool:
+    if not text:
+        return True
+    alpha_tokens = re.findall(r"[a-z]+", text.lower())
+    if not alpha_tokens or re.search(r"(.)\1{4,}", text.lower()):
+        return True
+    if len(alpha_tokens) == 1:
+        token = alpha_tokens[0]
+        vowel_count = sum(1 for ch in token if ch in "aeiou")
+        vowel_ratio = float(vowel_count) / max(1, len(token))
+        if len(token) >= 8 and (vowel_count <= 1 or vowel_ratio <= 0.30):
+            return True
+        if any(pattern in token for pattern in ("asdf", "qwer", "zxcv")):
+            return True
+        if len(token) >= 8 and len(set(token)) <= 3:
+            return True
+    return False
+
+
+def classify_fallback_reason(
+    *,
+    text: str,
+    route_reason: str,
+    blank_reason: str,
+    default_reason: str,
+    vague_hints: Sequence[str] = (),
+    has_product_signal: bool = False,
+    has_knowledge_signal: bool = False,
+    has_smalltalk_signal: bool = False,
+    has_off_topic_signal: bool = False,
+) -> str:
+    route_reason_norm = str(route_reason or "").strip()
+    if route_reason_norm in {
+        "routing_fallback",
+        "fallback_vague_store_request",
+        "fallback_off_topic_redirect",
+        "fallback_gibberish",
+        "fallback_missing_signal",
+        "knowledge_unavailable",
+        "knowledge_needs_clarification",
+        "pending_task_missing_slot",
+    }:
+        return route_reason_norm
+
+    normalized = normalize_signal_text(text)
+    if not normalized:
+        return blank_reason
+
+    if has_off_topic_signal or has_smalltalk_signal or is_off_topic_request(normalized):
+        return "fallback_off_topic_redirect"
+
+    if _is_gibberish_text(normalized):
+        return "fallback_gibberish"
+
+    for hint in list(vague_hints or []):
+        clean_hint = str(hint or "").strip().lower()
+        if clean_hint and clean_hint in normalized:
+            return "fallback_vague_store_request"
+
+    if has_product_signal or has_knowledge_signal:
+        return blank_reason
+
+    return default_reason
 
 
 def build_company_query(text: str, knowledge_tags: Sequence[str]) -> tuple[str, bool]:

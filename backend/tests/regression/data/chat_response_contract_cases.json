@@ -9,7 +9,62 @@
       "message": "Show me gold jewelry made of gold.",
       "locale": "en-US"
     },
-    "actual_response": {
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "clarify",
+        "intent_confidence": 0.91,
+        "reason": "catalog_signal_detected",
+        "needs_products": true,
+        "entity_hints": {
+          "has_product_search_signal": true,
+          "has_product_signal": true
+        }
+      },
+      "component_response": {
+        "workflow": "catalog",
+        "source": "sql",
+        "reply_text": "I found products that match what you're looking for in Gold color with Gold material.",
+        "debug": {
+          "reply_mode": "deterministic_product"
+        },
+        "product_carousel": [
+          {
+            "sku": "DGM12-000000",
+            "name": "Gold Circular Barbell",
+            "price": 10.0,
+            "currency": "USD",
+            "stock_status": "in_stock",
+            "attributes": {
+              "material": "Gold",
+              "color": "Gold"
+            }
+          },
+          {
+            "sku": "DGSC4-000000",
+            "name": "Gold Segment Ring",
+            "price": 12.5,
+            "currency": "USD",
+            "stock_status": "in_stock",
+            "attributes": {
+              "material": "Gold",
+              "color": "Gold"
+            }
+          }
+        ],
+        "components": [
+          {
+            "type": "quick_replies",
+            "data": {
+              "items": [
+                "Try gold pieces"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
       "routing": {
         "workflow": "catalog"
       },
@@ -55,6 +110,194 @@
     }
   },
   {
+    "id": "product_response_contract_black_opal_labrets",
+    "name": "product_response_contract_black_opal_labrets",
+    "suite": "response",
+    "bucket": "product_contract",
+    "kind": "response_contract",
+    "inputs": {
+      "message": "Do you guys have any black opal labrets?",
+      "locale": "en-US"
+    },
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "clarify",
+        "intent_confidence": 0.91,
+        "reason": "catalog_signal_detected",
+        "needs_products": true,
+        "entity_hints": {
+          "has_product_search_signal": true,
+          "has_product_signal": true
+        }
+      },
+      "component_response": {
+        "workflow": "catalog",
+        "source": "sql",
+        "reply_text": "I found black opal labrets that match your search.",
+        "debug": {
+          "reply_mode": "deterministic_product"
+        },
+        "product_carousel": [
+          {
+            "sku": "BOLAB-001",
+            "name": "Black Opal Labret",
+            "price": 14.0,
+            "currency": "USD",
+            "stock_status": "in_stock",
+            "attributes": {
+              "jewelry_type": "Labret",
+              "color": "Black Opal"
+            }
+          },
+          {
+            "sku": "BOLAB-002",
+            "name": "Black Opal Flatback Labret",
+            "price": 15.5,
+            "currency": "USD",
+            "stock_status": "in_stock",
+            "attributes": {
+              "jewelry_type": "Labret",
+              "color": "Black Opal"
+            }
+          }
+        ],
+        "components": [
+          {
+            "type": "quick_replies",
+            "data": {
+              "items": [
+                "Try black opal pieces"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "catalog"
+      },
+      "reply_text": "I found black opal labrets that match your search.",
+      "follow_up_questions": [
+        "Try black opal pieces"
+      ],
+      "sources": [],
+      "product_carousel": [
+        {
+          "sku": "BOLAB-001"
+        },
+        {
+          "sku": "BOLAB-002"
+        }
+      ],
+      "debug": {
+        "reply_mode": "deterministic_product"
+      }
+    },
+    "expected": {
+      "workflow": "catalog",
+      "reply_must_include": [
+        "black opal",
+        "labrets",
+        "match your search"
+      ],
+      "follow_ups_include": [
+        "Try black opal pieces"
+      ],
+      "product_count_min": 1,
+      "product_count_max": 10,
+      "top_product_skus_include_any": [
+        "BOLAB-001",
+        "BOLAB-002"
+      ],
+      "debug_equals": {
+        "reply_mode": "deterministic_product"
+      }
+    }
+  },
+  {
+    "id": "product_detail_response_contract_stock_check",
+    "name": "product_detail_response_contract_stock_check",
+    "suite": "response",
+    "bucket": "product_contract",
+    "kind": "response_contract",
+    "inputs": {
+      "message": "Do you have ABC-1 in stock?",
+      "locale": "en-US"
+    },
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "clarify",
+        "intent_confidence": 0.94,
+        "reason": "product_detail_signal_detected",
+        "needs_products": true,
+        "entity_hints": {
+          "has_product_detail_signal": true,
+          "has_product_signal": true
+        }
+      },
+      "component_response": {
+        "workflow": "catalog",
+        "source": "sql",
+        "reply_text": "ABC-1 is currently in stock and available to order.",
+        "debug": {
+          "reply_mode": "deterministic_product_detail"
+        },
+        "product_carousel": [
+          {
+            "sku": "ABC-1",
+            "name": "Titanium Labret ABC-1",
+            "price": 9.5,
+            "currency": "USD",
+            "stock_status": "in_stock",
+            "attributes": {
+              "material": "Titanium"
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "catalog"
+      },
+      "reply_text": "ABC-1 is currently in stock and available to order.",
+      "follow_up_questions": [],
+      "sources": [],
+      "product_carousel": [
+        {
+          "sku": "ABC-1"
+        }
+      ],
+      "debug": {
+        "reply_mode": "deterministic_product_detail"
+      }
+    },
+    "expected": {
+      "workflow": "catalog",
+      "reply_must_include": [
+        "ABC-1",
+        "in stock",
+        "available"
+      ],
+      "component_types_exact": [
+        "assistant_message",
+        "query_summary",
+        "product_cards"
+      ],
+      "product_count_min": 1,
+      "product_count_max": 3,
+      "top_product_skus_exact": [
+        "ABC-1"
+      ],
+      "debug_equals": {
+        "reply_mode": "deterministic_product_detail"
+      }
+    }
+  },
+  {
     "id": "faq_response_contract_return_policy",
     "name": "faq_response_contract_return_policy",
     "suite": "response",
@@ -64,7 +307,47 @@
       "message": "What is your return policy?",
       "locale": "en-US"
     },
-    "actual_response": {
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "clarify",
+        "intent_confidence": 0.93,
+        "reason": "policy_signal_detected",
+        "knowledge_query": "what is your return policy?",
+        "needs_knowledge": true,
+        "entity_hints": {
+          "has_policy_signal": true,
+          "has_knowledge_signal": true,
+          "preferred_knowledge_query": "what is your return policy?"
+        }
+      },
+      "component_response": {
+        "workflow": "knowledge",
+        "source": "knowledge",
+        "reply_text": "You can return eligible items within 30 days. Items need to meet the return conditions, and our team will guide you through the return process.",
+        "debug": {
+          "reply_mode": "llm"
+        },
+        "sources": [
+          {
+            "title": "Returns Policy",
+            "content_snippet": "Returns accepted within 30 days for eligible items.",
+            "relevance": 0.93
+          }
+        ],
+        "components": [
+          {
+            "type": "quick_replies",
+            "data": {
+              "items": [
+                "How do I start a return?"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
       "routing": {
         "workflow": "knowledge"
       },
@@ -90,12 +373,23 @@
         "conditions",
         "return process"
       ],
+      "component_types_exact": [
+        "assistant_message",
+        "quick_replies"
+      ],
       "reply_must_not_include": [
         "free lifetime returns",
         "90 days no questions asked"
       ],
       "follow_ups_include": [
         "How do I start a return?"
+      ],
+      "source_titles_exact": [
+        "Returns Policy"
+      ],
+      "source_snippets_include_all": [
+        "30 days",
+        "eligible items"
       ],
       "source_count_min": 1,
       "product_count_max": 0
@@ -111,7 +405,47 @@
       "message": "What is your shipping policy?",
       "locale": "en-US"
     },
-    "actual_response": {
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "clarify",
+        "intent_confidence": 0.93,
+        "reason": "policy_signal_detected",
+        "knowledge_query": "what is your shipping policy?",
+        "needs_knowledge": true,
+        "entity_hints": {
+          "has_policy_signal": true,
+          "has_knowledge_signal": true,
+          "preferred_knowledge_query": "what is your shipping policy?"
+        }
+      },
+      "component_response": {
+        "workflow": "knowledge",
+        "source": "knowledge",
+        "reply_text": "Shipping options depend on the destination and service level. We can confirm shipping methods, timing, and customs details before dispatch.",
+        "debug": {
+          "reply_mode": "llm"
+        },
+        "sources": [
+          {
+            "title": "Shipping Policy",
+            "content_snippet": "Shipping depends on destination, service level, and customs requirements.",
+            "relevance": 0.92
+          }
+        ],
+        "components": [
+          {
+            "type": "quick_replies",
+            "data": {
+              "items": [
+                "Do you ship internationally?"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
       "routing": {
         "workflow": "knowledge"
       },
@@ -137,11 +471,100 @@
         "service level",
         "customs"
       ],
+      "component_types_exact": [
+        "assistant_message",
+        "quick_replies"
+      ],
       "reply_must_not_include": [
         "free worldwide express shipping on every order"
       ],
       "follow_ups_include": [
         "Do you ship internationally?"
+      ],
+      "source_titles_exact": [
+        "Shipping Policy"
+      ],
+      "source_snippets_include_all": [
+        "destination",
+        "service level",
+        "customs"
+      ],
+      "source_count_min": 1,
+      "product_count_max": 0
+    }
+  },
+  {
+    "id": "faq_response_contract_no_unsupported_shipping_claim",
+    "name": "faq_response_contract_no_unsupported_shipping_claim",
+    "suite": "response",
+    "bucket": "policy_contract",
+    "kind": "response_contract",
+    "inputs": {
+      "message": "Do you offer free worldwide express shipping?",
+      "locale": "en-US"
+    },
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "clarify",
+        "intent_confidence": 0.92,
+        "reason": "policy_signal_detected",
+        "knowledge_query": "do you offer free worldwide express shipping?",
+        "needs_knowledge": true,
+        "entity_hints": {
+          "has_policy_signal": true,
+          "has_knowledge_signal": true,
+          "preferred_knowledge_query": "do you offer free worldwide express shipping?"
+        }
+      },
+      "component_response": {
+        "workflow": "knowledge",
+        "source": "knowledge",
+        "reply_text": "I can't confirm free worldwide express shipping for every order. Shipping depends on destination and service level.",
+        "debug": {
+          "reply_mode": "llm"
+        },
+        "sources": [
+          {
+            "title": "Shipping Policy",
+            "content_snippet": "Shipping varies by destination and service level.",
+            "relevance": 0.9
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "knowledge"
+      },
+      "reply_text": "I can't confirm free worldwide express shipping for every order. Shipping depends on destination and service level.",
+      "follow_up_questions": [],
+      "sources": [
+        {
+          "title": "Shipping Policy"
+        }
+      ],
+      "product_carousel": [],
+      "debug": {
+        "reply_mode": "llm"
+      }
+    },
+    "expected": {
+      "workflow": "knowledge",
+      "reply_must_include": [
+        "can't confirm",
+        "destination",
+        "service level"
+      ],
+      "reply_must_not_include": [
+        "free worldwide express shipping on every order"
+      ],
+      "source_titles_exact": [
+        "Shipping Policy"
+      ],
+      "source_snippets_include_all": [
+        "destination",
+        "service level"
       ],
       "source_count_min": 1,
       "product_count_max": 0
@@ -157,7 +580,47 @@
       "message": "What is your warranty policy?",
       "locale": "en-US"
     },
-    "actual_response": {
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "clarify",
+        "intent_confidence": 0.92,
+        "reason": "policy_signal_detected",
+        "knowledge_query": "what is your warranty policy?",
+        "needs_knowledge": true,
+        "entity_hints": {
+          "has_policy_signal": true,
+          "has_knowledge_signal": true,
+          "preferred_knowledge_query": "what is your warranty policy?"
+        }
+      },
+      "component_response": {
+        "workflow": "knowledge",
+        "source": "knowledge",
+        "reply_text": "Our warranty policy covers eligible manufacturing issues. The support team can confirm coverage terms and the claim process for your order.",
+        "debug": {
+          "reply_mode": "llm"
+        },
+        "sources": [
+          {
+            "title": "Warranty Policy",
+            "content_snippet": "Warranty covers eligible manufacturing issues and claim handling.",
+            "relevance": 0.9
+          }
+        ],
+        "components": [
+          {
+            "type": "quick_replies",
+            "data": {
+              "items": [
+                "How do I make a warranty claim?"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
       "routing": {
         "workflow": "knowledge"
       },
@@ -183,14 +646,769 @@
         "coverage",
         "claim process"
       ],
+      "component_types_exact": [
+        "assistant_message",
+        "quick_replies"
+      ],
       "reply_must_not_include": [
         "lifetime no-questions-asked replacement"
       ],
       "follow_ups_include": [
         "How do I make a warranty claim?"
       ],
+      "source_titles_exact": [
+        "Warranty Policy"
+      ],
+      "source_snippets_include_all": [
+        "manufacturing issues",
+        "claim"
+      ],
       "source_count_min": 1,
       "product_count_max": 0
+    }
+  },
+  {
+    "id": "context_response_contract_gold_follow_up",
+    "name": "context_response_contract_gold_follow_up",
+    "suite": "response",
+    "bucket": "context_contract",
+    "kind": "context_contract",
+    "inputs": {
+      "message": "What about the gold one?",
+      "locale": "en-US"
+    },
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "catalog",
+        "intent_confidence": 0.94,
+        "reason": "context_follow_up_product",
+        "needs_products": true,
+        "entity_hints": {
+          "has_product_detail_signal": true,
+          "has_product_signal": true
+        }
+      },
+      "component_response": {
+        "workflow": "catalog",
+        "source": "sql",
+        "reply_text": "The gold labret variant EVAL-GOLD-LAB-1 is out of stock.",
+        "debug": {
+          "reply_mode": "deterministic_product_detail"
+        },
+        "product_carousel": [
+          {
+            "sku": "EVAL-GOLD-LAB-1",
+            "name": "Gold Labret",
+            "price": 24.0,
+            "currency": "USD",
+            "stock_status": "out_of_stock",
+            "attributes": {
+              "material": "Gold",
+              "jewelry_type": "labret"
+            }
+          }
+        ],
+        "components": [
+          {
+            "type": "assistant_message",
+            "data": {
+              "text": "The gold labret variant EVAL-GOLD-LAB-1 is out of stock."
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "catalog"
+      },
+      "reply_text": "The gold labret variant EVAL-GOLD-LAB-1 is out of stock.",
+      "follow_up_questions": [],
+      "sources": [],
+      "product_carousel": [
+        {
+          "sku": "EVAL-GOLD-LAB-1"
+        }
+      ],
+      "debug": {
+        "reply_mode": "deterministic_product_detail"
+      }
+    },
+    "expected": {
+      "workflow": "catalog",
+      "reply_must_include": [
+        "gold",
+        "out of stock"
+      ],
+      "component_types_exact": [
+        "assistant_message",
+        "product_cards"
+      ],
+      "context": {
+        "anchor_type": "product",
+        "primary_product_sku": "EVAL-GOLD-LAB-1",
+        "product_skus_exact": [
+          "EVAL-GOLD-LAB-1"
+        ]
+      },
+      "product_count_min": 1,
+      "source_count_max": 0,
+      "debug_equals": {
+        "reply_mode": "deterministic_product_detail"
+      }
+    }
+  },
+  {
+    "id": "context_response_contract_returns_follow_up",
+    "name": "context_response_contract_returns_follow_up",
+    "suite": "response",
+    "bucket": "context_contract",
+    "kind": "context_contract",
+    "inputs": {
+      "message": "What about returns?",
+      "locale": "en-US"
+    },
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "knowledge",
+        "intent_confidence": 0.93,
+        "reason": "context_follow_up_policy",
+        "knowledge_query": "what about returns?",
+        "needs_knowledge": true,
+        "entity_hints": {
+          "has_policy_signal": true,
+          "has_knowledge_signal": true
+        }
+      },
+      "component_response": {
+        "workflow": "knowledge",
+        "source": "knowledge",
+        "reply_text": "Eligible jewelry can be returned within 30 days.",
+        "debug": {
+          "reply_mode": "llm"
+        },
+        "sources": [
+          {
+            "title": "Eval Returns Policy",
+            "content_snippet": "Eligible jewelry can be returned within 30 days.",
+            "relevance": 0.93
+          }
+        ],
+        "components": [
+          {
+            "type": "assistant_message",
+            "data": {
+              "text": "Eligible jewelry can be returned within 30 days."
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "knowledge"
+      },
+      "reply_text": "Eligible jewelry can be returned within 30 days.",
+      "follow_up_questions": [],
+      "sources": [
+        {
+          "title": "Eval Returns Policy"
+        }
+      ],
+      "product_carousel": [],
+      "debug": {
+        "reply_mode": "llm"
+      }
+    },
+    "expected": {
+      "workflow": "knowledge",
+      "reply_must_include": [
+        "return",
+        "30 days"
+      ],
+      "component_types_exact": [
+        "assistant_message"
+      ],
+      "context": {
+        "anchor_type": "knowledge",
+        "primary_source_title": "Eval Returns Policy",
+        "source_titles_exact": [
+          "Eval Returns Policy"
+        ]
+      },
+      "source_count_min": 1,
+      "product_count_max": 0,
+      "debug_equals": {
+        "reply_mode": "llm"
+      }
+    }
+  },
+  {
+    "id": "context_response_contract_mixed_anchor",
+    "name": "context_response_contract_mixed_anchor",
+    "suite": "response",
+    "bucket": "context_contract",
+    "kind": "context_contract",
+    "inputs": {
+      "message": "Show me titanium labrets and also what is your return policy?",
+      "locale": "en-US"
+    },
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "catalog",
+        "intent_confidence": 0.93,
+        "reason": "context_follow_up_mixed",
+        "needs_products": true,
+        "needs_knowledge": true,
+        "knowledge_query": "what is your return policy?",
+        "entity_hints": {
+          "has_product_signal": true,
+          "has_policy_signal": true,
+          "has_knowledge_signal": true
+        }
+      },
+      "component_response": {
+        "workflow": "catalog",
+        "source": "sql",
+        "reply_text": "Here are titanium labrets, and unopened jewelry can be returned within 30 days.",
+        "debug": {
+          "reply_mode": "mixed_context"
+        },
+        "sources": [
+          {
+            "title": "Eval Returns Policy",
+            "content_snippet": "Unopened jewelry can be returned within 30 days.",
+            "relevance": 0.92
+          }
+        ],
+        "product_carousel": [
+          {
+            "sku": "EVAL-TI-LAB-1",
+            "name": "Titanium Labret",
+            "price": 19.5,
+            "currency": "USD",
+            "stock_status": "in_stock",
+            "attributes": {
+              "material": "Titanium",
+              "jewelry_type": "labret"
+            }
+          }
+        ],
+        "components": [
+          {
+            "type": "assistant_message",
+            "data": {
+              "text": "Here are titanium labrets, and unopened jewelry can be returned within 30 days."
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "catalog"
+      },
+      "reply_text": "Here are titanium labrets, and unopened jewelry can be returned within 30 days.",
+      "follow_up_questions": [],
+      "sources": [
+        {
+          "title": "Eval Returns Policy"
+        }
+      ],
+      "product_carousel": [
+        {
+          "sku": "EVAL-TI-LAB-1"
+        }
+      ],
+      "debug": {
+        "reply_mode": "mixed_context"
+      }
+    },
+    "expected": {
+      "workflow": "catalog",
+      "reply_must_include": [
+        "titanium",
+        "30 days"
+      ],
+      "component_types_exact": [
+        "assistant_message",
+        "product_cards"
+      ],
+      "context": {
+        "anchor_type": "mixed",
+        "product_skus_exact": [
+          "EVAL-TI-LAB-1"
+        ],
+        "source_titles_exact": [
+          "Eval Returns Policy"
+        ]
+      },
+      "product_count_min": 1,
+      "source_count_min": 1,
+      "debug_equals": {
+        "reply_mode": "mixed_context"
+      }
+    }
+  },
+  {
+    "id": "context_response_contract_no_anchor",
+    "name": "context_response_contract_no_anchor",
+    "suite": "response",
+    "bucket": "context_contract",
+    "kind": "context_contract",
+    "inputs": {
+      "message": "What about it?",
+      "locale": "en-US"
+    },
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "clarify",
+        "intent_confidence": 0.6,
+        "reason": "context_missing_anchor",
+        "needs_clarification": true,
+        "entity_hints": {}
+      },
+      "component_response": {
+        "workflow": "fallback",
+        "source": "knowledge",
+        "reply_text": "Could you clarify which product or policy you mean?",
+        "debug": {
+          "clarify_reason": "context_missing_anchor"
+        },
+        "components": [
+          {
+            "type": "clarify",
+            "data": {
+              "message": "Could you clarify which product or policy you mean?"
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "fallback"
+      },
+      "components": [
+        {
+          "type": "clarify",
+          "data": {
+            "message": "Could you clarify which product or policy you mean?"
+          }
+        }
+      ],
+      "sources": [],
+      "product_carousel": [],
+      "debug": {
+        "clarify_reason": "context_missing_anchor"
+      }
+    },
+    "expected": {
+      "workflow": "fallback",
+      "reply_must_include": [
+        "clarify",
+        "product",
+        "policy"
+      ],
+      "component_types_exact": [
+        "assistant_message",
+        "clarify"
+      ],
+      "context": {
+        "anchor_type": "none"
+      },
+      "source_count_max": 0,
+      "product_count_max": 0,
+      "debug_equals": {
+        "clarify_reason": "context_missing_anchor"
+      }
+    }
+  },
+  {
+    "id": "company_response_contract_location_request",
+    "name": "company_response_contract_location_request",
+    "suite": "response",
+    "bucket": "company_contract",
+    "kind": "response_contract",
+    "inputs": {
+      "message": "Where is your company located in Thailand?",
+      "locale": "en-US"
+    },
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "clarify",
+        "intent_confidence": 0.95,
+        "reason": "company_signal_detected",
+        "knowledge_query": "where is your company located",
+        "store_overview_request": true,
+        "needs_knowledge": true,
+        "entity_hints": {
+          "has_company_signal": true,
+          "has_knowledge_signal": true,
+          "preferred_knowledge_query": "where is your company located",
+          "preferred_store_overview_request": true
+        }
+      },
+      "component_response": {
+        "workflow": "knowledge",
+        "source": "knowledge",
+        "reply_text": "Our company information covers location and showroom visit details, and customer service can help you plan a visit.",
+        "debug": {
+          "reply_mode": "llm"
+        },
+        "sources": [
+          {
+            "title": "Company Information",
+            "content_snippet": "Company information includes location and visit details.",
+            "relevance": 0.91
+          }
+        ],
+        "components": [
+          {
+            "type": "quick_replies",
+            "data": {
+              "items": [
+                "How can I contact customer service?"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "knowledge"
+      },
+      "reply_text": "Our company information covers location and showroom visit details, and customer service can help you plan a visit.",
+      "follow_up_questions": [
+        "How can I contact customer service?"
+      ],
+      "sources": [
+        {
+          "title": "Company Information"
+        }
+      ],
+      "product_carousel": [],
+      "debug": {
+        "reply_mode": "llm"
+      }
+    },
+    "expected": {
+      "workflow": "knowledge",
+      "reply_must_include": [
+        "company",
+        "location",
+        "visit"
+      ],
+      "component_types_exact": [
+        "assistant_message",
+        "quick_replies"
+      ],
+      "follow_ups_include": [
+        "How can I contact customer service?"
+      ],
+      "source_titles_exact": [
+        "Company Information"
+      ],
+      "source_snippets_include_all": [
+        "location",
+        "visit"
+      ],
+      "source_count_min": 1,
+      "product_count_max": 0
+    }
+  },
+  {
+    "id": "clarify_response_contract_shipping_ambiguity",
+    "name": "clarify_response_contract_shipping_ambiguity",
+    "suite": "response",
+    "bucket": "failure_contract",
+    "kind": "response_contract",
+    "inputs": {
+      "message": "I need help choosing between domestic and international shipping.",
+      "locale": "en-US"
+    },
+    "runtime_fixture": {
+      "mode": "component",
+      "understanding": {
+        "workflow_hypothesis": "clarify",
+        "intent_confidence": 0.61,
+        "reason": "ambiguous_shipping_request",
+        "entity_hints": {}
+      },
+      "component_response": {
+        "workflow": "fallback",
+        "source": "knowledge",
+        "reply_text": "",
+        "debug": {
+          "clarify_reason": "shipping_scope_ambiguous"
+        },
+        "sources": [
+          {
+            "title": "Shipping Policy",
+            "content_snippet": "Shipping guidance differs by shipping scope.",
+            "relevance": 0.85
+          }
+        ],
+        "components": [
+          {
+            "type": "clarify",
+            "data": {
+              "message": "Could you clarify whether you need domestic or international shipping information?"
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "fallback"
+      },
+      "components": [
+        {
+          "type": "clarify",
+          "data": {
+            "message": "Could you clarify whether you need domestic or international shipping information?"
+          }
+        }
+      ],
+      "sources": [
+        {
+          "title": "Shipping Policy"
+        }
+      ],
+      "product_carousel": [],
+      "debug": {
+        "clarify_reason": "shipping_scope_ambiguous"
+      }
+    },
+    "expected": {
+      "workflow": "fallback",
+      "reply_must_include": [
+        "clarify",
+        "domestic",
+        "international"
+      ],
+      "component_types_exact": [
+        "clarify"
+      ],
+      "forbidden_component_types": [
+        "product_cards",
+        "error"
+      ],
+      "source_titles_exact": [
+        "Shipping Policy"
+      ],
+      "source_snippets_include_any": [
+        "shipping scope"
+      ],
+      "source_count_min": 1,
+      "product_count_max": 0,
+      "debug_equals": {
+        "clarify_reason": "shipping_scope_ambiguous"
+      }
+    }
+  },
+  {
+    "id": "clarify_response_contract_after_tool_failure",
+    "name": "clarify_response_contract_after_tool_failure",
+    "suite": "response",
+    "bucket": "failure_contract",
+    "kind": "response_contract",
+    "inputs": {
+      "message": "Tell me about shipping but I am not sure which option applies.",
+      "locale": "en-US"
+    },
+    "runtime_fixture": {
+      "mode": "agentic_no_tool",
+      "understanding": {
+        "workflow_hypothesis": "clarify",
+        "intent_confidence": 0.9,
+        "reason": "policy_signal_detected",
+        "knowledge_query": "tell me about shipping but i am not sure which option applies.",
+        "needs_knowledge": true,
+        "entity_hints": {
+          "has_policy_signal": true,
+          "has_knowledge_signal": true,
+          "preferred_knowledge_query": "tell me about shipping but i am not sure which option applies."
+        }
+      },
+      "agentic_result": {
+        "final_reply": "Shipping options vary."
+      },
+      "component_response": {
+        "workflow": "fallback",
+        "source": "knowledge",
+        "reply_text": "",
+        "debug": {
+          "clarify_reason": "knowledge_unavailable"
+        },
+        "sources": [
+          {
+            "title": "Shipping Policy",
+            "content_snippet": "Shipping options differ for domestic and international destinations.",
+            "relevance": 0.86
+          }
+        ],
+        "components": [
+          {
+            "type": "clarify",
+            "data": {
+              "message": "I couldn't confirm the right shipping answer yet. Could you clarify whether you mean domestic or international shipping?"
+            }
+          },
+          {
+            "type": "quick_replies",
+            "data": {
+              "items": [
+                "Domestic shipping",
+                "International shipping"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "fallback"
+      },
+      "components": [
+        {
+          "type": "clarify",
+          "data": {
+            "message": "I couldn't confirm the right shipping answer yet. Could you clarify whether you mean domestic or international shipping?"
+          }
+        },
+        {
+          "type": "quick_replies",
+          "data": {
+            "items": [
+              "Domestic shipping",
+              "International shipping"
+            ]
+          }
+        }
+      ],
+      "sources": [
+        {
+          "title": "Shipping Policy"
+        }
+      ],
+      "product_carousel": [],
+      "debug": {
+        "clarify_reason": "knowledge_unavailable",
+        "agentic_failure_reason": "agentic_failed:no_tool_usage"
+      }
+    },
+    "expected": {
+      "workflow": "fallback",
+      "reply_must_include": [
+        "clarify",
+        "domestic",
+        "international"
+      ],
+      "component_types_exact": [
+        "clarify"
+      ],
+      "forbidden_component_types": [
+        "product_cards",
+        "error",
+        "quick_replies"
+      ],
+      "source_titles_exact": [
+        "Shipping Policy"
+      ],
+      "source_snippets_include_any": [
+        "domestic",
+        "international"
+      ],
+      "source_count_min": 1,
+      "product_count_max": 0,
+      "debug_equals": {
+        "clarify_reason": "knowledge_unavailable",
+        "agentic.failure_reason": "agentic_failed:no_tool_usage"
+      }
+    }
+  },
+  {
+    "id": "error_response_contract_after_agentic_runtime_failure",
+    "name": "error_response_contract_after_agentic_runtime_failure",
+    "suite": "response",
+    "bucket": "failure_contract",
+    "kind": "response_contract",
+    "inputs": {
+      "message": "Check stock for ABC-1 right now.",
+      "locale": "en-US"
+    },
+    "runtime_fixture": {
+      "mode": "agentic_error",
+      "understanding": {
+        "workflow_hypothesis": "clarify",
+        "intent_confidence": 0.94,
+        "reason": "product_detail_signal_detected",
+        "needs_products": true,
+        "entity_hints": {
+          "has_product_detail_signal": true,
+          "has_product_signal": true
+        }
+      },
+      "agentic_error": "agentic backend unavailable",
+      "component_response": {
+        "workflow": "fallback",
+        "source": "error",
+        "reply_text": "",
+        "components": [
+          {
+            "type": "error",
+            "data": {
+              "message": "I could not process that request right now."
+            }
+          }
+        ]
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "fallback"
+      },
+      "components": [
+        {
+          "type": "error",
+          "data": {
+            "message": "I could not process that request right now."
+          }
+        }
+      ],
+      "sources": [],
+      "product_carousel": [],
+      "debug": {
+        "agentic_failure_reason": "agentic_failed:RuntimeError"
+      }
+    },
+    "expected": {
+      "workflow": "fallback",
+      "reply_must_include": [
+        "could not process"
+      ],
+      "component_types_exact": [
+        "error"
+      ],
+      "forbidden_component_types": [
+        "product_cards",
+        "clarify",
+        "quick_replies"
+      ],
+      "source_count_max": 0,
+      "product_count_max": 0,
+      "debug_equals": {
+        "agentic_failure_reason": "agentic_failed:RuntimeError"
+      }
     }
   }
 ]

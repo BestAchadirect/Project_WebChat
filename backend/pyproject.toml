@@ -29,6 +29,10 @@ markers = [
   "adapter: compatibility adapter tests",
   "regression: behavior regression tests",
   "agentic: agent orchestration/tool path tests",
+  "db_grounded: opt-in tests that require TEST_DATABASE_URL and seeded PostgreSQL data",
+  "long_context: long-context robustness tests",
+  "adversarial: adversarial robustness tests",
+  "performance: repeatable performance guard tests",
   "imports: import pipeline tests",
 ]
 filterwarnings = [

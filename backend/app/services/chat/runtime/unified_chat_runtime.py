@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import time
 from typing import Any, Dict, Optional
 
@@ -15,10 +16,13 @@ from app.services.chat.parsing.llm_attribute_extractor import infer_detail_query
 from app.services.chat.routing.decision_engine import build_decision_state
 from app.services.chat.routing.understanding import build_understanding_result
 from app.services.chat.runtime.capabilities import build_chat_runtime_capabilities
+from app.services.chat.runtime.search_plan import build_search_plan
 from app.services.chat.runtime.agentic_adapter import (
     apply_agentic_fallback_debug,
     apply_agentic_success_debug,
+    coerce_agentic_result,
 )
+from app.services.chat.agentic.orchestrator import AgentRunOutcome
 from app.services.chat.runtime.execution_coordinator import (
     build_initial_debug_meta,
     finalize_agentic_response,
@@ -26,6 +30,7 @@ from app.services.chat.runtime.execution_coordinator import (
     finalize_runtime_error,
     safe_conversation_id,
 )
+from app.services.chat.runtime.fallback_policy import agentic_failure_reason
 
 
 async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) -> ChatResponse:
@@ -74,11 +79,20 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
         debug_meta["understanding_workflow_hypothesis"] = understanding.workflow_hypothesis
         debug_meta["understanding_intent_confidence"] = understanding.intent_confidence
         debug_meta["understanding_reason"] = understanding.reason
+        debug_meta["understanding_intent"] = understanding.intent
+        debug_meta["understanding_subintent"] = understanding.subintent
+        debug_meta["understanding_response_policy"] = understanding.response_policy
+        debug_meta["understanding_user_goal"] = understanding.user_goal
+        debug_meta["understanding_pending_task_type"] = understanding.pending_task_type
+        debug_meta["understanding_missing_slot"] = understanding.missing_slot
         debug_meta["understanding_failure_reason"] = str(understanding.failure_reason or "")
         debug_meta["understanding_knowledge_query"] = understanding.knowledge_query
         debug_meta["understanding_llm_call_count"] = int(understanding.llm_call_count or 0)
+        entity_hints = dict(understanding.entity_hints or {})
+        has_product_signal = bool(entity_hints.get("has_product_signal"))
+        has_product_detail_signal = bool(entity_hints.get("has_product_detail_signal"))
 
-        if understanding.workflow_hypothesis in {"catalog_search", "product_detail", "mixed"}:
+        if has_product_signal:
             detail_inference = await infer_detail_query(
                 user_text=text,
                 workflow="catalog",
@@ -89,7 +103,7 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
                 inference=detail_inference,
                 parser_rules=parser_rules,
             )
-            if understanding.workflow_hypothesis == "product_detail" and not detail.is_detail_request:
+            if has_product_detail_signal and not detail.is_detail_request:
                 detail = DetailQuery(
                     requested_fields=list(detail.requested_fields or ["attributes"]),
                     attribute_filters=dict(detail.attribute_filters or {}),
@@ -125,11 +139,15 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
             "answerability": decision_state.answerability,
             "reason": decision_state.reason,
             "failure_reason": decision_state.failure_reason,
+            "intent": decision_state.intent,
+            "subintent": decision_state.subintent,
+            "response_policy": decision_state.response_policy,
+            "user_goal": decision_state.user_goal,
         }
         execution_mode = "component"
         execution_decision = decision_state.execution_decision
         if execution_decision is None or decision_state.route_decision is None:
-            raise RuntimeError("staged decision engine returned no route decision")
+            raise RuntimeError("decision engine returned no route decision")
         route_decision = execution_decision.route_decision
         selection_source = execution_decision.selection_source
         execution_mode = execution_decision.execution_mode
@@ -173,17 +191,31 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
         }
 
         if execution_mode == "agentic" and execution_decision is not None:
+            agentic_search_plan = build_search_plan(
+                user_text=text,
+                workflow=route_decision.workflow,
+                detail=detail,
+                sku_tokens=sku_tokens,
+                knowledge_query=str(route_decision.knowledge_query or ""),
+            )
             agentic_started = time.perf_counter()
             agentic_result = None
             agentic_error: Optional[Exception] = None
             try:
-                agentic_result = await self._run_agentic_workflow(
-                    user_text=text,
-                    conversation_id=conversation_id_value,
-                    run_id=run_id,
-                    channel=channel,
-                    reply_language=str(req.locale or "en-US"),
-                )
+                agentic_kwargs = {
+                    "user_text": text,
+                    "conversation_id": conversation_id_value,
+                    "run_id": run_id,
+                    "channel": channel,
+                    "reply_language": str(req.locale or "en-US"),
+                }
+                try:
+                    signature = inspect.signature(self._run_agentic_workflow)
+                    if "search_plan" in signature.parameters:
+                        agentic_kwargs["search_plan"] = agentic_search_plan
+                except Exception:
+                    agentic_kwargs["search_plan"] = agentic_search_plan
+                agentic_result = await self._run_agentic_workflow(**agentic_kwargs)
             except Exception as exc:
                 agentic_error = exc
                 debug_meta["agentic_error"] = str(exc)
@@ -193,19 +225,20 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
                 "agentic_orchestrator_ms",
                 (time.perf_counter() - agentic_started) * 1000.0,
             )
+            normalized_agentic_result = coerce_agentic_result(agentic_result)
 
             fallback_enabled = bool(capabilities.agentic_enable_fallback)
-            if agentic_result is not None and bool(getattr(agentic_result, "used_tools", False)):
+            if normalized_agentic_result.outcome == AgentRunOutcome.TOOL_SUCCESS:
                 apply_agentic_success_debug(
                     debug_meta=debug_meta,
-                    agentic_result=agentic_result,
+                    agentic_result=normalized_agentic_result,
                 )
                 return await finalize_agentic_response(
                     self,
                     conversation_id=conversation_id_value,
                     routing=public_routing,
                     query_summary=text,
-                    agentic_result=agentic_result,
+                    agentic_result=normalized_agentic_result,
                     user_text=text,
                     channel=channel,
                     run_id=run_id,
@@ -214,15 +247,18 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
                     total_started=total_started,
                 )
 
-            fallback_reason = "empty_result"
-            if agentic_error is not None:
-                fallback_reason = "agentic_error"
-            elif agentic_result is not None and not bool(getattr(agentic_result, "used_tools", False)):
-                fallback_reason = "no_tool_usage"
-            apply_agentic_fallback_debug(debug_meta=debug_meta, fallback_reason=fallback_reason)
+            fallback_result = normalized_agentic_result
             if agentic_error is not None and not fallback_enabled:
                 raise agentic_error
-            if agentic_result is None and not fallback_enabled:
+            if agentic_error is not None:
+                fallback_result = coerce_agentic_result(agentic_result)
+                fallback_result.fallback_reason = "agentic_error"
+                debug_meta["agentic_failure_reason"] = agentic_failure_reason(
+                    fallback_reason="agentic_error",
+                    existing_failure_reason=str(debug_meta.get("agentic_failure_reason") or ""),
+                )
+            apply_agentic_fallback_debug(debug_meta=debug_meta, agentic_result=fallback_result)
+            if normalized_agentic_result.outcome == AgentRunOutcome.EMPTY and not fallback_enabled:
                 raise RuntimeError("agentic workflow returned no result")
 
         component_started = time.perf_counter()

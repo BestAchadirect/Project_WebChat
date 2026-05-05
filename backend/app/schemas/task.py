@@ -1,7 +1,10 @@
 from pydantic import BaseModel
-from uuid import UUID
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
+
 from app.models.task import TaskStatus, TaskType
 
 class TaskBase(BaseModel):
@@ -21,5 +24,4 @@ class TaskResponse(TaskBase):
     error_message: Optional[str] = None
     progress: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

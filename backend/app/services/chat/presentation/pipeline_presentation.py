@@ -46,11 +46,14 @@ class PipelinePresentationMixin:
     def _verify_workflow_result(
             cls,
             *,
+            workflow: str,
+            needs_knowledge: bool,
             internal_workflow: str,
             state: PipelineWorkflowState,
             detail: Any,
         ) -> WorkflowResult:
-            workflow = str(internal_workflow or "clarify").strip().lower()
+            workflow = str(workflow or "fallback").strip().lower()
+            internal = str(internal_workflow or "clarify").strip().lower()
             answerability = "none"
             verification_reason = "no_evidence"
             retrieval_confidence = 0.0
@@ -60,7 +63,7 @@ class PipelinePresentationMixin:
                 "has_knowledge_answer": bool(str(state.knowledge.answer or "").strip()),
                 "ambiguity_reason": str(state.decision.ambiguity_reason or ""),
             }
-            if workflow in {"company_info", "policy_info"}:
+            if workflow == "knowledge":
                 retrieval_confidence = cls._top_source_relevance(state.knowledge.sources)
                 if str(state.decision.ambiguity_reason or "").strip():
                     answerability = "none"
@@ -71,7 +74,7 @@ class PipelinePresentationMixin:
                 elif state.knowledge.sources:
                     answerability = "partial"
                     verification_reason = "knowledge_sources_without_answer"
-            elif workflow == "mixed":
+            elif workflow == "catalog" and needs_knowledge:
                 product_ready = bool(list(state.presentation.canonical_products or []))
                 knowledge_ready = bool(str(state.knowledge.answer or "").strip() or list(state.knowledge.sources or []))
                 retrieval_confidence = max(
@@ -84,26 +87,30 @@ class PipelinePresentationMixin:
                 elif product_ready or knowledge_ready:
                     answerability = "partial"
                     verification_reason = "mixed_partial"
-            elif workflow in {"catalog_search", "product_detail"}:
+            elif workflow == "catalog":
                 retrieval_confidence = 1.0 if list(state.presentation.canonical_products or []) else 0.0
                 if str(state.decision.ambiguity_reason or "").strip():
                     answerability = "none"
                     verification_reason = str(state.decision.ambiguity_reason or "catalog_no_results")
                 elif list(state.presentation.canonical_products or []):
                     answerability = "full"
-                    verification_reason = "catalog_results_available" if workflow == "catalog_search" else "detail_result_available"
+                    verification_reason = (
+                        "detail_result_available"
+                        if bool(getattr(detail, "is_detail_request", False))
+                        else "catalog_results_available"
+                    )
                 elif bool(getattr(detail, "is_detail_request", False)):
                     verification_reason = "detail_request_needs_specific_product"
-            elif workflow in {"smalltalk", "off_topic"}:
+            elif workflow in {"general_talking", "off_topic"}:
                 answerability = "full"
                 retrieval_confidence = 1.0
                 verification_reason = "terminal_response"
-            elif workflow == "clarify":
+            elif workflow == "fallback":
                 answerability = "none"
                 verification_reason = str(state.decision.ambiguity_reason or "clarify_requested")
 
             return WorkflowResult(
-                internal_workflow=workflow,
+                internal_workflow=internal,
                 retrieval_source=str(getattr(state.retrieval.source, "value", state.retrieval.source) or "error"),
                 answerability=answerability,
                 retrieval_confidence=retrieval_confidence,
@@ -214,6 +221,7 @@ class PipelinePresentationMixin:
             needs_knowledge: bool,
             requested_fields: Sequence[str],
             clarify_focus: str = "",
+            clarify_question: str = "",
         ) -> Dict[str, Any]:
             return await clarify_policy.build_clarify_policy(
                 reason=reason,
@@ -224,6 +232,7 @@ class PipelinePresentationMixin:
                 needs_knowledge=needs_knowledge,
                 requested_fields=requested_fields,
                 clarify_focus=clarify_focus,
+                clarify_question=clarify_question,
                 display_attribute_value=cls._display_attribute_value,
                 build_pagination_exhausted_follow_ups=cls._build_pagination_exhausted_follow_ups,
                 location_terms=cls._LOCATION_KNOWLEDGE_TERMS,
@@ -481,258 +490,7 @@ class PipelinePresentationMixin:
             snippet = str(getattr(top[0], "content_snippet", "") or "").strip()
             if not snippet:
                 return "I couldn't find enough details yet. Could you clarify what you need?"
-            return cls._polish_grounded_knowledge_answer(
-                answer=snippet,
-                question=question,
-                max_sentences=2,
-                max_chars=int(getattr(settings, "CHAT_KNOWLEDGE_ANSWER_MAX_CHARS", 420)),
-            )
-
-    @classmethod
-    def _polish_grounded_knowledge_answer(
-            cls,
-            *,
-            answer: str,
-            question: str,
-            max_sentences: int = 2,
-            max_chars: int = 240,
-        ) -> str:
-            text = str(answer or "")
-            text = re.sub(r"^\s*here is what i found:\s*", "", text, flags=re.IGNORECASE)
-
-            list_items: List[str] = []
-            trailing_sentences: List[str] = []
-            for raw_line in text.splitlines():
-                line = cls._clean_knowledge_snippet_text(raw_line)
-                if not line:
-                    continue
-                is_bullet = bool(re.match(r"^(?:[•●\-\*]|\d+\.)\s+", line))
-                cleaned_line = re.sub(r"^(?:[•●\-\*]|\d+\.)\s*", "", line).strip(" .;:")
-                if not cleaned_line:
-                    continue
-                if is_bullet:
-                    list_items.append(cleaned_line)
-                else:
-                    trailing_sentences.append(cleaned_line)
-
-            if len(list_items) >= 2:
-                concise = "; ".join(list_items[:3])
-                if len(list_items) > 3:
-                    concise = f"{concise}; and {list_items[3]}"
-                if trailing_sentences:
-                    concise = f"{concise}. {' '.join(trailing_sentences)}"
-            else:
-                concise = cls._clean_knowledge_snippet_text(text)
-                heading_match = re.match(r"^\s*([A-Za-z][A-Za-z\s/&-]{1,32}):\s*(.+)$", concise)
-                if heading_match:
-                    heading = str(heading_match.group(1) or "").strip()
-                    body = str(heading_match.group(2) or "").strip()
-                    if 1 <= len(heading.split()) <= 3 and len(body.split()) >= 4:
-                        concise = body
-                sentences = cls._extract_sentences(concise, limit=max_sentences)
-                concise = " ".join(sentences).strip() if sentences else concise.strip()
-
-            if not concise:
-                return ""
-
-            if len(concise) > max(1, int(max_chars)):
-                trimmed = concise[: max(1, int(max_chars))]
-                if " " in trimmed:
-                    trimmed = trimmed.rsplit(" ", 1)[0]
-                concise = trimmed.rstrip(" ,;:") + "."
-
-            lower = concise.lower()
-            if cls._looks_like_yes_no_question(question) and not lower.startswith(("yes", "no")):
-                affirmative = (
-                    "certainly",
-                    "sure",
-                    "we welcome",
-                    "we offer",
-                    "we do",
-                    "available",
-                    "happy to",
-                )
-                if any(token in lower for token in affirmative):
-                    concise = f"Yes. {concise}"
-            return concise
-
-    @staticmethod
-    def _clean_knowledge_snippet_text(text: str) -> str:
-            cleaned = str(text or "")
-            replacements = {
-                "â": "'",
-                "â": "-",
-                "â": "-",
-                "â": " ",
-                "\u2022": " ",
-                "\r": " ",
-                "\n": " ",
-                "\t": " ",
-            }
-            for source, target in replacements.items():
-                cleaned = cleaned.replace(source, target)
-            return " ".join(cleaned.split())
-
-    @staticmethod
-    def _extract_sentences(text: str, *, limit: int) -> List[str]:
-            parts = [str(item or "").strip() for item in re.split(r"(?<=[.!?])\s+", str(text or "").strip())]
-            out: List[str] = []
-            for part in parts:
-                if not part:
-                    continue
-                out.append(part)
-                if len(out) >= max(1, int(limit)):
-                    break
-            return out
-
-    @classmethod
-    def _looks_like_yes_no_question(cls, question: str) -> bool:
-            normalized = normalize_user_text(question)
-            return normalized.startswith(
-                (
-                    "do you",
-                    "can you",
-                    "can i",
-                    "is ",
-                    "are ",
-                    "does ",
-                    "did ",
-                    "will ",
-                    "would ",
-                )
-            )
-
-    @classmethod
-    def _polish_knowledge_answer(
-            cls,
-            *,
-            answer: str,
-            question: str,
-            max_sentences: int = 2,
-            max_chars: int = 240,
-        ) -> str:
-            text = cls._clean_knowledge_snippet_text(answer)
-            text = re.sub(r"^\s*here is what i found:\s*", "", text, flags=re.IGNORECASE)
-            heading_match = re.match(r"^\s*([A-Za-z][A-Za-z\s/&-]{1,32}):\s*(.+)$", text)
-            heading_stripped = False
-            if heading_match:
-                heading = str(heading_match.group(1) or "").strip()
-                body = str(heading_match.group(2) or "").strip()
-                if 1 <= len(heading.split()) <= 3 and len(body.split()) >= 4:
-                    text = body
-                    heading_stripped = True
-            looks_like_list = bool(
-                re.search(r"(?:^|[\s;])\d+\.\s+", text)
-                or re.search(r"(?:^|\s)[*-]\s+", text)
-            )
-            if looks_like_list:
-                concise = text.strip()
-            else:
-                sentences = cls._extract_sentences(text, limit=max_sentences)
-                concise = " ".join(sentences).strip() if sentences else text.strip()
-            if not concise:
-                return ""
-            if len(concise) > max(1, int(max_chars)):
-                trimmed = concise[: max(1, int(max_chars))]
-                if " " in trimmed:
-                    trimmed = trimmed.rsplit(" ", 1)[0]
-                concise = trimmed.rstrip(" ,;:") + "."
-
-            lower = concise.lower()
-            if cls._looks_like_yes_no_question(question) and not lower.startswith(("yes", "no")):
-                affirmative = (
-                    "certainly",
-                    "sure",
-                    "we welcome",
-                    "we offer",
-                    "we do",
-                    "available",
-                    "happy to",
-                )
-                if any(token in lower for token in affirmative):
-                    concise = f"Yes. {concise}"
-            return concise
-
-    @classmethod
-    def _pick_store_overview_source(
-            cls,
-            *,
-            sources: Sequence[KnowledgeSource],
-        ) -> Optional[KnowledgeSource]:
-            scored: List[tuple[int, KnowledgeSource]] = []
-            for source in list(sources or []):
-                title = normalize_user_text(getattr(source, "title", ""))
-                category = normalize_user_text(getattr(source, "category", ""))
-                snippet = normalize_user_text(getattr(source, "content_snippet", ""))
-                combined = f"{title} {category} {snippet}".strip()
-                score = 0
-                if any(token in combined for token in ("contact", "sales", "support", "email", "phone", "tel")):
-                    score += 4
-                if any(token in combined for token in ("address", "showroom", "location", "in person", "bangkok")):
-                    score += 3
-                if "company" in combined or "about" in combined:
-                    score += 2
-                if category in {"contact", "about", "company"}:
-                    score += 2
-                scored.append((score, source))
-            if not scored:
-                return None
-            scored.sort(key=lambda item: item[0], reverse=True)
-            return scored[0][1]
-
-    @classmethod
-    def _build_store_overview_knowledge_answer(
-            cls,
-            *,
-            sources: Sequence[KnowledgeSource],
-        ) -> str:
-            source = cls._pick_store_overview_source(sources=sources)
-            if source is None:
-                return ""
-
-            snippet = cls._clean_knowledge_snippet_text(str(getattr(source, "content_snippet", "") or ""))
-            if not snippet:
-                return ""
-
-            email_match = re.search(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", snippet)
-            phone_match = re.search(r"(?:\+?\d[\d\s().-]{6,}\d)", snippet)
-            address_match = re.search(
-                r"address[:\s-]*(.+?)(?:\b(?:tel|phone|showroom hours|email)\b|$)",
-                snippet,
-                flags=re.IGNORECASE,
-            )
-            company_match = re.search(r"\b[A-Z][A-Za-z]+\s+Co\.,?\s*Ltd\.?\b", snippet)
-
-            company_name = str(company_match.group(0)).strip() if company_match else "Our company"
-            location_hint = ""
-            if "bangkok" in snippet.lower():
-                location_hint = " in Bangkok, Thailand"
-
-            parts: List[str] = [f"{company_name} has a showroom{location_hint}."]
-            if address_match:
-                address = str(address_match.group(1) or "").strip(" .")
-                if address:
-                    parts.append(f"Showroom address: {address}.")
-            if email_match:
-                parts.append(f"Contact email: {email_match.group(0)}.")
-            if phone_match:
-                phone = str(phone_match.group(0) or "").strip()
-                parts.append(f"Phone: {phone}.")
-
-            if len(parts) == 1:
-                sentences = re.split(r"(?<=[.!?])\s+", snippet)
-                for sentence in sentences:
-                    text = str(sentence or "").strip()
-                    if not text:
-                        continue
-                    if text.endswith("."):
-                        parts.append(text)
-                    else:
-                        parts.append(f"{text}.")
-                    if len(parts) >= 3:
-                        break
-
-            return " ".join(parts).strip()
+            return snippet
 
     @classmethod
     async def _build_component_contract(
@@ -779,6 +537,22 @@ class PipelinePresentationMixin:
                 follow_ups.extend(list(product_contract.get("follow_ups") or []))
             elif has_knowledge_answer:
                 assistant_text = mixed_knowledge_answer or query_summary
+            elif str(context.workflow or "").strip().lower() in {"general_talking", "off_topic"}:
+                terminal_workflow = str(context.workflow or "").strip().lower()
+                assistant_text = str(context.debug.get("terminal_reply_text") or "").strip()
+                if not assistant_text:
+                    assistant_text = await generate_contextual_reply(
+                        kind="default" if terminal_workflow == "general_talking" else "off_topic",
+                        reply_language=str(getattr(context, "locale", "") or "en-US"),
+                        payload={
+                            "workflow": str(context.workflow or ""),
+                            "locale": str(getattr(context, "locale", "") or "en-US"),
+                            "user_text": user_text,
+                            "assistant_scope": "body jewelry products, stock, pricing, materials, sizes/gauge, and store policies/info",
+                        },
+                    )
+                if not assistant_text:
+                    assistant_text = "I can help with body jewelry products and store support in this chat."
 
             if (has_product_detail or has_product_cards) and mixed_knowledge_answer:
                 assistant_text = cls._combine_mixed_assistant_text(
@@ -875,6 +649,7 @@ class PipelinePresentationMixin:
                     attribute_filters=dict(detail.attribute_filters or {}),
                     needs_knowledge=bool(route_decision.needs_knowledge),
                     requested_fields=list(detail.requested_fields or []),
+                    clarify_question=str(getattr(state.decision, "clarify_question", "") or ""),
                 )
                 self._apply_clarify_debug(
                     debug_meta=debug_meta,
@@ -886,6 +661,8 @@ class PipelinePresentationMixin:
                 debug_meta.update(dict(clarify_policy.get("extra_debug") or {}))
 
             workflow_result = self._verify_workflow_result(
+                workflow=workflow,
+                needs_knowledge=bool(route_decision.needs_knowledge),
                 internal_workflow=internal_workflow,
                 state=state,
                 detail=detail,
@@ -971,6 +748,28 @@ class PipelinePresentationMixin:
             tone_state = tone_snapshot()
             conversation_state_payload: Optional[Dict[str, Any]] = None
             if conversation_state_enabled and state_working is not None:
+                pending_task_type = str(getattr(state.decision, "pending_task_type", "") or "").strip()
+                missing_slot = str(getattr(state.decision, "missing_slot", "") or "").strip()
+                if (
+                    ComponentType.CLARIFY in selected_components
+                    and pending_task_type
+                    and missing_slot
+                    and not bool(debug_meta.get("pending_task_resumed"))
+                ):
+                    pending_task = conversation_state.build_pending_task(
+                        task_type=pending_task_type,
+                        missing_slot=missing_slot,
+                        original_question=text,
+                        original_intent=str(getattr(state.decision, "intent", "") or ""),
+                        clarify_question=str(getattr(state.decision, "clarify_question", "") or ""),
+                    )
+                    state_working = conversation_state.apply_pending_task_update(
+                        state_working,
+                        pending_task=pending_task,
+                    )
+                    debug_meta["pending_task_stored"] = bool(pending_task)
+                    debug_meta["pending_task_type"] = str(pending_task.get("task_type") or "")
+                    debug_meta["pending_task_missing_slot"] = str(pending_task.get("missing_slot") or "")
                 response_cards = component_contract.product_cards_from_response(response)
                 state_product_ids = conversation_state.product_ids_from_cards(response_cards)
                 state_product_skus = conversation_state.product_skus_from_cards(response_cards)

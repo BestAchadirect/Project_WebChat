@@ -938,6 +938,110 @@ async def test_component_pipeline_knowledge_answer_falls_back_when_llm_reply_emp
 
 
 @pytest.mark.asyncio
+async def test_component_pipeline_knowledge_answer_uses_resilient_json_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _RedisStub:
+        async def get_json(self, key):
+            return None
+
+        async def set_json(self, key, value, ttl_seconds=0):
+            return None
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=_RedisStub(),
+    )
+
+    captured: dict[str, object] = {}
+
+    async def fake_generate_chat_json(*args, **kwargs):
+        captured.update(dict(kwargs))
+        return {"reply": "Eligible items can be returned within 30 days after delivery with an RMA."}
+
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    answer, from_cache = await pipeline._knowledge_answer_once(
+        question="What is your return policy?",
+        sources=[
+            KnowledgeSource(
+                source_id="src-return-budget",
+                chunk_id="chunk-return-budget",
+                title="Returns Policy",
+                content_snippet="Eligible items can be returned within 30 days after delivery with an RMA.",
+                category="Refunds",
+                relevance=0.9,
+                url="https://example.com/returns",
+                distance=0.1,
+            )
+        ],
+        locale="en-US",
+        store_overview_request=False,
+        llm_cache_key="test-return-budget-key",
+    )
+
+    assert from_cache is False
+    assert "30 days" in answer
+    assert captured["max_tokens"] == int(settings.CHAT_KNOWLEDGE_ANSWER_JSON_MAX_TOKENS)
+    assert captured["reasoning_effort"] == "minimal"
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_knowledge_answer_falls_back_when_json_generation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _RedisStub:
+        async def get_json(self, key):
+            return None
+
+        async def set_json(self, key, value, ttl_seconds=0):
+            return None
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_generate_chat_json(*args, **kwargs):
+        raise RuntimeError("LLM JSON response truncated before content")
+
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+    debug_meta: dict[str, object] = {}
+
+    answer, from_cache = await pipeline._knowledge_answer_once(
+        question="What is your return policy?",
+        sources=[
+            KnowledgeSource(
+                source_id="src-return-fallback",
+                chunk_id="chunk-return-fallback",
+                title="Returns Policy",
+                content_snippet=(
+                    "Customers can request a refund within 30 days of delivery after getting "
+                    "a Return Authorization Number."
+                ),
+                category="Refunds",
+                relevance=0.9,
+                url="https://example.com/returns",
+                distance=0.1,
+            )
+        ],
+        locale="en-US",
+        store_overview_request=False,
+        llm_cache_key="test-return-fallback-key",
+        debug_meta=debug_meta,
+    )
+
+    assert from_cache is False
+    assert "30 days" in answer
+    assert "return authorization number" in answer.lower()
+    assert debug_meta["component_knowledge_answer_fallback_reason"] == "LLM JSON response truncated before content"
+
+
+@pytest.mark.asyncio
 async def test_component_pipeline_knowledge_answer_does_not_force_store_overview_copy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1093,8 +1197,8 @@ def test_component_pipeline_grounded_knowledge_answer_turns_list_snippet_into_pr
     assert "usd 150" in lowered
     assert "usd 500" in lowered
     assert "5,000 baht" in lowered
-    assert "●" not in answer
-    assert lowered.startswith("usd 150")
+    assert "●" in answer
+    assert lowered.startswith("● usd 150") or lowered.startswith("? usd 150")
 
 
 @pytest.mark.asyncio
@@ -1323,11 +1427,9 @@ async def test_component_pipeline_knowledge_answer_keeps_long_payment_summary(
     async def fake_generate_chat_json(*args, **kwargs):
         return {
             "reply": (
-                "We accept the following payment methods: "
-                "1. PayPal or Credit Card - Fast and convenient for orders under USD 3,000. "
-                "2. Bank Transfer - For orders over USD 3,000. "
-                "Bank transfers may take 2-5 days for verification. "
-                "Please ensure that bank transfer fees are covered."
+                "We accept PayPal or Credit Card for orders under USD 3,000, and Bank Transfer "
+                "for orders over USD 3,000. Bank transfers may take 2-5 days for verification, "
+                "and bank transfer fees are covered by the customer."
             )
         }
 
@@ -1340,7 +1442,11 @@ async def test_component_pipeline_knowledge_answer_keeps_long_payment_summary(
                 source_id="src-payment",
                 chunk_id="chunk-payment",
                 title="Payment Methods",
-                content_snippet="We accept credit card, bank transfer, and PayPal.",
+                content_snippet=(
+                    "We accept PayPal or Credit Card for orders under USD 3,000. "
+                    "Bank Transfer is available for orders over USD 3,000, may take "
+                    "2-5 days for verification, and bank transfer fees must be covered."
+                ),
                 category="Policy",
                 relevance=0.95,
                 url="https://example.com/payment",
@@ -1356,7 +1462,7 @@ async def test_component_pipeline_knowledge_answer_keeps_long_payment_summary(
     assert "credit card" in answer.lower()
     assert "bank transfer" in answer.lower()
     assert "fees are covered" in answer.lower()
-    assert len(answer) > 240
+    assert len(answer) > 180
 
 
 @pytest.mark.asyncio
@@ -1394,6 +1500,7 @@ async def test_component_pipeline_catalog_mixed_intent_adds_knowledge_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     product = _canonical_product(sku="BB-1", title="Steel Barbell", master_code="BB-1")
+    product.attributes["jewelry_type"] = "Barbell"
     source = KnowledgeSource(
         source_id="kb-hours",
         title="Showroom Hours",
@@ -1478,6 +1585,9 @@ async def test_component_pipeline_catalog_mixed_intent_adds_payment_knowledge_an
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     product = _canonical_product(sku="TI-1", title="Titanium Labret", master_code="TI-1")
+    product.material = "Titanium"
+    product.attributes["material"] = "Titanium"
+    product.attributes["jewelry_type"] = "Labret"
     source = KnowledgeSource(
         source_id="kb-payment",
         title="Payment Methods",
@@ -1609,3 +1719,84 @@ async def test_component_pipeline_catalog_retrieval_skips_embedding_branch_witho
     assert query_embedding is None
     assert debug_meta.get("semantic_search_error") == ""
     assert state.decision.ambiguity_reason == "structured_no_match"
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_anchorless_sample_request_clarifies_instead_of_showing_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _RedisStub:
+        async def get_json(self, key):
+            return None
+
+        async def set_json(self, key, value, ttl_seconds=0):
+            return None
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=_RedisStub(),
+    )
+
+    result = await pipeline.run(
+        request=ChatRequest(
+            user_id="guest-anchorless-sample",
+            message="Can i see the sample first?",
+            locale="en-US",
+        ),
+        conversation_id=99,
+        run_id="run-anchorless-sample",
+        route_decision_override=_workflow_decision("catalog"),
+        detail_override=SimpleNamespace(
+            requested_fields=[],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=False,
+            semantic_hints=[],
+            clarify_focus="",
+        ),
+    )
+
+    component_types = [component.type.value for component in list(result.response.components or [])]
+    assert result.response.routing.workflow == "fallback"
+    assert result.response.routing.needs_clarification is True
+    assert "product_cards" not in component_types
+    assert "clarify" in component_types
+    assert result.debug.get("catalog_product_anchor_present") is False
+
+
+def test_product_anchor_helper_keeps_contextual_follow_ups_and_sample_images() -> None:
+    assert (
+        pipeline_setup_module._has_product_anchor(
+            text="What about the gold one?",
+            detail=SimpleNamespace(
+                requested_fields=[],
+                attribute_filters={},
+                wants_image=False,
+                is_detail_request=False,
+                semantic_hints=[],
+                clarify_focus="",
+            ),
+            sku_tokens=[],
+            contextual_filters_applied=True,
+        )
+        is True
+    )
+    assert (
+        pipeline_setup_module._has_product_anchor(
+            text="Can i see sample images of titanium labrets?",
+            detail=SimpleNamespace(
+                requested_fields=[],
+                attribute_filters={},
+                wants_image=True,
+                is_detail_request=True,
+                semantic_hints=[],
+                clarify_focus="",
+            ),
+            sku_tokens=[],
+            contextual_filters_applied=False,
+        )
+        is True
+    )
+

@@ -14,7 +14,7 @@ def main() -> int:
     parser.add_argument(
         "--suite",
         type=str,
-        choices=("all", "routing", "parser", "response"),
+        choices=("all", "routing", "parser", "response", "long_context", "adversarial"),
         default="all",
         help="Built-in suite to run when --dataset is not provided.",
     )
@@ -52,6 +52,9 @@ def main() -> int:
     print(f"By suite: {summary['by_suite']}")
     print(f"By bucket: {summary['by_bucket']}")
     print(f"By kind: {summary['by_kind']}")
+    print(f"By focus group: {summary['by_focus_group']}")
+    print(f"Failure summary: {summary['failure_summary']}")
+    print(f"Trend summary: {summary['trend_summary']}")
 
     failures = list(summary.get("failures") or [])
     if failures:

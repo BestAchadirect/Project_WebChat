@@ -1,0 +1,273 @@
+[
+  {
+    "id": "long_context_product_reanchor_gold_variant",
+    "name": "long_context_product_reanchor_gold_variant",
+    "suite": "long_context",
+    "bucket": "anchor_retention",
+    "kind": "long_context_contract",
+    "inputs": {
+      "message": "What about the gold one?",
+      "locale": "en-US"
+    },
+    "turns": [
+      {
+        "role": "user",
+        "content": "Show me titanium labrets."
+      },
+      {
+        "role": "assistant",
+        "content": "I found titanium labrets."
+      },
+      {
+        "role": "user",
+        "content": "What about the gold one?"
+      }
+    ],
+    "runtime_fixture": {
+      "mode": "agentic_success",
+      "agentic_result": {
+        "final_reply": "The gold labret variant EVAL-GOLD-LAB-1 is out of stock.",
+        "product_carousel": [
+          {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "sku": "EVAL-GOLD-LAB-1",
+            "name": "Gold Labret",
+            "price": 24.0,
+            "currency": "USD",
+            "stock_status": "out_of_stock",
+            "attributes": {
+              "material": "gold",
+              "jewelry_type": "labret"
+            }
+          }
+        ],
+        "sources": [],
+        "follow_up_questions": [],
+        "trace": []
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "catalog"
+      },
+      "reply_text": "The gold labret variant EVAL-GOLD-LAB-1 is out of stock.",
+      "follow_up_questions": [],
+      "sources": [],
+      "product_carousel": [
+        {
+          "sku": "EVAL-GOLD-LAB-1"
+        }
+      ],
+      "debug": {
+        "reply_mode": "deterministic_product_detail"
+      }
+    },
+    "expected": {
+      "workflow": "catalog",
+      "reply_must_include": [
+        "gold",
+        "out of stock"
+      ],
+      "context": {
+        "anchor_type": "product",
+        "primary_product_sku": "EVAL-GOLD-LAB-1",
+        "product_skus_exact": [
+          "EVAL-GOLD-LAB-1"
+        ]
+      },
+      "product_count_min": 1,
+      "source_count_max": 0,
+      "turn_count_min": 3,
+      "debug_equals": {
+        "reply_mode": "deterministic_product_detail"
+      }
+    }
+  },
+  {
+    "id": "long_context_policy_follow_up_after_product_shift",
+    "name": "long_context_policy_follow_up_after_product_shift",
+    "suite": "long_context",
+    "bucket": "re_anchoring",
+    "kind": "long_context_contract",
+    "inputs": {
+      "message": "And what about returns?",
+      "locale": "en-US"
+    },
+    "turns": [
+      {
+        "role": "user",
+        "content": "Show me titanium labrets."
+      },
+      {
+        "role": "assistant",
+        "content": "I found titanium labrets."
+      },
+      {
+        "role": "user",
+        "content": "And what about returns?"
+      }
+    ],
+    "runtime_fixture": {
+      "mode": "agentic_success",
+      "agentic_result": {
+        "final_reply": "Eligible jewelry can be returned within 30 days.",
+        "product_carousel": [],
+        "sources": [
+          {
+            "source_id": "eval_returns_policy",
+            "title": "Eval Returns Policy",
+            "content_snippet": "Eligible jewelry can be returned within 30 days.",
+            "category": "Policy",
+            "relevance": 0.93
+          }
+        ],
+        "follow_up_questions": [],
+        "trace": []
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "knowledge"
+      },
+      "reply_text": "Eligible jewelry can be returned within 30 days.",
+      "follow_up_questions": [],
+      "sources": [
+        {
+          "title": "Eval Returns Policy",
+          "content_snippet": "Eligible jewelry can be returned within 30 days."
+        }
+      ],
+      "product_carousel": [],
+      "debug": {
+        "reply_mode": "llm"
+      }
+    },
+    "expected": {
+      "workflow": "knowledge",
+      "reply_must_include": [
+        "return",
+        "30 days"
+      ],
+      "context": {
+        "anchor_type": "knowledge",
+        "primary_source_title": "Eval Returns Policy",
+        "source_titles_exact": [
+          "Eval Returns Policy"
+        ]
+      },
+      "product_count_max": 0,
+      "source_count_min": 1,
+      "turn_count_min": 3,
+      "debug_equals": {
+        "reply_mode": "llm"
+      }
+    }
+  },
+  {
+    "id": "long_context_mixed_topic_separation",
+    "name": "long_context_mixed_topic_separation",
+    "suite": "long_context",
+    "bucket": "mixed_topic",
+    "kind": "long_context_contract",
+    "inputs": {
+      "message": "Can you show the titanium one and tell me the return policy again?",
+      "locale": "en-US"
+    },
+    "turns": [
+      {
+        "role": "user",
+        "content": "Show me titanium labrets."
+      },
+      {
+        "role": "assistant",
+        "content": "I found titanium labrets."
+      },
+      {
+        "role": "user",
+        "content": "And what is your return policy?"
+      },
+      {
+        "role": "assistant",
+        "content": "Unopened jewelry can be returned within 30 days."
+      },
+      {
+        "role": "user",
+        "content": "Can you show the titanium one and tell me the return policy again?"
+      }
+    ],
+    "runtime_fixture": {
+      "mode": "agentic_success",
+      "agentic_result": {
+        "final_reply": "Here are titanium labrets, and unopened jewelry can be returned within 30 days.",
+        "product_carousel": [
+          {
+            "id": "22222222-2222-2222-2222-222222222222",
+            "sku": "EVAL-TI-LAB-1",
+            "name": "Titanium Labret",
+            "price": 19.5,
+            "currency": "USD",
+            "stock_status": "in_stock",
+            "attributes": {
+              "material": "titanium",
+              "jewelry_type": "labret"
+            }
+          }
+        ],
+        "sources": [
+          {
+            "source_id": "eval_returns_policy",
+            "title": "Eval Returns Policy",
+            "content_snippet": "Unopened jewelry can be returned within 30 days.",
+            "category": "Policy",
+            "relevance": 0.92
+          }
+        ],
+        "follow_up_questions": [],
+        "trace": []
+      }
+    },
+    "fallback_actual_response": {
+      "routing": {
+        "workflow": "catalog"
+      },
+      "reply_text": "Here are titanium labrets, and unopened jewelry can be returned within 30 days.",
+      "follow_up_questions": [],
+      "sources": [
+        {
+          "title": "Eval Returns Policy",
+          "content_snippet": "Unopened jewelry can be returned within 30 days."
+        }
+      ],
+      "product_carousel": [
+        {
+          "sku": "EVAL-TI-LAB-1"
+        }
+      ],
+      "debug": {
+        "reply_mode": "mixed_context"
+      }
+    },
+    "expected": {
+      "workflow": "catalog",
+      "reply_must_include": [
+        "titanium",
+        "30 days"
+      ],
+      "context": {
+        "anchor_type": "mixed",
+        "product_skus_exact": [
+          "EVAL-TI-LAB-1"
+        ],
+        "source_titles_exact": [
+          "Eval Returns Policy"
+        ]
+      },
+      "product_count_min": 1,
+      "source_count_min": 1,
+      "turn_count_min": 5,
+      "debug_equals": {
+        "reply_mode": "mixed_context"
+      }
+    }
+  }
+]

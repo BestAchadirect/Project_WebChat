@@ -5,7 +5,9 @@ from typing import Any, Dict, Optional, Tuple
 from app.core.config import settings
 from app.schemas.chat import ChatComponent, ChatResponse, ChatResponseMeta, ChatRouting
 from app.services.ai.llm_service import llm_service
-from app.services.chat.runtime.agentic_adapter import build_agentic_response
+from app.services.chat.agentic.orchestrator import AgentRunOutcome
+from app.services.chat.runtime.agentic_adapter import build_agentic_response, coerce_agentic_result
+from app.services.chat.runtime.fallback_policy import runtime_failure_reason
 
 
 def build_initial_debug_meta(*, channel: str, config_fingerprint: Dict[str, Any]) -> Dict[str, Any]:
@@ -85,11 +87,16 @@ async def finalize_agentic_response(
     spans: Dict[str, Any],
     total_started: float,
 ) -> ChatResponse:
+    normalized_agentic_result = coerce_agentic_result(agentic_result)
+    if normalized_agentic_result.outcome != AgentRunOutcome.TOOL_SUCCESS:
+        raise ValueError(
+            f"finalize_agentic_response requires tool_success outcome, got {normalized_agentic_result.outcome.value}"
+        )
     response = build_agentic_response(
         conversation_id=conversation_id,
         routing=routing,
         query_summary=query_summary,
-        agentic_result=agentic_result,
+        agentic_result=normalized_agentic_result,
     )
     token_usage = llm_service.consume_token_usage()
     return await service._finalize_with_latency(
@@ -153,6 +160,7 @@ async def finalize_runtime_error(
     total_started: float,
     detail_mode_triggered: bool,
 ) -> ChatResponse:
+    debug_meta["runtime_failure_reason"] = runtime_failure_reason(error=error)
     token_usage = llm_service.consume_token_usage()
     service._log_latency_error(
         run_id=run_id,

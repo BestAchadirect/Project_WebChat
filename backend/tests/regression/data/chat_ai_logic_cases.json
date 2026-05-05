@@ -422,7 +422,7 @@
     "suite": "response",
     "bucket": "product_contract",
     "kind": "response_contract",
-    "actual_response": {
+    "fallback_actual_response": {
       "routing": {
         "workflow": "catalog"
       },
@@ -473,7 +473,7 @@
     "suite": "response",
     "bucket": "policy_contract",
     "kind": "response_contract",
-    "actual_response": {
+    "fallback_actual_response": {
       "routing": {
         "workflow": "knowledge"
       },
@@ -516,7 +516,7 @@
     "suite": "response",
     "bucket": "policy_contract",
     "kind": "response_contract",
-    "actual_response": {
+    "fallback_actual_response": {
       "routing": {
         "workflow": "knowledge"
       },
@@ -558,7 +558,7 @@
     "suite": "response",
     "bucket": "policy_contract",
     "kind": "response_contract",
-    "actual_response": {
+    "fallback_actual_response": {
       "routing": {
         "workflow": "knowledge"
       },

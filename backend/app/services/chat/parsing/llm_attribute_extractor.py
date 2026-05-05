@@ -34,6 +34,14 @@ from app.utils.synonym_rules import (
 logger = logging.getLogger(__name__)
 
 
+def _understanding_hint_bool(understanding: Any, key: str) -> bool:
+    return bool(dict(getattr(understanding, "entity_hints", {}) or {}).get(key))
+
+
+def _understanding_hint_text(understanding: Any, key: str) -> str:
+    return str(dict(getattr(understanding, "entity_hints", {}) or {}).get(key) or "").strip()
+
+
 @dataclass(frozen=True)
 class AttributeExtractionResult:
     exact_filters: Dict[str, str]
@@ -440,14 +448,24 @@ async def classify_chat_surface_intent(
         for tag in list((understanding.entity_hints or {}).get("knowledge_tags") or [])
         if str(tag or "").strip()
     }
-    workflow = str(understanding.workflow_hypothesis or "").strip().lower()
-    if workflow == "company_info" and "contact" in tags:
+    has_company = _understanding_hint_bool(understanding, "has_company_signal")
+    has_policy = _understanding_hint_bool(understanding, "has_policy_signal")
+    has_product = _understanding_hint_bool(understanding, "has_product_signal")
+    has_off_topic = _understanding_hint_bool(understanding, "has_off_topic_signal")
+    knowledge_query = _understanding_hint_text(understanding, "preferred_knowledge_query") or str(
+        understanding.knowledge_query or ""
+    )
+    store_overview_request = bool(
+        _understanding_hint_bool(understanding, "preferred_store_overview_request")
+        or understanding.store_overview_request
+    )
+    if has_company and "contact" in tags:
         family = "support_contact"
-    elif workflow in {"company_info", "policy_info"}:
+    elif has_company or has_policy:
         family = "knowledge_other"
-    elif workflow in {"catalog_search", "product_detail", "mixed"}:
+    elif has_product:
         family = "catalog"
-    elif workflow == "off_topic":
+    elif has_off_topic:
         family = "off_topic"
     else:
         family = "unclear"
@@ -455,13 +473,13 @@ async def classify_chat_surface_intent(
     debug["llm_chat_surface_intent_family"] = family
     debug["llm_chat_surface_intent_confidence"] = understanding.intent_confidence
     debug["llm_chat_surface_intent_reason"] = understanding.reason
-    debug["llm_chat_surface_intent_knowledge_query"] = understanding.knowledge_query
+    debug["llm_chat_surface_intent_knowledge_query"] = knowledge_query
     return SurfaceIntentClassificationResult(
         intent_family=family,
-        knowledge_query=str(understanding.knowledge_query or ""),
+        knowledge_query=knowledge_query,
         reason=str(understanding.reason or ""),
         confidence=float(understanding.intent_confidence or 0.0),
-        store_overview_request=bool(understanding.store_overview_request),
+        store_overview_request=store_overview_request,
         llm_call_count=int(understanding.llm_call_count or 0),
         debug=debug,
     )
@@ -626,7 +644,7 @@ async def infer_detail_query(
             attribute_filters={},
             wants_image=False,
             semantic_hints=[],
-            clarify_focus="detail_request_needs_specific_product",
+            clarify_focus="",
             confidence=0.0,
             llm_call_count=llm_call_count,
             debug=debug,
@@ -672,18 +690,20 @@ async def infer_chat_interpretation(
     )
     execution_decision = decision_state.execution_decision
     if execution_decision is None:
-        fallback = routing_policy._fallback_workflow_decision(reason="staged_decision_missing")
+        fallback = routing_policy._fallback_workflow_decision(reason="decision_engine_missing")
         execution_decision = routing_policy.ExecutionDecision(
             route_decision=fallback,
             execution_mode="component",
-            reason="staged_decision_missing",
+            reason="decision_engine_missing",
             feature_enabled=False,
             channel_allowed=False,
             tool_suitable=False,
-            selection_source="staged_fallback",
+            selection_source="decision_fallback",
         )
 
-    if decision_state.internal_workflow in {"catalog_search", "product_detail", "mixed"}:
+    has_product_signal = _understanding_hint_bool(understanding, "has_product_signal")
+    has_product_detail_signal = _understanding_hint_bool(understanding, "has_product_detail_signal")
+    if bool(getattr(execution_decision.route_decision, "needs_products", False)) or has_product_signal:
         detail = await infer_detail_query(
             user_text=user_text,
             workflow="catalog",
@@ -691,7 +711,7 @@ async def infer_chat_interpretation(
             parser_rules=parser_rules,
             existing_filters=existing_filters,
         )
-        if decision_state.internal_workflow == "product_detail" and not (detail.requested_fields or detail.wants_image):
+        if has_product_detail_signal and not (detail.requested_fields or detail.wants_image):
             detail = replace(
                 detail,
                 requested_fields=["attributes"],

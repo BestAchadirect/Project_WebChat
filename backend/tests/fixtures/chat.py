@@ -4,8 +4,16 @@ from collections.abc import Awaitable, Callable
 import json
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from app.schemas.chat import ChatComponent, ChatResponse, ChatResponseMeta, ChatRouting
+from app.schemas.chat import (
+    ChatComponent,
+    ChatResponse,
+    ChatResponseMeta,
+    ChatRouting,
+    KnowledgeSource,
+    ProductCard,
+)
 from app.services.ai.llm_service import llm_service
 from app.services.chat.components.pipeline import ComponentPipelineResult
 from app.services.chat.service import ChatService
@@ -59,6 +67,49 @@ class RedisStub:
 class KnowledgeStub:
     async def search(self, *args: Any, **kwargs: Any) -> list[Any]:
         return []
+
+
+def build_product_cards(items: list[dict[str, Any]] | None) -> list[ProductCard]:
+    cards: list[ProductCard] = []
+    for raw in list(items or []):
+        item = dict(raw or {})
+        cards.append(
+            ProductCard(
+                id=item.get("id") or uuid4(),
+                object_id=str(item.get("object_id") or item.get("sku") or ""),
+                sku=str(item.get("sku") or ""),
+                legacy_sku=list(item.get("legacy_sku") or []),
+                name=str(item.get("name") or item.get("title") or item.get("sku") or "Product"),
+                description=item.get("description"),
+                price=float(item.get("price", 0.0) or 0.0),
+                currency=str(item.get("currency") or "USD"),
+                stock_status=item.get("stock_status"),
+                image_url=item.get("image_url"),
+                product_url=item.get("product_url"),
+                attributes=dict(item.get("attributes") or {}),
+            )
+        )
+    return cards
+
+
+def build_knowledge_sources(items: list[dict[str, Any]] | None) -> list[KnowledgeSource]:
+    sources: list[KnowledgeSource] = []
+    for index, raw in enumerate(list(items or []), start=1):
+        item = dict(raw or {})
+        sources.append(
+            KnowledgeSource(
+                source_id=str(item.get("source_id") or f"source_{index}"),
+                chunk_id=item.get("chunk_id"),
+                title=str(item.get("title") or "Knowledge"),
+                summary=item.get("summary"),
+                content_snippet=str(item.get("content_snippet") or item.get("snippet") or ""),
+                category=item.get("category"),
+                relevance=float(item.get("relevance", 0.8) or 0.8),
+                url=item.get("url"),
+                distance=item.get("distance"),
+            )
+        )
+    return sources
 
 
 def patch_llm_tracking(monkeypatch: Any) -> None:
@@ -191,6 +242,9 @@ def build_component_pipeline_result(
     debug: dict[str, Any] | None = None,
     response_debug: dict[str, Any] | None = None,
     conversation_state: dict[str, Any] | None = None,
+    sources: list[dict[str, Any]] | None = None,
+    product_carousel: list[dict[str, Any]] | None = None,
+    components: list[dict[str, Any] | ChatComponent] | None = None,
 ) -> ComponentPipelineResult:
     pipeline_debug = {
         "component_plan": ["query_summary"],
@@ -199,12 +253,21 @@ def build_component_pipeline_result(
     if debug:
         pipeline_debug.update(debug)
 
+    response_components = [
+        component if isinstance(component, ChatComponent) else ChatComponent.model_validate(component)
+        for component in list(components or [])
+    ]
+    if not response_components:
+        response_components = [ChatComponent(type="query_summary", data={"text": component_text or reply_text})]
+    response_sources = build_knowledge_sources(sources)
+    response_products = build_product_cards(product_carousel)
+
     return ComponentPipelineResult(
         response=ChatResponse(
             conversation_id=conversation_id,
             reply_text=reply_text,
             carousel_msg="",
-            product_carousel=[],
+            product_carousel=response_products,
             routing=ChatRouting(
                 workflow=response_workflow,
                 execution_mode="component",
@@ -214,15 +277,18 @@ def build_component_pipeline_result(
                 reason="fixture",
                 selection_source="fixture",
             ),
-            sources=[],
+            sources=response_sources,
             debug=response_debug or {},
-            components=[ChatComponent(type="query_summary", data={"text": component_text or reply_text})],
+            components=response_components,
             meta=ChatResponseMeta(
                 query_summary=request.message,
                 latency_ms=1.0,
                 source=source,
                 llm_calls=0,
                 embedding_calls=0,
+                product_result_count=len(response_products),
+                product_display_count=len(response_products),
+                product_has_more=False,
             ),
         ),
         detail_mode_triggered=False,

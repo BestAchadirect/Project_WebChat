@@ -7,9 +7,9 @@ pytest.importorskip("pydantic_settings")
 from app.services.ai.llm_service import llm_service
 
 
-def _response_with_content(content: str):
+def _response_with_content(content: str, *, finish_reason: str = "stop"):
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=[]), finish_reason="stop")],
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=[]), finish_reason=finish_reason)],
         usage=None,
     )
 
@@ -164,3 +164,19 @@ async def test_generate_chat_json_uses_gpt5_compat_request_shape(
     assert "max_tokens" not in completions.calls[0]
     assert "temperature" not in completions.calls[0]
     assert completions.calls[0]["reasoning_effort"] == "minimal"
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_json_raises_on_empty_truncated_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completions = _SequenceCompletions([_response_with_content("", finish_reason="length")])
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    monkeypatch.setattr(llm_service, "client", fake_client)
+
+    with pytest.raises(RuntimeError, match="truncated before content"):
+        await llm_service.generate_chat_json(
+            messages=[{"role": "user", "content": "hello"}],
+            model="gpt-5-mini",
+            max_tokens=123,
+        )

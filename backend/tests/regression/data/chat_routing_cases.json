@@ -9,22 +9,8 @@
       "text": "Hi there",
       "channel": "widget",
       "locale": "en-US",
-      "detail_has_filters": false,
-      "detail_request": false,
       "sku_tokens": []
     },
-    "llm_responses": [
-      {
-        "workflow": "off_topic",
-        "execution_mode": "component",
-        "needs_products": false,
-        "needs_knowledge": false,
-        "needs_clarification": false,
-        "store_overview_request": false,
-        "reason": "casual store greeting",
-        "confidence": 0.91
-      }
-    ],
     "expected": {
       "workflow": "off_topic",
       "execution_mode": "component",
@@ -32,10 +18,18 @@
       "needs_knowledge": false,
       "needs_clarification": false,
       "store_overview_request": false,
+      "knowledge_query": "",
+      "reason": "smalltalk_detected",
+      "confidence": 0.96,
       "selection_source": "llm",
-      "reason": "casual store greeting",
-      "confidence": 0.91,
-      "llm_workflow": "off_topic"
+      "internal_workflow": "smalltalk",
+      "workflow_hypothesis": "smalltalk",
+      "understanding_source": "llm",
+      "llm_call_count": 1,
+      "failure_reason": "",
+      "tool_suitable": false,
+      "feature_enabled": true,
+      "channel_allowed": true
     }
   },
   {
@@ -48,33 +42,60 @@
       "text": "Show me titanium labrets",
       "channel": "widget",
       "locale": "en-US",
-      "detail_has_filters": false,
-      "detail_request": false,
       "sku_tokens": []
     },
-    "llm_responses": [
-      {
-        "workflow": "catalog",
-        "execution_mode": "component",
-        "needs_products": true,
-        "needs_knowledge": false,
-        "needs_clarification": false,
-        "store_overview_request": false,
-        "reason": "browse request",
-        "confidence": 0.91
-      }
-    ],
     "expected": {
       "workflow": "catalog",
-      "execution_mode": "component",
+      "execution_mode": "agentic",
       "needs_products": true,
       "needs_knowledge": false,
       "needs_clarification": false,
       "store_overview_request": false,
-      "selection_source": "llm",
-      "reason": "browse request",
-      "confidence": 0.91,
-      "llm_workflow": "catalog"
+      "knowledge_query": "",
+      "reason": "catalog_signal_detected",
+      "confidence": 0.86,
+      "selection_source": "agentic",
+      "internal_workflow": "catalog_search",
+      "workflow_hypothesis": "catalog_search",
+      "understanding_source": "llm",
+      "llm_call_count": 1,
+      "failure_reason": "",
+      "tool_suitable": true,
+      "feature_enabled": true,
+      "channel_allowed": true
+    }
+  },
+  {
+    "id": "routing_catalog_browse_black_opal_variant",
+    "name": "routing_catalog_browse_black_opal_variant",
+    "suite": "routing",
+    "bucket": "browse",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "Do you guys have any black opal labrets?",
+      "channel": "widget",
+      "locale": "en-US",
+      "sku_tokens": []
+    },
+    "expected": {
+      "workflow": "catalog",
+      "execution_mode": "agentic",
+      "needs_products": true,
+      "needs_knowledge": false,
+      "needs_clarification": false,
+      "store_overview_request": false,
+      "knowledge_query": "",
+      "reason": "catalog_signal_detected",
+      "confidence": 0.86,
+      "selection_source": "agentic",
+      "internal_workflow": "catalog_search",
+      "workflow_hypothesis": "catalog_search",
+      "understanding_source": "llm",
+      "llm_call_count": 1,
+      "failure_reason": "",
+      "tool_suitable": true,
+      "feature_enabled": true,
+      "channel_allowed": true
     }
   },
   {
@@ -87,33 +108,93 @@
       "text": "what is your shipping policy?",
       "channel": "widget",
       "locale": "en-US",
-      "detail_has_filters": false,
-      "detail_request": false,
       "sku_tokens": []
     },
-    "llm_responses": [
-      {
-        "workflow": "knowledge",
-        "execution_mode": "component",
-        "needs_products": false,
-        "needs_knowledge": true,
-        "needs_clarification": false,
-        "store_overview_request": false,
-        "reason": "store policy question",
-        "confidence": 0.93
-      }
-    ],
     "expected": {
       "workflow": "knowledge",
-      "execution_mode": "component",
+      "execution_mode": "agentic",
       "needs_products": false,
       "needs_knowledge": true,
       "needs_clarification": false,
       "store_overview_request": false,
-      "selection_source": "llm",
-      "reason": "store policy question",
-      "confidence": 0.93,
-      "llm_workflow": "knowledge"
+      "knowledge_query": "what is your shipping policy?",
+      "reason": "policy_signal_detected",
+      "confidence": 0.9,
+      "selection_source": "agentic",
+      "internal_workflow": "policy_info",
+      "workflow_hypothesis": "policy_info",
+      "understanding_source": "llm",
+      "llm_call_count": 1,
+      "failure_reason": "",
+      "tool_suitable": true,
+      "feature_enabled": true,
+      "channel_allowed": true
+    }
+  },
+  {
+    "id": "routing_company_contact_request",
+    "name": "routing_company_contact_request",
+    "suite": "routing",
+    "bucket": "company",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "How can I contact your sales team?",
+      "channel": "widget",
+      "locale": "en-US",
+      "sku_tokens": []
+    },
+    "expected": {
+      "workflow": "knowledge",
+      "execution_mode": "agentic",
+      "needs_products": false,
+      "needs_knowledge": true,
+      "needs_clarification": false,
+      "store_overview_request": false,
+      "knowledge_query": "how can I contact customer service",
+      "reason": "company_signal_detected",
+      "confidence": 0.95,
+      "selection_source": "agentic",
+      "internal_workflow": "company_info",
+      "workflow_hypothesis": "company_info",
+      "understanding_source": "llm",
+      "llm_call_count": 1,
+      "failure_reason": "",
+      "tool_suitable": true,
+      "feature_enabled": true,
+      "channel_allowed": true
+    }
+  },
+  {
+    "id": "routing_company_location_request",
+    "name": "routing_company_location_request",
+    "suite": "routing",
+    "bucket": "company",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "Where is your company located in Thailand?",
+      "channel": "widget",
+      "locale": "en-US",
+      "sku_tokens": []
+    },
+    "expected": {
+      "workflow": "knowledge",
+      "execution_mode": "agentic",
+      "needs_products": false,
+      "needs_knowledge": true,
+      "needs_clarification": false,
+      "store_overview_request": true,
+      "knowledge_query": "where is your company located",
+      "reason": "company_signal_detected",
+      "confidence": 0.95,
+      "selection_source": "agentic",
+      "internal_workflow": "company_info",
+      "workflow_hypothesis": "company_info",
+      "understanding_source": "llm",
+      "llm_call_count": 1,
+      "failure_reason": "",
+      "tool_suitable": true,
+      "feature_enabled": true,
+      "channel_allowed": true
     }
   },
   {
@@ -126,19 +207,16 @@
       "text": "Can you write Python code for me?",
       "channel": "widget",
       "locale": "en-US",
-      "detail_has_filters": false,
-      "detail_request": false,
       "sku_tokens": []
     },
-    "llm_responses": [
+    "understanding_llm_responses": [
       {
-        "workflow": "off_topic",
-        "execution_mode": "component",
+        "workflow_hypothesis": "off_topic",
         "needs_products": false,
         "needs_knowledge": false,
-        "needs_clarification": false,
         "store_overview_request": false,
-        "reason": "unrelated non-store request",
+        "knowledge_query": "",
+        "reason": "unrelated_non_store_request",
         "confidence": 0.94
       }
     ],
@@ -149,36 +227,85 @@
       "needs_knowledge": false,
       "needs_clarification": false,
       "store_overview_request": false,
-      "selection_source": "llm",
-      "reason": "unrelated non-store request",
+      "knowledge_query": "",
+      "reason": "unrelated_non_store_request",
       "confidence": 0.94,
-      "llm_workflow": "off_topic"
+      "selection_source": "llm",
+      "internal_workflow": "off_topic",
+      "workflow_hypothesis": "off_topic",
+      "understanding_source": "llm",
+      "llm_call_count": 1,
+      "failure_reason": "",
+      "tool_suitable": false,
+      "feature_enabled": true,
+      "channel_allowed": true
     }
   },
   {
-    "id": "routing_soft_off_topic_fallback",
-    "name": "routing_soft_off_topic_fallback",
+    "id": "routing_off_topic_borderline_external_service",
+    "name": "routing_off_topic_borderline_external_service",
     "suite": "routing",
-    "bucket": "soft_accept",
+    "bucket": "off_topic",
     "kind": "routing_decision",
     "inputs": {
-      "text": "Hi there",
+      "text": "Can you recommend a local restaurant near me?",
       "channel": "widget",
       "locale": "en-US",
-      "detail_has_filters": false,
-      "detail_request": false,
       "sku_tokens": []
     },
-    "llm_responses": [
+    "understanding_llm_responses": [
       {
-        "workflow": "fallback",
-        "execution_mode": "component",
+        "workflow_hypothesis": "off_topic",
         "needs_products": false,
         "needs_knowledge": false,
-        "needs_clarification": true,
         "store_overview_request": false,
-        "reason": "hi there",
-        "confidence": 0.61
+        "knowledge_query": "",
+        "reason": "external_service_request",
+        "confidence": 0.83
+      }
+    ],
+    "expected": {
+      "workflow": "off_topic",
+      "execution_mode": "component",
+      "needs_products": false,
+      "needs_knowledge": false,
+      "needs_clarification": false,
+      "store_overview_request": false,
+      "knowledge_query": "",
+      "reason": "external_service_request",
+      "confidence": 0.83,
+      "selection_source": "llm",
+      "internal_workflow": "off_topic",
+      "workflow_hypothesis": "off_topic",
+      "understanding_source": "llm",
+      "llm_call_count": 1,
+      "failure_reason": "",
+      "tool_suitable": false,
+      "feature_enabled": true,
+      "channel_allowed": true
+    }
+  },
+  {
+    "id": "routing_ambiguous_request_clarify",
+    "name": "routing_ambiguous_request_clarify",
+    "suite": "routing",
+    "bucket": "clarify",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "I need help",
+      "channel": "widget",
+      "locale": "en-US",
+      "sku_tokens": []
+    },
+    "understanding_llm_responses": [
+      {
+        "workflow_hypothesis": "clarify",
+        "needs_products": false,
+        "needs_knowledge": false,
+        "store_overview_request": false,
+        "knowledge_query": "",
+        "reason": "ambiguous_request",
+        "confidence": 0.58
       }
     ],
     "expected": {
@@ -188,37 +315,35 @@
       "needs_knowledge": false,
       "needs_clarification": true,
       "store_overview_request": false,
-      "selection_source": "llm_fallback",
-      "reason": "hi there",
-      "confidence": 0.61,
-      "confidence_gate_applied": true,
-      "llm_workflow": "fallback"
+      "knowledge_query": "",
+      "reason": "fallback_vague_store_request",
+      "confidence": 0.58,
+      "selection_source": "llm",
+      "internal_workflow": "clarify",
+      "workflow_hypothesis": "clarify",
+      "understanding_source": "llm",
+      "llm_call_count": 1,
+      "failure_reason": "",
+      "tool_suitable": false,
+      "feature_enabled": true,
+      "channel_allowed": true
     }
   },
   {
-    "id": "routing_confidence_gate_fallback",
-    "name": "routing_confidence_gate_fallback",
+    "id": "routing_understanding_failure_fallback",
+    "name": "routing_understanding_failure_fallback",
     "suite": "routing",
-    "bucket": "confidence_gate",
+    "bucket": "understanding_failure",
     "kind": "routing_decision",
     "inputs": {
-      "text": "Can I have your contact details?",
+      "text": "Can you help with an unusual request?",
       "channel": "widget",
       "locale": "en-US",
-      "detail_has_filters": false,
-      "detail_request": false,
       "sku_tokens": []
     },
-    "llm_responses": [
+    "understanding_llm_responses": [
       {
-        "workflow": "knowledge",
-        "execution_mode": "component",
-        "needs_products": false,
-        "needs_knowledge": true,
-        "needs_clarification": false,
-        "store_overview_request": false,
-        "reason": "uncertain",
-        "confidence": 0.42
+        "error": "RuntimeError"
       }
     ],
     "expected": {
@@ -228,55 +353,84 @@
       "needs_knowledge": false,
       "needs_clarification": true,
       "store_overview_request": false,
-      "selection_source": "llm_fallback",
-      "reason": "uncertain",
-      "confidence": 0.42,
-      "confidence_gate_applied": true,
-      "llm_workflow": "knowledge",
-      "llm_reason": "uncertain"
+      "knowledge_query": "",
+      "reason": "routing_fallback",
+      "confidence": 0.0,
+      "selection_source": "llm",
+      "internal_workflow": "clarify",
+      "workflow_hypothesis": "clarify",
+      "understanding_source": "llm",
+      "llm_call_count": 0,
+      "failure_reason": "understanding_failed:runtimeerror",
+      "tool_suitable": false,
+      "feature_enabled": true,
+      "channel_allowed": true
     }
   },
   {
-    "id": "routing_timeout_retry_knowledge",
-    "name": "routing_timeout_retry_knowledge",
+    "id": "routing_product_detail_from_sku",
+    "name": "routing_product_detail_from_sku",
     "suite": "routing",
-    "bucket": "retry",
+    "bucket": "product_detail",
     "kind": "routing_decision",
     "inputs": {
-      "text": "How can I contact your sales team?",
+      "text": "Check stock for ABC-1 right now.",
       "channel": "widget",
       "locale": "en-US",
-      "detail_has_filters": false,
-      "detail_request": false,
       "sku_tokens": []
     },
-    "llm_responses": [
-      {
-        "error": "TimeoutError"
-      },
-      {
-        "workflow": "knowledge",
-        "execution_mode": "component",
-        "needs_products": false,
-        "needs_knowledge": true,
-        "needs_clarification": false,
-        "store_overview_request": true,
-        "reason": "contact request",
-        "confidence": 0.92
-      }
-    ],
     "expected": {
-      "workflow": "knowledge",
-      "execution_mode": "component",
-      "needs_products": false,
+      "workflow": "catalog",
+      "execution_mode": "agentic",
+      "needs_products": true,
+      "needs_knowledge": false,
+      "needs_clarification": false,
+      "store_overview_request": false,
+      "knowledge_query": "",
+      "reason": "product_detail_signal_detected",
+      "confidence": 0.93,
+      "selection_source": "agentic",
+      "internal_workflow": "product_detail",
+      "workflow_hypothesis": "product_detail",
+      "understanding_source": "llm",
+      "llm_call_count": 1,
+      "failure_reason": "",
+      "tool_suitable": true,
+      "feature_enabled": true,
+      "channel_allowed": true
+    }
+  },
+  {
+    "id": "routing_mixed_request_payment_variant",
+    "name": "routing_mixed_request_payment_variant",
+    "suite": "routing",
+    "bucket": "mixed",
+    "kind": "routing_decision",
+    "inputs": {
+      "text": "What payment methods do you take if I also want titanium rings?",
+      "channel": "widget",
+      "locale": "en-US",
+      "sku_tokens": []
+    },
+    "expected": {
+      "workflow": "catalog",
+      "execution_mode": "agentic",
+      "needs_products": true,
       "needs_knowledge": true,
       "needs_clarification": false,
-      "store_overview_request": true,
-      "selection_source": "llm_retry",
-      "reason": "contact request",
+      "store_overview_request": false,
+      "knowledge_query": "what payment methods do you take if i also want titanium rings?",
+      "reason": "mixed_signals_detected",
       "confidence": 0.92,
-      "timeout_retry_used": true,
-      "llm_workflow": "knowledge"
+      "selection_source": "agentic",
+      "internal_workflow": "mixed",
+      "workflow_hypothesis": "mixed",
+      "understanding_source": "llm",
+      "llm_call_count": 1,
+      "failure_reason": "",
+      "tool_suitable": true,
+      "feature_enabled": true,
+      "channel_allowed": true
     }
   },
   {
@@ -289,35 +443,27 @@
       "text": "Show me titanium jewelry and also what payment methods do you accept?",
       "channel": "widget",
       "locale": "en-US",
-      "detail_has_filters": false,
-      "detail_request": false,
       "sku_tokens": []
     },
-    "llm_responses": [
-      {
-        "workflow": "catalog",
-        "execution_mode": "component",
-        "needs_products": true,
-        "needs_knowledge": true,
-        "needs_clarification": false,
-        "store_overview_request": false,
-        "knowledge_query": "what payment methods do you accept",
-        "reason": "mixed request with payment follow-up",
-        "confidence": 0.93
-      }
-    ],
     "expected": {
       "workflow": "catalog",
-      "execution_mode": "component",
+      "execution_mode": "agentic",
       "needs_products": true,
       "needs_knowledge": true,
       "needs_clarification": false,
       "store_overview_request": false,
-      "selection_source": "llm",
-      "reason": "mixed request with payment follow-up",
-      "confidence": 0.93,
-      "knowledge_query": "what payment methods do you accept",
-      "llm_workflow": "catalog"
+      "knowledge_query": "show me titanium jewelry and also what payment methods do you accept?",
+      "reason": "mixed_signals_detected",
+      "confidence": 0.92,
+      "selection_source": "agentic",
+      "internal_workflow": "mixed",
+      "workflow_hypothesis": "mixed",
+      "understanding_source": "llm",
+      "llm_call_count": 1,
+      "failure_reason": "",
+      "tool_suitable": true,
+      "feature_enabled": true,
+      "channel_allowed": true
     }
   }
 ]

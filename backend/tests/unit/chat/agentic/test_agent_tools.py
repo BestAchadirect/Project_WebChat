@@ -94,6 +94,84 @@ def test_search_knowledge_base_limit_range() -> None:
         return
     raise AssertionError("Expected ValidationError")
 
+
+def test_normalize_tool_result_exposes_renderable_products_and_sources() -> None:
+    normalized_products = AgentToolRegistry.normalize_tool_result(
+        tool_name="get_product_details",
+        result={
+            "tool": "get_product_details",
+            "status": "ambiguous",
+            "candidates": [
+                {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "sku": "LAB-14",
+                    "legacy_sku": [],
+                    "name": "LAB-14",
+                    "price": 10.0,
+                    "currency": "USD",
+                    "stock_status": "in_stock",
+                    "attributes": {"material": "Titanium"},
+                }
+            ],
+        },
+    )
+    normalized_sources = AgentToolRegistry.normalize_tool_result(
+        tool_name="search_knowledge_base",
+        result={
+            "tool": "search_knowledge_base",
+            "status": "ok",
+            "items": [
+                {
+                    "source_id": "src-1",
+                    "title": "Shipping Policy",
+                    "snippet": "Shipping details",
+                    "category": "Policy",
+                    "relevance": 0.91,
+                }
+            ],
+        },
+    )
+
+    assert normalized_products.result_count == 1
+    assert normalized_products.tool_name == "get_product_details"
+    assert len(normalized_products.products) == 1
+    assert isinstance(normalized_products.products[0], ProductCard)
+    assert normalized_products.sources == []
+    assert normalized_sources.result_count == 1
+    assert normalized_sources.tool_name == "search_knowledge_base"
+    assert normalized_sources.products == []
+    assert len(normalized_sources.sources) == 1
+    assert isinstance(normalized_sources.sources[0], KnowledgeSource)
+    assert normalized_sources.sources[0].content_snippet == "Shipping details"
+
+
+def test_normalize_tool_result_skips_invalid_artifacts_without_losing_result_count() -> None:
+    normalized = AgentToolRegistry.normalize_tool_result(
+        tool_name="search_products",
+        result={
+            "tool": "search_products",
+            "status": "ok",
+            "items": [
+                {
+                    "id": "55555555-5555-5555-5555-555555555555",
+                    "sku": "OK-1",
+                    "legacy_sku": [],
+                    "name": "Valid Product",
+                    "price": 15.0,
+                    "currency": "USD",
+                    "stock_status": "in_stock",
+                    "attributes": {},
+                },
+                {"sku": "BROKEN"},
+            ],
+            "totalItems": 2,
+        },
+    )
+
+    assert normalized.result_count == 2
+    assert [card.sku for card in normalized.products] == ["OK-1"]
+
+
 def test_paginate_items_clamps_page_size_to_max_items() -> None:
     items = list(range(15))
     page_items, total_items, safe_page, total_pages = paginate_items(

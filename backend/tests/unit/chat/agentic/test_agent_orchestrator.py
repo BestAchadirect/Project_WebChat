@@ -6,11 +6,13 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("pydantic_settings")
 pytestmark = pytest.mark.agentic
 
+from app.schemas.chat import ProductCard
 from app.services.chat.agentic.orchestrator import AgentOrchestrator
+from app.services.chat.agentic.tool_registry import AgentToolRegistry
 
 
 def test_result_count_counts_candidates_for_ambiguous_lookup() -> None:
-    count = AgentOrchestrator._result_count(
+    count = AgentToolRegistry._result_count(
         {
             "tool": "get_product_details",
             "status": "ambiguous",
@@ -21,13 +23,14 @@ def test_result_count_counts_candidates_for_ambiguous_lookup() -> None:
     assert count == 3
 
 
-def test_collect_products_keeps_ambiguous_candidates_renderable() -> None:
+def test_merge_tool_artifacts_keeps_ambiguous_candidates_renderable() -> None:
     orchestrator = AgentOrchestrator(db=object(), run_id="run-1", channel="widget")
-    products: dict[str, object] = {}
+    products: dict[str, ProductCard] = {}
+    sources = {}
 
-    orchestrator._collect_products(
-        "get_product_details",
-        {
+    normalized = orchestrator.registry.normalize_tool_result(
+        tool_name="get_product_details",
+        result={
             "tool": "get_product_details",
             "status": "ambiguous",
             "candidates": [
@@ -53,8 +56,12 @@ def test_collect_products_keeps_ambiguous_candidates_renderable() -> None:
                 },
             ],
         },
-        products,
+    )
+    orchestrator._merge_tool_artifacts(
+        normalized=normalized,
+        products=products,
+        sources=sources,
     )
 
     assert len(products) == 2
-
+    assert all(isinstance(card, ProductCard) for card in products.values())

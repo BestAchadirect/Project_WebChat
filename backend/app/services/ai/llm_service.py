@@ -389,7 +389,11 @@ class LLMService:
             model=use_model,
             usage=response.usage,
         )
-        content = response.choices[0].message.content or "{}"
+        choice = response.choices[0]
+        content = choice.message.content or ""
+        if not content.strip() and str(getattr(choice, "finish_reason", "") or "").lower() == "length":
+            raise RuntimeError("LLM JSON response truncated before content")
+        content = content or "{}"
         return json.loads(content)
 
     async def generate_chat_with_tools(

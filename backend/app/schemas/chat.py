@@ -85,6 +85,7 @@ class ChatRouting(BaseModel):
     workflow: Literal[
         "catalog",
         "knowledge",
+        "general_talking",
         "off_topic",
         "fallback",
     ] = (

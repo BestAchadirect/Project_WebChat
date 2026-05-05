@@ -4,11 +4,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-CONVERSATION_STATE_VERSION = 3
+CONVERSATION_STATE_VERSION = 4
 MAX_PRODUCT_IDS = 10
 MAX_PRODUCT_SKUS = 10
 MAX_SOURCE_IDS = 10
 MAX_TONE_RECENT = 8
+MAX_PENDING_TASK_TURNS = 2
 
 
 def _default_state() -> Dict[str, Any]:
@@ -34,6 +35,7 @@ def _default_state() -> Dict[str, Any]:
             "stock_status": "",
             "last_stock_sync_at": "",
         },
+        "pending_task": {},
         "tone_recent": [],
         "updated_at": "",
     }
@@ -53,6 +55,7 @@ class ConversationMemoryState:
     last_route: str = ""
     last_answer_source_ids: List[str] = field(default_factory=list)
     last_inventory_claim: Dict[str, str] = field(default_factory=dict)
+    pending_task: Dict[str, Any] = field(default_factory=dict)
     tone_recent: List[Dict[str, Any]] = field(default_factory=list)
     updated_at: str = ""
 
@@ -70,6 +73,7 @@ class ConversationMemoryState:
             "last_route": self.last_route,
             "last_answer_source_ids": list(self.last_answer_source_ids or []),
             "last_inventory_claim": dict(self.last_inventory_claim or {}),
+            "pending_task": dict(self.pending_task or {}),
             "tone_recent": list(self.tone_recent or []),
             "updated_at": self.updated_at,
         }
@@ -217,6 +221,32 @@ def _clean_inventory_claim(value: Any) -> Dict[str, str]:
     }
 
 
+def _clean_pending_task(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    task_type = _clean_text(value.get("task_type")).lower()
+    missing_slot = _clean_text(value.get("missing_slot")).lower()
+    original_question = _clean_text(value.get("original_question"))
+    if not task_type or not missing_slot or not original_question:
+        return {}
+    try:
+        turns_remaining = int(value.get("turns_remaining", MAX_PENDING_TASK_TURNS))
+    except Exception:
+        turns_remaining = MAX_PENDING_TASK_TURNS
+    turns_remaining = max(0, min(MAX_PENDING_TASK_TURNS, turns_remaining))
+    if turns_remaining <= 0:
+        return {}
+    return {
+        "task_type": task_type[:80],
+        "missing_slot": missing_slot[:80],
+        "original_question": original_question[:500],
+        "original_intent": _clean_text(value.get("original_intent")).lower()[:80],
+        "clarify_question": _clean_text(value.get("clarify_question"))[:250],
+        "turns_remaining": turns_remaining,
+        "created_at": _clean_text(value.get("created_at")),
+    }
+
+
 def _clean_tone_recent(values: Any) -> List[Dict[str, Any]]:
     if not isinstance(values, list):
         return []
@@ -278,6 +308,7 @@ def load_state(raw: Any) -> Dict[str, Any]:
     normalized["last_route"] = _clean_text(raw.get("last_route"))
     normalized["last_answer_source_ids"] = _clean_source_ids(raw.get("last_answer_source_ids"))
     normalized["last_inventory_claim"] = _clean_inventory_claim(raw.get("last_inventory_claim"))
+    normalized["pending_task"] = _clean_pending_task(raw.get("pending_task"))
     normalized["tone_recent"] = _clean_tone_recent(raw.get("tone_recent"))
     normalized["updated_at"] = _clean_text(raw.get("updated_at"))
 
@@ -301,6 +332,7 @@ def load_memory_state(raw: Any) -> ConversationMemoryState:
         last_route=_clean_text(state.get("last_route")),
         last_answer_source_ids=_clean_source_ids(state.get("last_answer_source_ids")),
         last_inventory_claim=_clean_inventory_claim(state.get("last_inventory_claim")),
+        pending_task=_clean_pending_task(state.get("pending_task")),
         tone_recent=_clean_tone_recent(state.get("tone_recent")),
         updated_at=_clean_text(state.get("updated_at")),
     )
@@ -353,6 +385,7 @@ def apply_workflow_update(
         last_route=memory.last_route,
         last_answer_source_ids=list(memory.last_answer_source_ids or []),
         last_inventory_claim=dict(memory.last_inventory_claim or {}),
+        pending_task=dict(memory.pending_task or {}),
         tone_recent=list(memory.tone_recent or []),
         updated_at=memory.updated_at,
     )
@@ -380,6 +413,7 @@ def apply_retrieval_update(
         last_route=_clean_text(route),
         last_answer_source_ids=list(memory.last_answer_source_ids or []),
         last_inventory_claim=dict(memory.last_inventory_claim or {}),
+        pending_task=dict(memory.pending_task or {}),
         tone_recent=list(memory.tone_recent or []),
         updated_at=memory.updated_at,
     )
@@ -418,6 +452,7 @@ def apply_response_update(
         last_route=_clean_text(route),
         last_answer_source_ids=_clean_source_ids(answer_source_ids) if answer_source_ids is not None else list(memory.last_answer_source_ids or []),
         last_inventory_claim=_clean_inventory_claim(inventory_claim) if inventory_claim is not None else dict(memory.last_inventory_claim or {}),
+        pending_task=dict(memory.pending_task or {}),
         tone_recent=_clean_tone_recent(tone_recent) if tone_recent is not None else list(memory.tone_recent or []),
         updated_at=_clean_text(updated_at) or utc_timestamp(),
     )
@@ -429,6 +464,67 @@ def apply_response_update(
         last_display_limit=_clean_int(display_limit) if display_limit is not None else continuation.last_display_limit,
     )
     return build_state_payload(memory=updated_memory, continuation=updated_continuation)
+
+
+def load_pending_task(raw: Any) -> Dict[str, Any]:
+    return _clean_pending_task(load_state(raw).get("pending_task"))
+
+
+def build_pending_task(
+    *,
+    task_type: str,
+    missing_slot: str,
+    original_question: str,
+    original_intent: str = "",
+    clarify_question: str = "",
+) -> Dict[str, Any]:
+    return _clean_pending_task(
+        {
+            "task_type": task_type,
+            "missing_slot": missing_slot,
+            "original_question": original_question,
+            "original_intent": original_intent,
+            "clarify_question": clarify_question,
+            "turns_remaining": MAX_PENDING_TASK_TURNS,
+            "created_at": utc_timestamp(),
+        }
+    )
+
+
+def apply_pending_task_update(state: Any, *, pending_task: Any) -> Dict[str, Any]:
+    memory, continuation = split_state(state)
+    updated_memory = ConversationMemoryState(
+        version=memory.version,
+        last_workflow=memory.last_workflow,
+        last_refined_query=memory.last_refined_query,
+        last_user_query=memory.last_user_query,
+        last_attribute_filters=dict(memory.last_attribute_filters or {}),
+        last_requested_fields=list(memory.last_requested_fields or []),
+        last_product_ids=list(memory.last_product_ids or []),
+        last_product_skus=list(memory.last_product_skus or []),
+        last_currency=memory.last_currency,
+        last_route=memory.last_route,
+        last_answer_source_ids=list(memory.last_answer_source_ids or []),
+        last_inventory_claim=dict(memory.last_inventory_claim or {}),
+        pending_task=_clean_pending_task(pending_task),
+        tone_recent=list(memory.tone_recent or []),
+        updated_at=memory.updated_at,
+    )
+    return build_state_payload(memory=updated_memory, continuation=continuation)
+
+
+def clear_pending_task(state: Any) -> Dict[str, Any]:
+    return apply_pending_task_update(state, pending_task={})
+
+
+def advance_pending_task_turn(state: Any) -> Dict[str, Any]:
+    task = load_pending_task(state)
+    if not task:
+        return load_state(state)
+    task["turns_remaining"] = int(task.get("turns_remaining") or 0) - 1
+    if int(task["turns_remaining"]) <= 0:
+        return clear_pending_task(state)
+    return apply_pending_task_update(state, pending_task=task)
 
 
 def product_ids_from_cards(cards: Optional[Iterable[Any]]) -> List[str]:

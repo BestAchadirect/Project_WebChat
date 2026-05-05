@@ -18,32 +18,61 @@ class PipelineWorkflowHandlersMixin(PipelineWorkflowCatalogMixin, PipelineWorkfl
             text: str,
             locale: str,
             workflow: str,
+            internal_workflow: str,
             debug_meta: Dict[str, Any],
             spans: Dict[str, float],
             external_call_counts: Dict[str, int],
         ) -> tuple[bool, int]:
-            if workflow == "off_topic":
+            if workflow in {"general_talking", "off_topic"}:
+                intent = str(getattr(state.decision, "intent", "") or debug_meta.get("response_intent") or "").strip().lower()
+                response_policy = str(
+                    getattr(state.decision, "response_policy", "") or debug_meta.get("response_policy") or ""
+                ).strip().lower()
+                internal = str(internal_workflow or getattr(state.decision, "internal_workflow", "") or "").strip().lower()
+                terminal_kind = "default" if workflow == "general_talking" else "off_topic"
+                usage_scope = (
+                    "body jewelry products, stock, pricing, materials, sizes/gauge, and store policies/info"
+                )
+                if intent in {"general_talking", "product_information"} or internal == "general_talking":
+                    terminal_kind = "default"
+                if response_policy == "safe_redirect":
+                    terminal_kind = "off_topic"
                 llm_started = time.perf_counter()
                 reply = await generate_contextual_reply(
-                    kind=workflow,
+                    kind=terminal_kind,
                     reply_language=str(locale or "en-US").strip() or "en-US",
                     payload={
                         "workflow": str(workflow or "").strip(),
+                        "internal_workflow": internal,
+                        "intent": intent,
+                        "subintent": str(getattr(state.decision, "subintent", "") or debug_meta.get("response_subintent") or "").strip(),
+                        "response_policy": response_policy,
+                        "user_goal": str(getattr(state.decision, "user_goal", "") or debug_meta.get("response_user_goal") or "").strip(),
                         "locale": str(locale or "en-US").strip() or "en-US",
                         "user_text": str(text or "").strip(),
-                        "assistant_scope": "body jewelry products, stock, pricing, materials, sizes/gauge, and store policies/info",
+                        "assistant_scope": usage_scope,
+                        "allowed_product_help": [
+                            "find products by jewelry type",
+                            "filter by material, color, gauge, or size",
+                            "check stock, price, SKU, images, and product details",
+                            "show matching product cards when the request needs product retrieval",
+                        ],
                     },
                 )
                 spans["llm_answer_ms"] += (time.perf_counter() - llm_started) * 1000.0
-                state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
-                state.knowledge.answer = reply or "I can help with body jewelry products and store support in this chat."
+                terminal_reply = reply or "I can help with body jewelry products and store support in this chat."
+                state.presentation.selected_components = [ComponentType.QUERY_SUMMARY]
+                state.knowledge.answer = ""
                 state.retrieval.source = ComponentSource.ERROR
                 state.retrieval.result_count = 0
+                debug_meta["terminal_reply_text"] = terminal_reply
                 if reply:
                     external_call_counts["llm_terminal_reply"] = int(external_call_counts.get("llm_terminal_reply", 0)) + 1
                     debug_meta["terminal_reply_source"] = "llm"
+                    debug_meta["terminal_reply_kind"] = terminal_kind
                     return True, 1
                 debug_meta["terminal_reply_source"] = "fallback"
+                debug_meta["terminal_reply_kind"] = terminal_kind
                 return True, 0
 
             return False, 0

@@ -11,6 +11,8 @@ def contextual_clarify_prompt(reply_language: str) -> str:
         "Do not begin with phrases like 'Ask the customer', 'Tell the customer', or similar instruction wording.\n"
         "If the payload includes clarify_question, base the message on it and keep the wording natural.\n"
         "Use the payload to ask the customer for one missing detail that would narrow the answer.\n"
+        "Stay within the assistant_scope from the payload; if no scope is provided, stay within body jewelry products and store support.\n"
+        "Do not suggest unrelated retail categories such as clothes, electronics, or home goods unless the payload explicitly includes them.\n"
         "Prefer a natural question that sounds like a shopping assistant.\n"
         "If possible, ask it as a direct question.\n"
         "Do not mention internal system terms such as ambiguity_reason, clarify_reason, workflow, filters, debug, or policy.\n"

@@ -1,7 +1,10 @@
 from pydantic import BaseModel
-from typing import List, Optional, Any, Dict
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
+
 from app.models.qa_log import QAStatus
 
 # QA Log
@@ -15,9 +18,8 @@ class QALogResponse(BaseModel):
     token_usage: Optional[Dict[str, Any]] = None
     channel: Optional[str] = None
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class QALogListResponse(BaseModel):
@@ -42,9 +44,8 @@ class ChunkResponse(BaseModel):
     is_embedded: bool = False
     embedded_at: Optional[datetime] = None
     char_count: int = 0
-    
-    class Config:
-        from_attributes = True
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ChunkUpdate(BaseModel):
@@ -63,9 +64,8 @@ class ArticleChunkGroup(BaseModel):
     category: Optional[str] = None
     chunk_count: int
     chunks: List[ChunkResponse]
-    
-    class Config:
-        from_attributes = True
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ArticleGroupedResponse(BaseModel):
@@ -97,9 +97,8 @@ class SimilarityResult(BaseModel):
     chunk_text: str
     article_title: Optional[str] = None
     similarity_score: float
-    
-    class Config:
-        from_attributes = True
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SimilarityTestResponse(BaseModel):

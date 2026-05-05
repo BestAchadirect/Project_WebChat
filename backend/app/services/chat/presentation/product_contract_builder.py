@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List
 
+from app.services.chat.components.builders.contextual_messages import generate_contextual_reply
 from app.services.chat.presentation import product_presentation
 
 
@@ -40,6 +41,11 @@ async def build_product_cards_contract(
         assistant_text = str(debug.get("detail_reply_text") or "").strip()
         carousel_msg = str(debug.get("detail_carousel_msg") or "").strip()
         follow_ups.extend(list(debug.get("detail_follow_ups") or []))
+    elif bool(debug.get("pending_task_resumed")) and "origin" in str(debug.get("pending_task_type") or ""):
+        assistant_text = (
+            "I found matching products below. I don't have confirmed manufacturing-origin data in the product records, "
+            "so I can't say whether these are from China or made in Thailand from the catalog alone."
+        )
     else:
         assistant_text = await product_presentation.build_product_match_reply(
             attribute_filters=attribute_filters,

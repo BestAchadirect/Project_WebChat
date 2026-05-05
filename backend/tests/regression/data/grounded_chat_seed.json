@@ -1,0 +1,114 @@
+{
+  "products": [
+    {
+      "sku": "EVAL-TI-LAB-1",
+      "object_id": "eval-ti-lab-1",
+      "group_key": "eval-labret-variant-group",
+      "group_title": "Eval Labret Variant Group",
+      "master_code": "Eval Titanium Labret",
+      "description": "Implant-grade titanium labret for DB-grounded chat tests.",
+      "price": 19.5,
+      "currency": "USD",
+      "stock_status": "in_stock",
+      "stock_qty": 12,
+      "image_url": "https://example.test/products/eval-ti-lab-1.jpg",
+      "product_url": "https://example.test/products/eval-ti-lab-1",
+      "attributes": {
+        "material": "titanium",
+        "jewelry_type": "labret",
+        "finish": "polished",
+        "gauge": "16g"
+      },
+      "search_text": "implant grade titanium polished labret 16g",
+      "vector_key": "titanium_labret"
+    },
+    {
+      "sku": "EVAL-GOLD-LAB-1",
+      "object_id": "eval-gold-lab-1",
+      "group_key": "eval-labret-variant-group",
+      "group_title": "Eval Labret Variant Group",
+      "master_code": "Eval Gold Labret",
+      "description": "Gold PVD labret variant for DB-grounded follow-up tests.",
+      "price": 24.0,
+      "currency": "USD",
+      "stock_status": "out_of_stock",
+      "stock_qty": 0,
+      "image_url": "https://example.test/products/eval-gold-lab-1.jpg",
+      "product_url": "https://example.test/products/eval-gold-lab-1",
+      "attributes": {
+        "material": "gold pvd",
+        "jewelry_type": "labret",
+        "finish": "gold",
+        "gauge": "16g"
+      },
+      "search_text": "gold pvd labret 16g",
+      "vector_key": "gold_labret"
+    },
+    {
+      "sku": "EVAL-STEEL-RING-1",
+      "object_id": "eval-steel-ring-1",
+      "group_key": "eval-steel-ring-variant-group",
+      "group_title": "Eval Steel Ring Variant Group",
+      "master_code": "Eval Steel Ring",
+      "description": "Steel captive ring used as a negative match for labret searches.",
+      "price": 11.25,
+      "currency": "USD",
+      "stock_status": "in_stock",
+      "stock_qty": 5,
+      "image_url": "https://example.test/products/eval-steel-ring-1.jpg",
+      "product_url": "https://example.test/products/eval-steel-ring-1",
+      "attributes": {
+        "material": "steel",
+        "jewelry_type": "ring",
+        "finish": "silver",
+        "gauge": "18g"
+      },
+      "search_text": "surgical steel captive ring 18g",
+      "vector_key": "steel_ring"
+    }
+  ],
+  "knowledge": [
+    {
+      "title": "Eval Shipping Policy",
+      "category": "Policy",
+      "url": "https://example.test/policies/shipping",
+      "content": "DB-grounded shipping policy for tests.",
+      "chunks": [
+        {
+          "text": "Orders over $50 ship free. Standard shipping takes 3 to 5 business days.",
+          "summary": "Free shipping over $50 and standard shipping time.",
+          "tags": ["shipping", "policy"],
+          "vector_key": "shipping"
+        }
+      ]
+    },
+    {
+      "title": "Eval Returns Policy",
+      "category": "Policy",
+      "url": "https://example.test/policies/returns",
+      "content": "DB-grounded returns policy for tests.",
+      "chunks": [
+        {
+          "text": "Unopened jewelry can be returned within 30 days. Opened body jewelry is not returnable for hygiene reasons.",
+          "summary": "Unopened returns are accepted within 30 days.",
+          "tags": ["returns", "policy"],
+          "vector_key": "returns"
+        }
+      ]
+    },
+    {
+      "title": "Eval Payment Policy",
+      "category": "Policy",
+      "url": "https://example.test/policies/payment",
+      "content": "DB-grounded payment policy for tests.",
+      "chunks": [
+        {
+          "text": "We accept Visa, Mastercard, PayPal, and ACH bank transfer.",
+          "summary": "Accepted payment methods.",
+          "tags": ["payment", "policy"],
+          "vector_key": "payment"
+        }
+      ]
+    }
+  ]
+}

@@ -291,6 +291,50 @@ async def test_clarify_builder_can_use_contextual_llm_copy(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
+async def test_clarify_builder_skips_contextual_rewrite_for_strong_policy_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _sample_context()
+    context.ambiguity_reason = "fallback_vague_store_request"
+    context.debug = {
+        "clarify_message": "I can help with products, store policies, or contact info. What do you want help with right now?",
+        "clarify_rewrite_allowed": False,
+    }
+
+    async def unexpected_generate_chat_json(**kwargs):
+        raise AssertionError("contextual rewrite should not run for a strong policy message")
+
+    monkeypatch.setattr(settings, "CHAT_CONTEXTUAL_COMPONENT_COPY_ENABLED", True)
+    monkeypatch.setattr(llm_service, "generate_chat_json", unexpected_generate_chat_json)
+
+    component = await ClarifyComponent().build(context)
+
+    assert component.data["message"] == context.debug["clarify_message"]
+
+
+@pytest.mark.asyncio
+async def test_clarify_builder_can_rewrite_generic_clarification_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _sample_context()
+    context.ambiguity_reason = "missing_details"
+    context.debug = {
+        "clarify_message": "I need one more detail to help.",
+        "clarify_rewrite_allowed": True,
+    }
+
+    async def fake_generate_chat_json(**kwargs):
+        return {"message": "Which detail should I use to continue?"}
+
+    monkeypatch.setattr(settings, "CHAT_CONTEXTUAL_COMPONENT_COPY_ENABLED", True)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    component = await ClarifyComponent().build(context)
+
+    assert component.data["message"] == "Which detail should I use to continue?"
+
+
+@pytest.mark.asyncio
 async def test_error_builder_can_use_contextual_llm_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     context = _sample_context()
     context.error_message = None

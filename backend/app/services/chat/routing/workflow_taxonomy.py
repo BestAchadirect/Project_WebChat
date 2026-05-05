@@ -7,6 +7,7 @@ INTERNAL_WORKFLOWS = {
     "policy_info",
     "mixed",
     "smalltalk",
+    "general_talking",
     "off_topic",
     "clarify",
 }
@@ -18,6 +19,7 @@ INTERNAL_WORKFLOW_PROMPT_ORDER = (
     "policy_info",
     "mixed",
     "smalltalk",
+    "general_talking",
     "off_topic",
     "clarify",
 )

@@ -52,6 +52,61 @@
     }
   },
   {
+    "id": "detail_parse_stock_and_image_request",
+    "name": "detail_parse_stock_and_image_request",
+    "suite": "parser",
+    "bucket": "detail_request",
+    "kind": "detail_parse",
+    "user_text": "Can you show me a picture of ABC-1 and tell me if it is in stock?",
+    "llm_response": {
+      "requested_fields": [
+        "stock",
+        "image"
+      ],
+      "attribute_filters": {},
+      "wants_image": true,
+      "semantic_hints": [
+        "ABC-1"
+      ],
+      "clarify_focus": "",
+      "confidence": 0.92
+    },
+    "expected": {
+      "requested_fields": [
+        "stock",
+        "image"
+      ],
+      "wants_image": true
+    }
+  },
+  {
+    "id": "detail_parse_ring_size_variant",
+    "name": "detail_parse_ring_size_variant",
+    "suite": "parser",
+    "bucket": "measurement_filter",
+    "kind": "detail_parse",
+    "user_text": "Show titanium rings in ring size 8",
+    "llm_response": {
+      "requested_fields": [],
+      "attribute_filters": {
+        "material": "titanium",
+        "jewelry_type": "ring",
+        "ring_size": "8"
+      },
+      "wants_image": false,
+      "semantic_hints": [],
+      "clarify_focus": "",
+      "confidence": 0.9
+    },
+    "expected": {
+      "attribute_filters": {
+        "material": "titanium",
+        "jewelry_type": "ring",
+        "ring_size": "8"
+      }
+    }
+  },
+  {
     "id": "follow_up_generation_gold_overflow",
     "name": "follow_up_generation_gold_overflow",
     "suite": "parser",
@@ -78,6 +133,36 @@
     },
     "expected": {
       "first_question": "Try gold pieces"
+    }
+  },
+  {
+    "id": "follow_up_generation_titanium_overflow_variant",
+    "name": "follow_up_generation_titanium_overflow_variant",
+    "suite": "parser",
+    "bucket": "follow_up",
+    "kind": "follow_up_generation",
+    "inputs": {
+      "user_text": "I need implant grade titanium barbells",
+      "attribute_filters": {
+        "material": "titanium"
+      },
+      "has_more_results": true,
+      "products": [
+        {
+          "sku": "TIBAR-001",
+          "name": "Titanium Curved Barbell",
+          "price": 11.0,
+          "attributes": {
+            "material": "Titanium",
+            "jewelry_type": "Barbell"
+          }
+        }
+      ]
+    },
+    "expected": {
+      "questions_include": [
+        "Try titanium pieces"
+      ]
     }
   },
   {

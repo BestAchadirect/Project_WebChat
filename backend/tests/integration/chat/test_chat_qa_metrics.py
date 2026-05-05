@@ -58,6 +58,15 @@ def test_build_chat_qa_metrics_extracts_turn_observability() -> None:
             "latency_spans": {"total_ms": 123.4},
             "external_call_count": 1,
             "llm_call_count": 0,
+            "conversation_state_enabled": True,
+            "conversation_state_written": True,
+            "conversation_state_filter_merge_applied": False,
+            "conversation_state_loaded_version": 3,
+            "grounding": {
+                "status": "grounded",
+                "safe_customer_action": "show_cards",
+                "reasons": ["evidence_matches_plan"],
+            },
         },
     )
 
@@ -74,6 +83,57 @@ def test_build_chat_qa_metrics_extracts_turn_observability() -> None:
     assert metrics["product_count"] == 1
     assert metrics["follow_up_count"] == 1
     assert metrics["retrieval_source"] is None
+    assert metrics["conversation_state_enabled"] is True
+    assert metrics["conversation_state_written"] is True
+    assert metrics["conversation_state_loaded_version"] == 3
+    assert metrics["grounding_status"] == "grounded"
+    assert metrics["grounding_safe_action"] == "show_cards"
+    assert metrics["grounding_reason_count"] == 1
+
+
+def test_summarize_chat_metrics_includes_conversation_state_diagnostics() -> None:
+    rows = [
+        {
+            "status": "success",
+            "workflow": "catalog",
+            "action_kind": "agentic_tools",
+            "action_completed": True,
+            "conversation_state_enabled": True,
+            "conversation_state_written": True,
+            "conversation_state_filter_merge_applied": True,
+            "conversation_state_loaded_version": 3,
+            "grounding_status": "grounded",
+            "grounding_safe_action": "show_cards",
+            "tone_repeat_hit": 1,
+            "tone_filler_stripped": 0,
+        },
+        {
+            "status": "fallback",
+            "workflow": "fallback",
+            "action_kind": "",
+            "action_completed": False,
+            "conversation_state_enabled": True,
+            "conversation_state_written": False,
+            "conversation_state_filter_merge_applied": False,
+            "conversation_state_loaded_version": 3,
+            "grounding_status": "weak",
+            "grounding_safe_action": "clarify",
+            "tone_repeat_hit": 0,
+            "tone_filler_stripped": 2,
+        },
+    ]
+
+    summary = qa_metrics.summarize_chat_metrics(rows)
+
+    assert summary["total_rows"] == 2
+    assert summary["conversation_state_enabled"] == 2
+    assert summary["conversation_state_written"] == 1
+    assert summary["conversation_state_filter_merge_applied"] == 1
+    assert summary["conversation_state_loaded_versions"] == {"3": 2}
+    assert summary["by_grounding_status"] == {"grounded": 1, "weak": 1}
+    assert summary["by_grounding_safe_action"] == {"clarify": 1, "show_cards": 1}
+    assert summary["tone_repeat_hit"] == 1
+    assert summary["tone_filler_stripped"] == 2
 
 
 @pytest.mark.asyncio

@@ -151,7 +151,10 @@ async def test_generate_contextual_component_message_uses_clarify_payload(
         source=ComponentSource.SQL,
         selected_components=[ComponentType.CLARIFY],
         debug={
-            "clarify_reason": "fallback_uncertain",
+            "clarify_reason": "fallback_vague_store_request",
+            "clarify_category": "vague_store_request",
+            "clarify_mode": "broad_help",
+            "clarify_best_effort_help": True,
             "clarify_questions": ["Which size are you looking for?"],
             "clarify_suggestions": ["Show 14g jewelry"],
         },
@@ -169,4 +172,47 @@ async def test_generate_contextual_component_message_uses_clarify_payload(
 
     assert message == "Which size are you looking for?"
     assert "clarification message" in str(captured["messages"][0]["content"]).lower()
-    assert "fallback_uncertain" in str(captured["messages"][1]["content"]).lower()
+    payload = str(captured["messages"][1]["content"]).lower()
+    assert "fallback_vague_store_request" in payload
+    assert "vague_store_request" in payload
+    assert "clarify_best_effort_help" in payload
+
+
+@pytest.mark.asyncio
+async def test_generate_contextual_component_message_defaults_rewrite_allowed_for_generic_clarify(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_generate_chat_json(*, messages, **kwargs):
+        captured["messages"] = messages
+        return {"message": "What detail should I use to continue?"}
+
+    context = ComponentContext(
+        user_text="help me",
+        locale="en-US",
+        workflow="fallback",
+        query_summary="help me",
+        source=ComponentSource.ERROR,
+        selected_components=[ComponentType.CLARIFY],
+        debug={
+            "clarify_reason": "missing_details",
+            "clarify_category": "general_clarify",
+            "clarify_mode": "broad_help",
+        },
+    )
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(settings, "CHAT_CONTEXTUAL_COMPONENT_COPY_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test", raising=False)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    message = await contextual_messages.generate_contextual_component_message(
+        kind="clarify",
+        context=context,
+    )
+
+    assert message == "What detail should I use to continue?"
+    payload = str(captured["messages"][1]["content"]).lower()
+    assert "clarify_rewrite_allowed" in payload
+    assert "true" in payload

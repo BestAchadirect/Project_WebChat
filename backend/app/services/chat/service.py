@@ -23,7 +23,8 @@ from app.schemas.chat import (
     ProductCard,
 )
 from app.services.catalog.product_search import CatalogProductSearchService
-from app.services.chat.agentic.orchestrator import AgentOrchestrator, AgentRunResult
+from app.services.chat.agentic.orchestrator import AgentOrchestrator, AgentRunInput, AgentRunResult
+from app.services.chat.runtime.search_plan import SearchPlan
 from app.services.chat.components.cache import component_cache
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.presentation import component_contract, public_response
@@ -516,13 +517,19 @@ class ChatService:
         run_id: str,
         channel: str,
         reply_language: str,
-    ) -> Optional[AgentRunResult]:
+        search_plan: SearchPlan | None = None,
+    ) -> AgentRunResult:
         history = await self.get_history(conversation_id=conversation_id, limit=8)
         orchestrator = self._new_agent_orchestrator(run_id=run_id, channel=channel)
         return await orchestrator.run(
-            user_text=user_text,
-            history=history,
-            reply_language=reply_language,
+            request=AgentRunInput(
+                user_text=user_text,
+                history=history,
+                reply_language=reply_language,
+                channel=channel,
+                run_id=run_id,
+                search_plan=search_plan,
+            ),
         )
 
 

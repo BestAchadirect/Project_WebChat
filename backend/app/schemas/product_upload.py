@@ -1,8 +1,9 @@
 from datetime import datetime
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.models.product_upload import ProductUploadStatus
 
@@ -20,8 +21,7 @@ class ProductUploadResponse(BaseModel):
     updated_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ProductUploadListResponse(BaseModel):

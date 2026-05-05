@@ -1,7 +1,9 @@
 from datetime import datetime
-from typing import Optional
 from uuid import UUID
-from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict
 
 from app.models.knowledge import KnowledgeUploadStatus
 
@@ -18,8 +20,7 @@ class KnowledgeUploadResponse(BaseModel):
     completed_at: Optional[datetime] = None
     articles_count: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class KnowledgeUploadListResponse(BaseModel):

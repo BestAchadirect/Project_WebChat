@@ -8,6 +8,7 @@ from app.services.chat.components.pipeline_runtime.state import PipelineWorkflow
 from app.services.chat.components.pipeline_runtime.workflow_detail import PipelineWorkflowDetailMixin
 from app.services.chat.components.types import ComponentSource, ComponentType
 from app.services.chat.presentation import product_presentation
+from app.services.chat.runtime.grounding import GroundingDecision, evaluate_catalog_grounding
 from app.services.chat.text_normalization import normalize_user_text
 
 
@@ -191,6 +192,82 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             spans["db_product_lookup_ms"] += (time.perf_counter() - resolver_started) * 1000.0
             debug_meta.update(resolver_meta)
             return products, resolver_meta
+
+    @classmethod
+    def _apply_catalog_grounding(
+            cls,
+            *,
+            state: PipelineWorkflowState,
+            debug_meta: Dict[str, Any],
+        ) -> None:
+            plan = state.decision.search_plan
+            if plan is None:
+                return
+            existing_ambiguity = str(state.decision.ambiguity_reason or "").strip()
+            if bool(debug_meta.get("semantic_approximate_rescue_used")) and list(state.presentation.canonical_products or []):
+                decision = GroundingDecision(
+                    status="weak",
+                    workflow=str(plan.workflow or "catalog"),
+                    confidence=0.45,
+                    reasons=["semantic_approximate_rescue"],
+                    allowed_product_ids=[
+                        cls._card_identifier(product)
+                        for product in list(state.presentation.canonical_products or [])
+                        if cls._card_identifier(product)
+                    ],
+                    safe_customer_action="show_close_matches",
+                    debug={
+                        "candidate_product_count": len(list(state.presentation.canonical_products or [])),
+                        "grounded_product_count": len(list(state.presentation.canonical_products or [])),
+                    },
+                )
+                state.decision.grounding_decision = decision
+                debug_meta["grounding"] = decision.to_debug_dict()
+                debug_meta["grounding_status"] = decision.status
+                debug_meta["grounding_safe_action"] = decision.safe_customer_action
+                debug_meta["grounding_reasons"] = list(decision.reasons)
+                return
+            decision = evaluate_catalog_grounding(
+                plan=plan,
+                products=list(state.presentation.canonical_products or []),
+                ambiguity_reason=existing_ambiguity,
+            )
+            state.decision.grounding_decision = decision
+            debug_meta["grounding"] = decision.to_debug_dict()
+            debug_meta["grounding_status"] = decision.status
+            debug_meta["grounding_safe_action"] = decision.safe_customer_action
+            debug_meta["grounding_reasons"] = list(decision.reasons)
+
+            allowed_ids = {str(item).strip() for item in list(decision.allowed_product_ids or []) if str(item).strip()}
+            if allowed_ids and decision.status == "grounded":
+                grounded_products = [
+                    product
+                    for product in list(state.presentation.canonical_products or [])
+                    if cls._card_identifier(product) in allowed_ids
+                ]
+                if len(grounded_products) != len(list(state.presentation.canonical_products or [])):
+                    state.presentation.canonical_products = grounded_products
+                    state.catalog.product_ids = [cls._card_identifier(card) for card in grounded_products]
+                    state.retrieval.result_count = len(grounded_products)
+                    debug_meta["grounding_filtered_product_count"] = len(grounded_products)
+                return
+
+            if existing_ambiguity:
+                return
+
+            if decision.safe_customer_action in {"clarify", "no_match", "fallback"}:
+                reason = (
+                    "grounding_no_match"
+                    if decision.safe_customer_action == "no_match"
+                    else "grounding_needs_clarification"
+                )
+                state.decision.ambiguity_reason = reason
+                state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                state.presentation.canonical_products = []
+                state.catalog.product_ids = []
+                state.retrieval.result_count = 0
+                state.retrieval.source = ComponentSource.ERROR
+                debug_meta["grounding_blocked_response"] = True
 
     @staticmethod
     def _build_catalog_pagination_context(
@@ -413,5 +490,9 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                 state=state,
                 detail=detail,
                 display_limit=display_limit,
+                debug_meta=debug_meta,
+            )
+            self._apply_catalog_grounding(
+                state=state,
                 debug_meta=debug_meta,
             )
