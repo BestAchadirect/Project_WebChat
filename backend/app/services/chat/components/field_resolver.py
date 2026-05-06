@@ -124,12 +124,27 @@ class FieldDependencyResolver:
 
         if enrichment_used and by_id:
             enrich_stmt = (
-                select(ProductAttributeValue.product_id, AttributeDefinition.name, ProductAttributeValue.value)
+                select(
+                    ProductAttributeValue.product_id,
+                    AttributeDefinition.name,
+                    AttributeDefinition.is_multivalue,
+                    ProductAttributeValue.value,
+                    ProductAttributeValue.value_norm,
+                    ProductAttributeValue.id,
+                )
                 .join(AttributeDefinition, AttributeDefinition.id == ProductAttributeValue.attribute_id)
                 .where(ProductAttributeValue.product_id.in_(list(by_id.keys())))
+                .order_by(
+                    ProductAttributeValue.product_id.asc(),
+                    AttributeDefinition.name.asc(),
+                    ProductAttributeValue.value_norm.asc().nulls_last(),
+                    ProductAttributeValue.id.asc(),
+                )
             )
             enrich_rows = (await self.db.execute(enrich_stmt)).all()
             db_round_trips += 1
+            multi_values: Dict[Tuple[UUID, str], List[str]] = {}
+            multi_seen: Dict[Tuple[UUID, str], set[str]] = {}
             for row in enrich_rows:
                 product_id = row.product_id
                 if product_id not in by_id:
@@ -141,11 +156,27 @@ class FieldDependencyResolver:
                 canonical = by_id[product_id]
                 if value is None:
                     continue
-                canonical.attributes[name] = value
+                if bool(row.is_multivalue):
+                    bucket_key = (product_id, name)
+                    dedupe_key = str(row.value_norm or value).strip().lower()
+                    if not dedupe_key:
+                        continue
+                    seen = multi_seen.setdefault(bucket_key, set())
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    multi_values.setdefault(bucket_key, []).append(str(value))
+                    continue
+                if name not in canonical.attributes:
+                    canonical.attributes[name] = value
                 if name == "material" and not canonical.material:
                     canonical.material = str(value)
                 if name == "gauge" and not canonical.gauge:
                     canonical.gauge = str(value)
+            for (product_id, name), values in multi_values.items():
+                if product_id not in by_id or not values:
+                    continue
+                by_id[product_id].attributes[name] = ";;".join(values)
 
             if cache is not None:
                 for canonical in by_id.values():

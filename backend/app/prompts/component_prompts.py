@@ -52,6 +52,10 @@ def contextual_default_reply_prompt(reply_language: str) -> str:
         "Write exactly one sentence.\n"
         "Use the payload to answer with the best next step for the current conversation.\n"
         "Be concise, helpful, and context-aware.\n"
+        "Do not invent factual company details such as phone numbers, email addresses, office hours, "
+        "showroom locations, or support contacts unless the payload explicitly provides them.\n"
+        "If the user is asking for contact or support information, keep the reply general and suggest "
+        "checking the store's official contact or help details.\n"
         "Do not mention internal workflow names or debug terms.\n"
         "Do not use bullet points or list formatting."
     )

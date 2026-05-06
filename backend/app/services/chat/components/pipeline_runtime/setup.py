@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -10,6 +9,7 @@ from app.services.chat.components.types import ComponentSource
 from app.services.chat.parsing import parser_rule_cache
 from app.services.chat.parsing.detail_query_parser import DetailQueryParser
 from app.services.chat.parsing.llm_attribute_extractor import enrich_product_attribute_filters
+from app.services.catalog.attributes_service import eav_service
 from app.services.chat.presentation import reply_tone
 from app.services.chat.presentation import product_presentation
 from app.services.chat.routing import routing_policy
@@ -19,114 +19,6 @@ from app.services.chat.runtime.capabilities import ChatRuntimeCapabilities, buil
 from app.services.chat.runtime import alias_cache, conversation_state
 from app.services.chat.runtime.search_plan import SearchPlan, build_search_plan
 from app.services.chat.text_normalization import normalize_user_text
-
-_CONTEXTUAL_PRODUCT_FOLLOW_UP_MARKERS = (
-    "what about",
-    "how about",
-    "see more",
-    "more of this",
-    "the other",
-    "another",
-    "same",
-    " one",
-    " ones",
-)
-_CONTEXT_MERGE_ANCHOR_KEYS = (
-    "jewelry_type",
-    "category",
-    "body_part",
-    "gauge",
-    "threading",
-    "size",
-    "diameter",
-    "length",
-)
-_CONTEXTUAL_FILTER_HINTS = (
-    ("rose gold", "material", "rose gold"),
-    ("titanium", "material", "titanium"),
-    ("steel", "material", "steel"),
-    ("gold", "material", "gold"),
-    ("silver", "color", "silver"),
-    ("black", "color", "black"),
-    ("white", "color", "white"),
-    ("clear", "color", "clear"),
-    ("opal color", "opal_color", "opal"),
-)
-_CATALOG_FILTER_HINTS = _CONTEXTUAL_FILTER_HINTS + (
-    ("nose screw", "jewelry_type", "nose screw"),
-    ("nose stud", "jewelry_type", "nose stud"),
-    ("labrets", "jewelry_type", "labret"),
-    ("labret", "jewelry_type", "labret"),
-    ("barbells", "jewelry_type", "barbell"),
-    ("barbell", "jewelry_type", "barbell"),
-    ("rings", "jewelry_type", "ring"),
-    ("ring", "jewelry_type", "ring"),
-)
-
-
-def _looks_like_contextual_product_follow_up(text: str) -> bool:
-    normalized = " ".join(str(text or "").strip().lower().split())
-    if not normalized:
-        return False
-    return any(marker in normalized for marker in _CONTEXTUAL_PRODUCT_FOLLOW_UP_MARKERS)
-
-
-def _contains_filter_hint(text: str, needle: str) -> bool:
-    clean_needle = str(needle or "").strip().lower()
-    if not clean_needle:
-        return False
-    return bool(re.search(rf"(?<![a-z0-9]){re.escape(clean_needle)}(?![a-z0-9])", text))
-
-
-def _merge_contextual_catalog_filters(
-    *,
-    current_filters: Dict[str, Any],
-    previous_filters: Dict[str, Any],
-    user_text: str,
-) -> tuple[Dict[str, Any], bool]:
-    if not previous_filters:
-        return dict(current_filters or {}), False
-    if not _looks_like_contextual_product_follow_up(user_text):
-        return dict(current_filters or {}), False
-
-    merged = dict(current_filters or {})
-    normalized = " ".join(str(user_text or "").strip().lower().split())
-    for needle, key, value in _CONTEXTUAL_FILTER_HINTS:
-        if key in merged:
-            continue
-        if _contains_filter_hint(normalized, needle):
-            merged[key] = value
-            break
-    if not merged and previous_filters:
-        merged = dict(previous_filters or {})
-    if not merged:
-        return dict(current_filters or {}), False
-
-    for key in _CONTEXT_MERGE_ANCHOR_KEYS:
-        if key in merged:
-            continue
-        previous_value = str(previous_filters.get(key) or "").strip()
-        if previous_value:
-            merged[key] = previous_value
-    return merged, merged != dict(current_filters or {})
-
-
-def _merge_catalog_filter_hints(
-    *,
-    current_filters: Dict[str, Any],
-    user_text: str,
-) -> tuple[Dict[str, Any], bool]:
-    normalized = " ".join(str(user_text or "").strip().lower().split())
-    if not normalized:
-        return dict(current_filters or {}), False
-    merged = dict(current_filters or {})
-    for needle, key, value in _CATALOG_FILTER_HINTS:
-        if key in merged:
-            continue
-        if _contains_filter_hint(normalized, needle):
-            merged[key] = value
-    return merged, merged != dict(current_filters or {})
-
 
 def _pending_task_is_filled_by_current_turn(
     *,
@@ -253,12 +145,20 @@ class PipelineSetupMixin:
 
             alias_map = await alias_cache.get_alias_map(self.db)
             parser_rules = await parser_rule_cache.get_parser_rules(self.db)
+            searchable_attribute_names: List[str] = []
+            if hasattr(self.db, "execute"):
+                try:
+                    searchable_attribute_names = await eav_service.get_searchable_attribute_names(self.db)
+                except Exception:
+                    searchable_attribute_names = []
             if detail_override is None:
                 detail = await DetailQueryParser.parse_async(
                     user_text=text,
                     nlu_data={"workflow": "catalog"},
                     alias_map=alias_map,
                     parser_rules=parser_rules,
+                    db=self.db,
+                    searchable_attribute_names=searchable_attribute_names,
                 )
                 llm_call_count = 1
             else:
@@ -267,27 +167,11 @@ class PipelineSetupMixin:
 
             conversation_state_enabled = bool(capabilities.chat_conversation_state_enabled)
             state_working: Optional[Dict[str, Any]] = None
-            conversation_state_filter_merge_applied = False
-            hinted_filters, hint_applied = _merge_catalog_filter_hints(
-                current_filters=dict(detail.attribute_filters or {}),
-                user_text=text,
-            )
-            if hint_applied:
-                detail = replace(detail, attribute_filters=hinted_filters)
             if conversation_state_enabled:
                 state_working = await self._load_conversation_state(conversation_id=conversation_id)
             conversation_memory = conversation_state.load_memory_state(state_working)
             conversation_continuation = conversation_state.load_continuation_state(state_working)
             pending_task = conversation_state.load_pending_task(state_working)
-            if conversation_state_enabled and state_working is not None:
-                merged_filters, merge_applied = _merge_contextual_catalog_filters(
-                    current_filters=dict(detail.attribute_filters or {}),
-                    previous_filters=dict(conversation_memory.last_attribute_filters or {}),
-                    user_text=text,
-                )
-                if merge_applied:
-                    detail = replace(detail, attribute_filters=merged_filters)
-                    conversation_state_filter_merge_applied = True
             catalog_pagination_requested = bool(client_action_norm == "catalog_pagination")
             catalog_pagination_stale_requested = False
             catalog_pagination_offset = int(conversation_continuation.last_display_offset or 0)
@@ -335,7 +219,7 @@ class PipelineSetupMixin:
                 text=text,
                 detail=detail,
                 sku_tokens=unique_sku_tokens,
-                contextual_filters_applied=bool(conversation_state_filter_merge_applied),
+                contextual_filters_applied=False,
             )
             route_decision = route_decision_override
             if route_decision is None:
@@ -362,19 +246,6 @@ class PipelineSetupMixin:
                     knowledge_query="",
                     reason="catalog_pagination_continuation",
                     confidence=max(float(route_decision.confidence or 0.0), 0.9),
-                )
-            elif route_decision.workflow == "catalog" and not product_anchor_present:
-                route_decision = replace(
-                    route_decision,
-                    workflow="fallback",
-                    source=ComponentSource.ERROR,
-                    needs_products=False,
-                    needs_knowledge=False,
-                    needs_clarification=True,
-                    store_overview_request=False,
-                    knowledge_query="",
-                    reason="fallback_vague_store_request",
-                    confidence=min(float(route_decision.confidence or 0.0), 0.5),
                 )
             pending_task_resume: Dict[str, Any] = {}
             pending_task_cleared = False
@@ -424,12 +295,8 @@ class PipelineSetupMixin:
                     "last_attribute_filters": dict(conversation_memory.last_attribute_filters or {}),
                     "last_route": str(conversation_memory.last_route or ""),
                 },
-                context_allowed=bool(conversation_state_filter_merge_applied),
-                context_reason=(
-                    "contextual_filter_merge"
-                    if conversation_state_filter_merge_applied
-                    else ""
-                ),
+                context_allowed=False,
+                context_reason="",
             )
             execution_state = PipelineExecutionState(
                 debug_meta={
@@ -452,7 +319,6 @@ class PipelineSetupMixin:
                     "routing_selection_source": str(routing_selection_source or "component_pipeline"),
                     "store_overview_request": bool(route_decision.store_overview_request),
                     "conversation_state_enabled": conversation_state_enabled,
-                    "conversation_state_filter_merge_applied": bool(conversation_state_filter_merge_applied),
                     "conversation_state_loaded_version": int(debug_state_version),
                     "conversation_state_written": False,
                     "pending_task_loaded": bool(pending_task),

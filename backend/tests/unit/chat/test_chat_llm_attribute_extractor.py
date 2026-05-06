@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -146,6 +147,81 @@ async def test_infer_detail_query_does_not_force_clarify_when_llm_fails(
     assert result.semantic_hints == []
     assert result.clarify_focus == ""
     assert result.confidence == 0.0
+
+
+@pytest.mark.asyncio
+async def test_infer_detail_query_uses_only_searchable_attribute_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_payload: dict[str, Any] = {}
+
+    async def fake_generate_chat_json(*, messages, model, temperature, max_tokens, usage_kind, **extra):
+        seen_payload.update(json.loads(messages[-1]["content"]))
+        return {
+            "requested_fields": ["price", "stock"],
+            "attribute_filters": {
+                "body_part": "nose",
+                "opal_color": "blue",
+                "material": "titanium",
+            },
+            "semantic_hints": ["opal color"],
+            "clarify_focus": "",
+            "wants_image": False,
+            "confidence": 0.91,
+        }
+
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    result = await infer_detail_query(
+        user_text="Show titanium nose jewelry with blue opal color",
+        workflow="catalog",
+        alias_map={},
+        parser_rules=_rules(),
+        existing_filters={},
+        searchable_attribute_names=["material"],
+    )
+
+    assert seen_payload["searchable_attributes"] == ["material"]
+    assert result.requested_fields == ["price", "stock"]
+    assert result.attribute_filters == {"material": "titanium"}
+    assert result.semantic_hints == ["opal color"]
+    assert result.debug["catalog_allowed_soft_attributes"] == ["material"]
+
+
+@pytest.mark.asyncio
+async def test_infer_detail_query_canonicalizes_legacy_body_part_when_searchable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rules = build_rule_set(
+        requested_field_patterns={},
+        value_extract_patterns={},
+        detection_attribute_order=[],
+        allowed_attribute_filters=["body_location"],
+    )
+
+    async def fake_generate_chat_json(*, messages, model, temperature, max_tokens, usage_kind, **extra):
+        return {
+            "requested_fields": [],
+            "attribute_filters": {"body_part": "nose"},
+            "semantic_hints": [],
+            "clarify_focus": "",
+            "wants_image": False,
+            "confidence": 0.92,
+        }
+
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    result = await infer_detail_query(
+        user_text="Show nose jewelry",
+        workflow="catalog",
+        alias_map={},
+        parser_rules=rules,
+        existing_filters={},
+        searchable_attribute_names=["body_location"],
+    )
+
+    assert result.attribute_filters == {"body_location": "nose"}
+    assert result.debug["catalog_allowed_exact_attributes"] == ["body_location"]
 
 
 @pytest.mark.asyncio

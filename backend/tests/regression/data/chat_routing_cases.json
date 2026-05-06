@@ -12,7 +12,7 @@
       "sku_tokens": []
     },
     "expected": {
-      "workflow": "off_topic",
+      "workflow": "general_talking",
       "execution_mode": "component",
       "needs_products": false,
       "needs_knowledge": false,

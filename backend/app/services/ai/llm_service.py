@@ -241,6 +241,16 @@ class LLMService:
         )
 
     @staticmethod
+    def _should_retry_without_parameter(exc: Exception, parameter: str) -> bool:
+        message = str(exc or "").lower()
+        clean_parameter = str(parameter or "").strip().lower()
+        return bool(
+            clean_parameter
+            and clean_parameter in message
+            and ("unsupported parameter" in message or "unknown parameter" in message or "unrecognized" in message)
+        )
+
+    @staticmethod
     def _uses_gpt5_compat_mode(model: str) -> bool:
         return str(model or "").strip().lower().startswith("gpt-5")
 
@@ -266,6 +276,7 @@ class LLMService:
             request[token_key] = int(max_tokens)
         temperature_adjusted = False
         token_adjusted = False
+        reasoning_effort_adjusted = False
 
         while True:
             try:
@@ -281,6 +292,18 @@ class LLMService:
                     token_adjusted = True
                     logger.info(
                         "Retrying chat completion with max_completion_tokens for model compatibility",
+                        extra={"model": model},
+                    )
+                    continue
+                if (
+                    not reasoning_effort_adjusted
+                    and "reasoning_effort" in request
+                    and self._should_retry_without_parameter(exc, "reasoning_effort")
+                ):
+                    request.pop("reasoning_effort", None)
+                    reasoning_effort_adjusted = True
+                    logger.info(
+                        "Retrying chat completion without reasoning_effort for model compatibility",
                         extra={"model": model},
                     )
                     continue

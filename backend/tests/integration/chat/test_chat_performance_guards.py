@@ -259,7 +259,20 @@ async def test_component_pipeline_fake_nipple_triggers_suitability_clarify(
         redis_cache=_RedisStub(),
     )
 
-    monkeypatch.setattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_ENABLED", False, raising=False)
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
+        return DetailQuery(
+            requested_fields=[],
+            attribute_filters={},
+            semantic_hints=["unclear body part"],
+            clarify_focus="body_part",
+            wants_image=False,
+            is_detail_request=False,
+        )
+
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
+        fake_parse,
+    )
 
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="fake nipple", locale="en-US"),
@@ -269,7 +282,7 @@ async def test_component_pipeline_fake_nipple_triggers_suitability_clarify(
     )
 
     assert any(component.type.value == "clarify" for component in result.response.components)
-    assert result.debug.get("clarify_reason") == "structured_no_match"
+    assert result.debug.get("clarify_reason") == "semantic_concept_unclear"
     assert result.response.routing.needs_clarification is True
 
 
@@ -817,10 +830,6 @@ async def test_component_pipeline_semantic_ambiguity_skips_attribute_list_target
         fake_parse,
     )
     monkeypatch.setattr(
-        "app.services.chat.components.pipeline_runtime.core.detect_attribute_list_target",
-        fail_if_called,
-    )
-    monkeypatch.setattr(
         "app.services.chat.components.pipeline_runtime.core.infer_attribute_list_target",
         fail_if_called,
     )
@@ -956,8 +965,25 @@ async def test_component_pipeline_store_overview_knowledge_passes_retrieval_prof
         captured["answer_store_overview_request"] = kwargs.get("store_overview_request")
         return "Acha Co., Ltd. has a showroom in Bangkok.", False
 
+    async def fake_plan_knowledge_retrieval(**kwargs):
+        return {
+            "query_text": "What is your company?",
+            "topic": "store_overview",
+            "must_tags": [],
+            "boost_tags": ["store_overview"],
+            "required_evidence": ["company overview"],
+            "forbidden_topics": [],
+            "store_overview_request": True,
+            "answer_style": {"max_sentences": 2},
+        }
+
+    async def fake_select_knowledge_sources_with_llm(**kwargs):
+        return list(kwargs.get("candidates", []) or [])[:3]
+
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
     monkeypatch.setattr(pipeline, "_knowledge_answer_once", fake_knowledge_answer_once)
+    monkeypatch.setattr(pipeline, "_plan_knowledge_retrieval", fake_plan_knowledge_retrieval)
+    monkeypatch.setattr(pipeline, "_select_knowledge_sources_with_llm", fake_select_knowledge_sources_with_llm)
 
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="What is your company?", locale="en-US"),

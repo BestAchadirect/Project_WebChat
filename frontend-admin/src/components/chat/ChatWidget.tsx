@@ -721,7 +721,7 @@ const AssistantMarkdown: React.FC<{ text: string; className?: string }> = ({ tex
     if (!markdown) return null;
     return (
         <div
-            className={`${className || ''} break-words [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_code]:rounded [&_code]:bg-black/5 [&_code]:px-1 [&_code]:py-0.5 [&_a]:underline`}
+            className={`${className || ''} !whitespace-normal !leading-snug break-words [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_li]:mb-1.5 [&_li:last-child]:mb-0 [&_code]:rounded [&_code]:bg-black/5 [&_code]:px-1 [&_code]:py-0.5 [&_a]:underline`}
         >
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
         </div>
@@ -1883,7 +1883,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                                     onClick={() => handleOpenTicket(ticket)}
                                                     className="bg-white border border-gray-100 rounded-xl p-4 shadow-sm hover:shadow-md transition-all cursor-pointer hover:border-blue-100 group"
                                                 >
-                                                    <div className="flex justify-between items-start mb-2">
+                                                    <div className="flex justify-between items-start mb-1">
                                                         <div className="flex items-center gap-2">
                                                             <span className="text-[10px] font-black text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{new Date(ticket.created_at).getFullYear()}-{String(ticket.id).padStart(4, '0')}</span>
                                                             <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-lg ${ticket.status === 'pending' ? 'bg-orange-100 text-orange-600' :

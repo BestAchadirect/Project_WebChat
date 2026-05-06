@@ -357,11 +357,15 @@ class PipelineSupportMixin:
                         "Start with the direct answer. Do not use filler like 'Here is what I found'. "
                         "If multiple sources support the same answer, synthesize them into one short summary before replying. "
                         "Do not answer source-by-source or list snippets separately. "
-                        "Rewrite FAQ bullets or headings into plain prose instead of copying them verbatim. "
+                        "Rewrite FAQ bullets or headings into customer-friendly wording instead of copying them verbatim. "
                         "Keep the answer concise and practical, but preserve exact numbers, limits, dates, and conditions. "
                         "Do not invent products, SKUs, or policies not in context. "
                         "If the context is not enough, ask one short clarifying question instead of guessing. "
-                        "Prefer one short paragraph over a bullet list unless the user explicitly asks for bullets. "
+                        "For one-topic answers, use one short paragraph. "
+                        "For multi-topic questions or answers that combine two or more distinct policy areas, use compact Markdown with bold section headings and 1-3 bullets per section. "
+                        "Use section labels from the user's requested topics. If evidence is missing for one requested topic, include a short section for that topic that says the available context does not confirm it. "
+                        "Do not return a long single paragraph for multi-topic answers. "
+                        "Keep Markdown simple: bold headings and bullets only unless the user asks for another format. "
                         "Return JSON with a single key `reply`."
                     ),
                 },
@@ -372,7 +376,7 @@ class PipelineSupportMixin:
                         f"Question: {question}\n"
                         f"Source count: {len(list(sources or []))}\n"
                         f"Context:\n{snippets}\n\n"
-                        "Respond in JSON."
+                        "Respond in JSON. The reply value may contain Markdown."
                     ),
                 },
             ]
@@ -393,7 +397,7 @@ class PipelineSupportMixin:
                     sources=sources,
                 )
                 return answer, False
-            answer = self._summarize_knowledge_reply(str(data.get("reply", "") or "").strip())
+            answer = str(data.get("reply", "") or "").strip()
             unsupported_facts = self._unsupported_knowledge_facts(
                 answer=answer,
                 sources=sources,

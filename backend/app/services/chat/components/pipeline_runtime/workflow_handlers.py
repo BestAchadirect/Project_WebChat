@@ -29,6 +29,19 @@ class PipelineWorkflowHandlersMixin(PipelineWorkflowCatalogMixin, PipelineWorkfl
                     getattr(state.decision, "response_policy", "") or debug_meta.get("response_policy") or ""
                 ).strip().lower()
                 internal = str(internal_workflow or getattr(state.decision, "internal_workflow", "") or "").strip().lower()
+                if workflow == "general_talking" and (
+                    intent == "knowledge_policy"
+                    or internal in {"company_info", "policy_info"}
+                    or response_policy == "answer_from_retrieved_data"
+                ):
+                    state.decision.ambiguity_reason = "knowledge_unavailable"
+                    state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                    state.knowledge.answer = ""
+                    state.retrieval.source = ComponentSource.ERROR
+                    state.retrieval.result_count = 0
+                    debug_meta["terminal_reply_blocked"] = True
+                    debug_meta["terminal_reply_blocked_reason"] = "retrieval_required"
+                    return True, 0
                 terminal_kind = "default" if workflow == "general_talking" else "off_topic"
                 usage_scope = (
                     "body jewelry products, stock, pricing, materials, sizes/gauge, and store policies/info"

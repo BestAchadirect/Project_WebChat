@@ -286,6 +286,7 @@ class PipelineCatalogSearchMixin:
         semantic_guardrail_reason = ""
         semantic_hard_constraint_rejection_reason = ""
         semantic_result_source = ComponentSource.VECTOR
+        structured_first_hit = False
         allow_semantic_rescue = self._should_allow_semantic_rescue(
             workflow=workflow,
             detail=detail,
@@ -318,7 +319,39 @@ class PipelineCatalogSearchMixin:
                 semantic_found=retrieval_source == ComponentSource.VECTOR and bool(product_ids),
             )
         else:
-            if int(capabilities.chat_hard_max_embeddings_per_request) > 0:
+            if workflow == "catalog" and (
+                unique_sku_tokens
+                or any(str(value or "").strip() for value in dict(detail.attribute_filters or {}).values())
+            ):
+                try:
+                    structured_started = time.perf_counter()
+                    structured_result, _structured_meta = await self._catalog_search.structured_search(
+                        sku_token=unique_sku_tokens[0] if unique_sku_tokens else "",
+                        attribute_filters=dict(detail.attribute_filters or {}),
+                        limit=result_fetch_limit,
+                        candidate_cap=int(capabilities.chat_structured_candidate_cap),
+                        catalog_version=str(capabilities.chat_catalog_version),
+                        return_ids_only=True,
+                    )
+                    spans["db_product_lookup_ms"] += (time.perf_counter() - structured_started) * 1000.0
+                    structured_ids = list(getattr(structured_result, "product_ids", None) or [])
+                    debug_meta["semantic_structured_first_used"] = True
+                    debug_meta["semantic_structured_first_hit"] = bool(structured_ids)
+                    if structured_ids:
+                        structured_first_hit = True
+                        product_ids = structured_ids
+                        state.catalog.product_ids = list(product_ids)
+                        state.retrieval.result_count = len(product_ids)
+                        retrieval_source = ComponentSource.SQL
+                        semantic_result_source = ComponentSource.SQL
+                        semantic_best_distance = 0.0
+                        semantic_exact_lookup_used = bool(unique_sku_tokens)
+                        semantic_guardrail_used = True
+                        semantic_guardrail_reason = "structured_filter_lookup"
+                except Exception as exc:
+                    debug_meta["semantic_structured_first_error"] = str(exc)
+
+            if not product_ids and int(capabilities.chat_hard_max_embeddings_per_request) > 0:
                 retry_max = max(0, int(capabilities.chat_embedding_retry_max))
                 for attempt in range(retry_max + 1):
                     try:
@@ -526,7 +559,10 @@ class PipelineCatalogSearchMixin:
 
             lexical_search = getattr(self._catalog_search, "lexical_search", None)
             if callable(lexical_search) and workflow == "catalog":
-                should_run_lexical = bool(semantic_hints or not product_ids or (allow_semantic_rescue and hard_filters))
+                should_run_lexical = bool(
+                    not structured_first_hit
+                    and (semantic_hints or not product_ids or (allow_semantic_rescue and hard_filters))
+                )
                 if should_run_lexical:
                     try:
                         had_vector_candidates = bool(semantic_cards or product_ids)

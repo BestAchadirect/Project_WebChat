@@ -1149,12 +1149,16 @@ async def test_component_pipeline_knowledge_answer_prompt_is_more_conversational
     messages = list(captured["messages"] or [])
     system_prompt = str(messages[0]["content"])
     assert "Prefer the enrichment summary when it is present" in system_prompt
-    assert "Rewrite FAQ bullets or headings into plain prose" in system_prompt
-    assert "Prefer one short paragraph over a bullet list" in system_prompt
+    assert "Rewrite FAQ bullets or headings into customer-friendly wording" in system_prompt
+    assert "For one-topic answers, use one short paragraph" in system_prompt
+    assert "For multi-topic questions" in system_prompt
+    assert "compact Markdown with bold section headings" in system_prompt
+    assert "Do not return a long single paragraph for multi-topic answers" in system_prompt
     assert "synthesize them into one short summary" in system_prompt
 
     user_prompt = str(messages[1]["content"])
     assert "Source count: 1" in user_prompt
+    assert "reply value may contain Markdown" in user_prompt
 
 
 def test_component_pipeline_polish_knowledge_answer_adds_friendly_intro_for_headings() -> None:

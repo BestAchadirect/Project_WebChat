@@ -4,8 +4,6 @@ import html
 import re
 from typing import Any, Dict, List, Sequence
 
-from app.utils.synonym_rules import SEARCH_SYNONYMS, normalize_family_value
-
 DEFAULT_ATTRIBUTE_COLUMNS = [
     "body_part",
     "feature",
@@ -67,7 +65,7 @@ def normalize_keyword(value: Any) -> str:
 
 
 def normalize_material(value: str) -> str:
-    return normalize_family_value(family="material", value=value) or value.strip()
+    return value.strip()
 
 
 def normalize_gauge(value: str) -> str:
@@ -81,27 +79,27 @@ def normalize_gauge(value: str) -> str:
 
 
 def normalize_threading(value: str) -> str:
-    return normalize_family_value(family="threading", value=value) or value.strip()
+    return value.strip()
 
 
 def normalize_presentation_type(value: str) -> str:
-    return normalize_family_value(family="presentation_type", value=value) or value.strip()
+    return value.strip()
 
 
 def normalize_body_part(value: str) -> str:
-    return normalize_family_value(family="body_part", value=value) or value.strip()
+    return value.strip()
 
 
 def normalize_theme(value: str) -> str:
-    return normalize_family_value(family="theme", value=value) or value.strip()
+    return value.strip()
 
 
 def normalize_feature(value: str) -> str:
-    return normalize_family_value(family="feature", value=value) or value.strip()
+    return value.strip()
 
 
 def normalize_jewelry_type(value: str) -> str:
-    return normalize_family_value(family="jewelry_type", value=value) or value.strip()
+    return value.strip()
 
 
 def normalize_attribute_value(key: str, value: Any) -> Any:
@@ -129,24 +127,6 @@ def normalize_attribute_value(key: str, value: Any) -> Any:
     if key == "jewelry_type":
         return normalize_jewelry_type(text)
     return text
-
-
-def build_search_synonyms(
-    attributes: Dict[str, Any],
-    *,
-    keyword_columns: Sequence[str] = DEFAULT_SEARCH_KEYWORD_COLUMNS,
-) -> List[str]:
-    synonyms: List[str] = []
-    for key in keyword_columns:
-        value = attributes.get(key)
-        if not isinstance(value, str) or not value.strip():
-            continue
-        canonical = value.strip().lower()
-        for synonym in SEARCH_SYNONYMS.get(canonical, []):
-            synonyms.append(synonym)
-        if key == "gauge" and canonical.endswith("g"):
-            synonyms.append(f"{canonical[:-1]} gauge")
-    return synonyms
 
 
 def build_search_keywords(

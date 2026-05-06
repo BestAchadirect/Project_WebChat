@@ -1,0 +1,313 @@
+{
+  "version": 1,
+  "description": "Company knowledge topic coverage prompts for live chatbot and regression testing.",
+  "topics": [
+    {
+      "topic": "Compliance",
+      "active": true,
+      "expected_titles": ["What temperature do you use for sterilized items?"],
+      "messages": [
+        "What temperature do you use for sterilized items?",
+        "How hot do you sterilize products?",
+        "Do you sterilize items before shipping?",
+        "What sterilization temperature do you use?",
+        "Can you tell me your sterilization process?",
+        "Are sterilized items heated to a specific temperature?",
+        "What temperature is used for sterilized jewelry?",
+        "Is there a standard sterilization temperature?",
+        "How do you handle sterilized items?",
+        "Do your sterilized products follow a temperature policy?"
+      ]
+    },
+    {
+      "topic": "Contact",
+      "active": true,
+      "expected_titles": ["How can I contact Acha?"],
+      "messages": [
+        "How can I contact you?",
+        "What is your sales email?",
+        "Can I call your company?",
+        "What is your phone number?",
+        "Where is your showroom?",
+        "What are your showroom hours?",
+        "How long do you take to reply to emails?",
+        "Can I visit your Bangkok showroom?",
+        "What is your company address?",
+        "How do I reach your sales team?"
+      ]
+    },
+    {
+      "topic": "Custom Orders",
+      "active": true,
+      "expected_titles": ["Custom Manufactured Items"],
+      "messages": [
+        "Can you make custom manufactured items?",
+        "Do you accept custom orders?",
+        "Can I request a special design?",
+        "Can your factory make items to my specification?",
+        "Do you handle made-to-order products?",
+        "Can I customize body jewelry?",
+        "What is the process for custom manufactured items?",
+        "Can your sales team help with custom requests?",
+        "Can I order a product that is not listed?",
+        "Do you support private custom manufacturing?"
+      ]
+    },
+    {
+      "topic": "Customs",
+      "active": true,
+      "expected_titles": ["How much are the import taxes?", "Import Taxes and Other"],
+      "messages": [
+        "Who pays import taxes?",
+        "How much are import taxes?",
+        "Are customs duties included in the price?",
+        "Will I need to pay duties when the shipment arrives?",
+        "Can you estimate customs fees for my country?",
+        "Do you pay import taxes for customers?",
+        "Are brokerage fees my responsibility?",
+        "What happens with customs charges?",
+        "Do I need to pay tax when receiving the package?",
+        "Can sales help estimate import fees?"
+      ]
+    },
+    {
+      "topic": "Discounts",
+      "active": true,
+      "expected_titles": ["If I place a large order, do I get a discount?"],
+      "messages": [
+        "Do I get a discount for a large order?",
+        "Can you give wholesale discounts for bulk orders?",
+        "Is there a discount if I buy a lot?",
+        "Do big orders get better pricing?",
+        "Can I ask sales for a volume discount?",
+        "Do you offer bulk order discounts?",
+        "How do discounts work for large purchases?",
+        "Can I negotiate price for a big order?",
+        "Do you have quantity discounts?",
+        "If I place a large order, can I get a lower price?"
+      ]
+    },
+    {
+      "topic": "Marketing Assets",
+      "active": true,
+      "expected_titles": ["Can you provide pictures of products without the Acha watermark?"],
+      "messages": [
+        "Can you provide pictures without the Acha watermark?",
+        "Can I get product images without your watermark?",
+        "Do you have high-definition product photos?",
+        "Can I use your product images on my website?",
+        "When can I download images without watermark?",
+        "Are watermark-free images available before purchase?",
+        "Can my sales representative send product photos?",
+        "Do you provide marketing images for purchased products?",
+        "Can I request clean product photos after ordering?",
+        "What is your policy for product image assets?"
+      ]
+    },
+    {
+      "topic": "Ordering",
+      "active": true,
+      "expected_titles": ["Can I add items to an existing order after checkout?", "What is your minimum order?"],
+      "messages": [
+        "What is your minimum order?",
+        "Can I add items after checkout?",
+        "What is the minimum website order amount?",
+        "Is there a different minimum for email orders?",
+        "What is the showroom minimum order?",
+        "Can first-time customers order below the minimum?",
+        "Can I modify my order after placing it?",
+        "Can I add more products to an existing order?",
+        "Do future orders need to meet the minimum?",
+        "What are your order minimum rules?"
+      ]
+    },
+    {
+      "topic": "Payment",
+      "active": true,
+      "expected_titles": ["What are your payment options?"],
+      "messages": [
+        "What payment methods do you accept?",
+        "Can I pay by credit card?",
+        "Do you accept bank transfer?",
+        "Can I pay with PayPal?",
+        "What are your payment options?",
+        "Do you accept ACH bank transfer?",
+        "How can I pay for my order?",
+        "Which payment channels are available?",
+        "Can I use debit card for payment?",
+        "What payment methods are supported at checkout?"
+      ]
+    },
+    {
+      "topic": "Pricing",
+      "active": true,
+      "expected_titles": ["Do your prices include VAT?"],
+      "messages": [
+        "Do your prices include VAT?",
+        "Is VAT included in the listed price?",
+        "Are taxes included in your website prices?",
+        "Do I need to pay VAT separately?",
+        "Are your prices before or after VAT?",
+        "Can you explain your VAT pricing?",
+        "Is tax included in the product price?",
+        "Do wholesale prices include VAT?",
+        "Will VAT be added at checkout?",
+        "Are displayed prices tax inclusive?"
+      ]
+    },
+    {
+      "topic": "Product Quality",
+      "active": false,
+      "expected_titles": ["Are Acha products made with high quality?"],
+      "known_gap": "Article exists but has 0 active chunks and 0 embeddings.",
+      "messages": [
+        "Are Acha products made with high quality?",
+        "Can you tell me about product quality?",
+        "Are your products reliable?",
+        "Do you have quality standards?",
+        "How do I know your products are high quality?",
+        "What quality level are your products?",
+        "Are your body jewelry products well made?",
+        "Do you check product quality?",
+        "Can I trust the quality of Acha products?",
+        "What makes your products good quality?"
+      ]
+    },
+    {
+      "topic": "Products",
+      "active": true,
+      "expected_titles": ["Displays and Boards", "I can't find the size or color I want. What should I do?", "Supply of Piercing Tools"],
+      "messages": [
+        "Do you offer displays and boards?",
+        "Can I buy empty display boards?",
+        "What if I cannot find the size I want?",
+        "What should I do if the color I want is not listed?",
+        "Can sales help with a missing size or color?",
+        "Do you supply piercing tools?",
+        "Can I request products that are not listed?",
+        "Do you have product display options?",
+        "Can you help if I cannot find a specific product option?",
+        "What product support do you offer for sizes and colors?"
+      ]
+    },
+    {
+      "topic": "Refunds",
+      "active": true,
+      "expected_titles": ["Do you have a Money Back Guarantee?", "Refund Policy"],
+      "messages": [
+        "What is your refund policy?",
+        "Do you have a money back guarantee?",
+        "Can I get a refund for defective items?",
+        "How long do I have to request a refund?",
+        "Do I need an RMA for a return?",
+        "Can opened jewelry be returned?",
+        "When will my refund be processed?",
+        "Are refunds sent to the original payment method?",
+        "Can I get a full refund for quality issues?",
+        "What should I do if products arrive damaged?"
+      ]
+    },
+    {
+      "topic": "Samples",
+      "active": true,
+      "expected_titles": ["Can I sample your products before ordering?"],
+      "messages": [
+        "Can I sample your products before ordering?",
+        "Can I see a sample before buying?",
+        "Do you provide free product samples?",
+        "Can new customers request samples?",
+        "How do I request samples?",
+        "Can I get a trial sample first?",
+        "Are samples available for qualified customers?",
+        "Who should I contact for product samples?",
+        "Can I check sample quality before placing an order?",
+        "Do you let customers test samples before ordering?"
+      ]
+    },
+    {
+      "topic": "Shipping",
+      "active": true,
+      "expected_titles": ["How much is the shipping cost, and how long does delivery take?", "What happens if my package is lost?", "What is your Incoterm?"],
+      "messages": [
+        "How long does shipping take?",
+        "How much is shipping?",
+        "What are your delivery times?",
+        "What happens if my package is lost?",
+        "Can you explain your shipping cost?",
+        "What is your Incoterm?",
+        "Who is responsible after the carrier collects the package?",
+        "Do you insure shipments?",
+        "Can sales estimate delivery cost?",
+        "What should I do if my order is delayed or lost?"
+      ]
+    },
+    {
+      "topic": "Stock",
+      "active": true,
+      "expected_titles": ["What if the item I ordered is out of stock?"],
+      "messages": [
+        "What if the item I ordered is out of stock?",
+        "What happens if a product is unavailable after I order?",
+        "Do you replace out-of-stock items?",
+        "Can I get a refund if an item is out of stock?",
+        "Will you contact me if something is unavailable?",
+        "Can I choose another item if stock is missing?",
+        "What is your out-of-stock process?",
+        "Do you issue store credit for unavailable items?",
+        "Can you ship the rest of my order if one item is out of stock?",
+        "How do you handle products that sell out?"
+      ]
+    },
+    {
+      "topic": "Support",
+      "active": true,
+      "expected_titles": ["English is not my primary language. How else can we communicate?"],
+      "messages": [
+        "Can I email you in Thai?",
+        "Do you support Spanish?",
+        "English is not my primary language. Can you help?",
+        "Can I write to you in another language?",
+        "Which languages does your team speak?",
+        "Can I communicate in German?",
+        "Can I send an email in French?",
+        "Do you only support English?",
+        "Can your sales team understand Thai?",
+        "How can we communicate if my English is not good?"
+      ]
+    },
+    {
+      "topic": "Trust & Compliance",
+      "active": true,
+      "expected_titles": ["Can you supply references in my country?"],
+      "messages": [
+        "Can you supply references in my country?",
+        "Do you have local customer references?",
+        "Can I ask for references before ordering?",
+        "Can you provide country-specific references?",
+        "Are there references available near me?",
+        "Can I verify your company with other customers?",
+        "Do you have customers in my country I can reference?",
+        "Can sales provide references?",
+        "Can you share business references?",
+        "How can I get more trust information before buying?"
+      ]
+    },
+    {
+      "topic": "Website",
+      "active": true,
+      "expected_titles": ["I want to see prices in my own currency. How can I do this?"],
+      "messages": [
+        "Can I see prices in my own currency?",
+        "How do I change currency on the website?",
+        "Can the website show prices in my preferred currency?",
+        "Where is the currency selector?",
+        "Can I display prices in euros?",
+        "Can I change website prices to my currency?",
+        "How can I see non-USD prices?",
+        "Does your website support currency conversion?",
+        "Can prices automatically display in my currency?",
+        "How do I choose my preferred currency?"
+      ]
+    }
+  ]
+}

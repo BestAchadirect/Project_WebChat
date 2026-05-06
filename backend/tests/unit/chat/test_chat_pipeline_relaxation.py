@@ -231,6 +231,37 @@ async def test_terminal_workflow_uses_default_llm_copy_for_product_capability(
 
 
 @pytest.mark.asyncio
+async def test_terminal_workflow_blocks_retrieval_required_company_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_contextual_reply(*, kind, reply_language, payload):
+        raise AssertionError("terminal LLM copy should not run for retrieval-required facts")
+
+    monkeypatch.setattr(workflow_handlers, "generate_contextual_reply", fake_generate_contextual_reply)
+
+    state = PipelineWorkflowState()
+    state.decision.intent = "knowledge_policy"
+    state.decision.response_policy = "answer_from_retrieved_data"
+    handler = PipelineWorkflowHandlersMixin()
+    debug_meta: dict[str, object] = {}
+    handled, llm_calls = await handler._handle_terminal_workflows(
+        state=state,
+        text="How can I contact you?",
+        locale="en-US",
+        workflow="general_talking",
+        internal_workflow="general_talking",
+        debug_meta=debug_meta,
+        spans={"llm_answer_ms": 0.0},
+        external_call_counts={},
+    )
+
+    assert handled is True
+    assert llm_calls == 0
+    assert state.decision.ambiguity_reason == "knowledge_unavailable"
+    assert debug_meta["terminal_reply_blocked_reason"] == "retrieval_required"
+
+
+@pytest.mark.asyncio
 async def test_build_clarify_policy_fallback_gibberish_requests_rephrase() -> None:
     result = await ComponentPipeline._build_clarify_policy(
         reason="fallback_gibberish",

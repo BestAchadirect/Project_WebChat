@@ -53,7 +53,6 @@ from app.services.imports.products.search_text_builder import (
     DEFAULT_ATTRIBUTE_COLUMNS,
     DEFAULT_SEARCH_KEYWORD_COLUMNS,
     build_search_keywords,
-    build_search_synonyms,
     build_search_text,
     expand_search_terms,
     normalize_attribute_value,
@@ -127,9 +126,6 @@ class DataImportService:
 
     def _normalize_attribute_value(self, key: str, value: Any) -> Any:
         return normalize_attribute_value(key, value)
-
-    def _build_search_synonyms(self, attributes: Dict[str, Any]) -> List[str]:
-        return build_search_synonyms(attributes, keyword_columns=SEARCH_KEYWORD_COLUMNS)
 
     def _build_search_keywords(
         self,

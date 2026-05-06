@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import logging
 import time
@@ -20,7 +21,6 @@ from app.services.chat.runtime.capabilities import build_chat_runtime_capabiliti
 from app.services.chat.runtime.fallback_policy import knowledge_degrade_mode, knowledge_degrade_reason
 from app.services.chat.runtime.grounding import evaluate_knowledge_grounding
 from app.services.chat.text_normalization import normalize_user_text
-from app.services.knowledge.tagging import build_knowledge_query_tags
 
 logger = logging.getLogger(__name__)
 
@@ -34,45 +34,8 @@ class PipelineWorkflowKnowledgeMixin:
         "company": 0.18,
         "store_overview": 0.18,
     }
-    _KNOWLEDGE_FOCUS_PRIORITY = (
-        "samples",
-        "shipping",
-        "refund",
-        "returns",
-        "payment",
-        "pricing",
-        "product_care",
-        "custom_orders",
-        "ordering",
-        "contact",
-        "store_overview",
-    )
-    _KNOWLEDGE_FOCUS_TERMS = {
-        "samples": ("sample", "samples", "trial", "trial order", "sample request"),
-        "shipping": ("shipping", "ship", "delivery", "lead time", "dispatch"),
-        "refund": ("refund", "money back", "reimbursement"),
-        "returns": ("return", "returns", "exchange", "rma"),
-        "payment": ("payment", "pay", "bank transfer", "credit card", "debit card", "paypal"),
-        "pricing": ("price", "prices", "cost", "discount", "vat", "tax", "wholesale price"),
-        "product_care": ("care", "clean", "cleaning", "sterilize", "sterilization", "sanitize"),
-        "custom_orders": ("custom", "custom order", "made to order", "bespoke", "special order"),
-        "ordering": ("order", "ordering", "minimum order", "moq", "bulk order", "wholesale order"),
-        "contact": ("contact", "support", "sales", "email", "phone", "whatsapp", "line"),
-        "store_overview": ("showroom", "location", "address", "visit", "hours", "open", "close", "about"),
-    }
-    _KNOWLEDGE_FOCUS_CATEGORIES = {
-        "samples": ("samples", "custom orders", "ordering"),
-        "shipping": ("shipping", "delivery"),
-        "refund": ("refunds", "returns"),
-        "returns": ("returns", "refunds"),
-        "payment": ("payment", "payments"),
-        "pricing": ("pricing", "price", "prices"),
-        "product_care": ("product care", "care"),
-        "custom_orders": ("custom orders", "ordering"),
-        "ordering": ("ordering",),
-        "contact": ("contact", "support", "company"),
-        "store_overview": ("store overview", "contact", "company", "about"),
-    }
+    _COMPANY_INFO_PLAN_CACHE_VERSION = 1
+    _COMPANY_INFO_SELECTOR_CACHE_VERSION = 1
 
     @staticmethod
     def _apply_knowledge_ambiguity_state(
@@ -113,110 +76,218 @@ class PipelineWorkflowKnowledgeMixin:
                 ),
             )
 
+    @staticmethod
+    def _clean_llm_string_list(value: Any, *, limit: int = 8) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        items: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(text)
+            if len(items) >= max(1, int(limit)):
+                break
+        return items
+
+    @staticmethod
+    def _coerce_llm_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return str(value or "").strip().lower() in {"true", "1", "yes"}
+
     @classmethod
-    def _company_info_search_profile(
+    def _fallback_knowledge_plan(
             cls,
             *,
             text: str,
             preferred_query: str = "",
+            store_overview_request: bool = False,
         ) -> Dict[str, Any]:
-            clean_text = normalize_user_text(preferred_query or text)
-            query_tags = build_knowledge_query_tags(clean_text)
-            tag_set = {str(tag or "").strip().lower() for tag in list(query_tags or []) if str(tag or "").strip()}
-            must_tags = []
-            if "contact" in tag_set:
-                must_tags = ["contact"]
-            elif "store_overview" in tag_set:
-                must_tags = ["store_overview"]
-            boost_tags = list(dict.fromkeys(list(tag_set) + ["contact", "store_overview"]))
-            query_text = clean_text or "about your company"
-            store_overview_request = False
+            query_text = str(preferred_query or text or "").strip()
             return {
                 "query_text": query_text,
-                "must_tags": must_tags,
-                "boost_tags": boost_tags,
-                "store_overview_request": store_overview_request,
+                "topic": "",
+                "must_tags": [],
+                "boost_tags": [],
+                "required_evidence": [],
+                "forbidden_topics": [],
+                "store_overview_request": bool(store_overview_request),
+                "answer_style": {
+                    "max_sentences": 2,
+                    "tone": "direct_customer_service",
+                },
+                "source": "fallback",
             }
 
     @classmethod
-    def _infer_knowledge_focus(
+    def _normalize_knowledge_plan(
             cls,
+            *,
+            payload: Dict[str, Any],
+            text: str,
+            preferred_query: str = "",
+            store_overview_request: bool = False,
+        ) -> Dict[str, Any]:
+            fallback = cls._fallback_knowledge_plan(
+                text=text,
+                preferred_query=preferred_query,
+                store_overview_request=store_overview_request,
+            )
+            answer_style = payload.get("answer_style") if isinstance(payload.get("answer_style"), dict) else {}
+            try:
+                max_sentences = int(answer_style.get("max_sentences") or 2)
+            except (TypeError, ValueError):
+                max_sentences = 2
+            max_sentences = min(3, max(1, max_sentences))
+            query_text = str(
+                payload.get("retrieval_query")
+                or payload.get("query")
+                or fallback.get("query_text")
+                or preferred_query
+                or text
+                or ""
+            ).strip()
+            return {
+                "query_text": query_text or str(fallback.get("query_text") or ""),
+                "topic": str(payload.get("topic") or "").strip().lower(),
+                "must_tags": cls._clean_llm_string_list(
+                    payload.get("must_tags"),
+                    limit=5,
+                ),
+                "boost_tags": cls._clean_llm_string_list(
+                    payload.get("boost_tags"),
+                    limit=8,
+                ),
+                "required_evidence": cls._clean_llm_string_list(payload.get("required_evidence"), limit=8),
+                "forbidden_topics": cls._clean_llm_string_list(payload.get("forbidden_topics"), limit=8),
+                "store_overview_request": cls._coerce_llm_bool(
+                    payload.get("store_overview_request", fallback.get("store_overview_request"))
+                ),
+                "answer_style": {
+                    "max_sentences": max_sentences,
+                    "tone": str(answer_style.get("tone") or "direct_customer_service").strip(),
+                },
+                "source": "llm",
+            }
+
+    async def _plan_knowledge_retrieval(
+            self,
             *,
             text: str,
-            store_overview_request: bool = False,
-        ) -> str:
-            if store_overview_request:
-                return "store_overview"
-            clean_text = normalize_user_text(text)
-            tag_set = {str(tag or "").strip().lower() for tag in list(build_knowledge_query_tags(clean_text) or []) if str(tag or "").strip()}
-            for focus in cls._KNOWLEDGE_FOCUS_PRIORITY:
-                if focus in tag_set:
-                    return focus
-            return ""
+            preferred_query: str,
+            locale: str,
+            store_overview_request: bool,
+            debug_prefix: str,
+            usage_kind: str,
+            debug_meta: Dict[str, Any],
+            spans: Dict[str, float],
+            external_call_counts: Dict[str, int],
+        ) -> Dict[str, Any]:
+            fallback = self._fallback_knowledge_plan(
+                text=text,
+                preferred_query=preferred_query,
+                store_overview_request=store_overview_request,
+            )
+            model = str(
+                getattr(settings, "CHAT_KNOWLEDGE_PLANNER_MODEL", "")
+                or getattr(settings, "CHAT_COMPANY_KNOWLEDGE_PLANNER_MODEL", "")
+                or getattr(settings, "CHAT_INTENT_CLASSIFICATION_MODEL", "")
+                or getattr(settings, "NLU_MODEL", "gpt-5-mini")
+            ).strip()
+            if not model:
+                debug_meta[f"{debug_prefix}_plan_source"] = "fallback_no_model"
+                return dict(fallback)
 
-    @classmethod
-    def _knowledge_focus_terms(cls, focus: str) -> tuple[str, ...]:
-            return tuple(cls._KNOWLEDGE_FOCUS_TERMS.get(str(focus or "").strip().lower(), ()))
+            system_prompt = (
+                "You plan retrieval for company/store knowledge-base questions across all FAQ topics. "
+                "Return ONLY strict JSON with keys: retrieval_query, topic, must_tags, boost_tags, "
+                "required_evidence, forbidden_topics, store_overview_request, answer_style. "
+                "Use retrieval_query for database search, not final answering. "
+                "Use must_tags only when evidence must come from one exact database topic; otherwise leave must_tags empty. "
+                "Use boost_tags only as optional retrieval hints from source metadata. "
+                "Handle contact, support, shipping, returns, refunds, payment, ordering, samples, showroom, "
+                "custom manufacturing, marketing assets, website/currency, stock, product FAQ, trust/reference, "
+                "language support, taxes, discounts, product care, and company/location questions. "
+                "Do not force unrelated policy topics into the query. "
+                "Do not invent company facts. Keep answer_style.max_sentences between 1 and 3."
+            )
+            payload = {
+                "user_text": str(text or "").strip(),
+                "preferred_query": str(preferred_query or "").strip(),
+                "locale": str(locale or "en-US").strip() or "en-US",
+            }
+            try:
+                started = time.perf_counter()
+                data = await llm_service.generate_chat_json(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
+                    ],
+                    model=model,
+                    temperature=0.0,
+                    max_tokens=int(
+                        getattr(
+                            settings,
+                            "CHAT_KNOWLEDGE_PLAN_MAX_TOKENS",
+                            getattr(settings, "CHAT_COMPANY_KNOWLEDGE_PLAN_MAX_TOKENS", 500),
+                        )
+                    ),
+                    reasoning_effort="minimal",
+                    usage_kind=usage_kind,
+                )
+                spans["llm_answer_ms"] = float(spans.get("llm_answer_ms", 0.0)) + (
+                    time.perf_counter() - started
+                ) * 1000.0
+                count_key = "llm_company_plan" if debug_prefix == "company_info" else "llm_knowledge_plan"
+                external_call_counts[count_key] = int(external_call_counts.get(count_key, 0)) + 1
+                plan = self._normalize_knowledge_plan(
+                    payload=dict(data or {}),
+                    text=text,
+                    preferred_query=preferred_query,
+                    store_overview_request=store_overview_request,
+                )
+                debug_meta[f"{debug_prefix}_plan_source"] = "llm"
+                debug_meta[f"{debug_prefix}_plan"] = {
+                    key: value
+                    for key, value in plan.items()
+                    if key in {"query_text", "topic", "must_tags", "boost_tags", "required_evidence", "forbidden_topics", "store_overview_request", "answer_style"}
+                }
+                return plan
+            except Exception as exc:
+                debug_meta[f"{debug_prefix}_plan_source"] = "fallback"
+                debug_meta[f"{debug_prefix}_plan_error"] = str(exc)
+                return dict(fallback)
 
-    @classmethod
-    def _knowledge_focus_categories(cls, focus: str) -> tuple[str, ...]:
-            return tuple(cls._KNOWLEDGE_FOCUS_CATEGORIES.get(str(focus or "").strip().lower(), ()))
-
-    @classmethod
-    def _score_knowledge_source_for_focus(
-            cls,
+    async def _plan_company_info_retrieval(
+            self,
             *,
-            source: KnowledgeSource,
-            focus: str,
-        ) -> tuple[float, bool]:
-            focus_key = str(focus or "").strip().lower()
-            if not focus_key:
-                return float(getattr(source, "relevance", 0.0) or 0.0), False
-
-            category = normalize_user_text(getattr(source, "category", "") or "")
-            title = normalize_user_text(getattr(source, "title", "") or "")
-            summary = normalize_user_text(getattr(source, "summary", "") or "")
-            snippet = normalize_user_text(getattr(source, "content_snippet", "") or "")
-            haystack = " ".join(part for part in (title, category, summary, snippet) if part)
-            score = float(getattr(source, "relevance", 0.0) or 0.0)
-            direct_match = False
-
-            focus_categories = cls._knowledge_focus_categories(focus_key)
-            if category and (category in focus_categories or any(term in category for term in focus_categories)):
-                score += 1.2
-                direct_match = True
-
-            for term in cls._knowledge_focus_terms(focus_key):
-                if term and term in haystack:
-                    score += 0.85
-                    direct_match = True
-
-            return score, direct_match
-
-    @classmethod
-    def _prioritize_knowledge_sources(
-            cls,
-            *,
-            sources: Sequence[KnowledgeSource],
-            focus: str,
-            limit: int = 3,
-        ) -> list[KnowledgeSource]:
-            source_list = list(sources or [])
-            if not source_list:
-                return []
-            focus_key = str(focus or "").strip().lower()
-            if not focus_key:
-                return source_list[: max(1, int(limit))]
-
-            ranked: list[tuple[float, bool, int, KnowledgeSource]] = []
-            for index, source in enumerate(source_list):
-                score, direct_match = cls._score_knowledge_source_for_focus(source=source, focus=focus_key)
-                ranked.append((score, direct_match, index, source))
-            ranked.sort(key=lambda item: (item[1], item[0], -item[2]), reverse=True)
-
-            direct_matches = [item for item in ranked if item[1]]
-            selected = direct_matches if direct_matches else ranked
-            return [item[3] for item in selected[: max(1, int(limit))]]
+            text: str,
+            preferred_query: str,
+            locale: str,
+            store_overview_request: bool,
+            debug_meta: Dict[str, Any],
+            spans: Dict[str, float],
+            external_call_counts: Dict[str, int],
+        ) -> Dict[str, Any]:
+            return await self._plan_knowledge_retrieval(
+                text=text,
+                preferred_query=preferred_query,
+                locale=locale,
+                store_overview_request=store_overview_request,
+                debug_prefix="company_info",
+                usage_kind="company_info_retrieval_plan",
+                debug_meta=debug_meta,
+                spans=spans,
+                external_call_counts=external_call_counts,
+            )
 
     @classmethod
     def _company_info_term_list(cls, text: str) -> list[str]:
@@ -356,6 +427,186 @@ class PipelineWorkflowKnowledgeMixin:
             )
             return sources
 
+    @staticmethod
+    def _company_candidate_payload(source: KnowledgeSource) -> Dict[str, Any]:
+            return {
+                "source_id": str(getattr(source, "source_id", "") or "").strip(),
+                "chunk_id": str(getattr(source, "chunk_id", "") or "").strip(),
+                "title": str(getattr(source, "title", "") or "").strip(),
+                "category": str(getattr(source, "category", "") or "").strip(),
+                "summary": str(getattr(source, "summary", "") or "").strip(),
+                "snippet": str(getattr(source, "content_snippet", "") or "").strip()[:240],
+                "relevance": float(getattr(source, "relevance", 0.0) or 0.0),
+            }
+
+    @staticmethod
+    def _knowledge_selector_failed(
+            *,
+            debug_meta: Dict[str, Any],
+            debug_prefix: str,
+        ) -> bool:
+            selector_source = str(debug_meta.get(f"{debug_prefix}_selector_source") or "").strip()
+            return selector_source in {"unavailable", "unavailable_no_model"}
+
+    @classmethod
+    def _fallback_to_retrieved_knowledge_sources(
+            cls,
+            *,
+            debug_meta: Dict[str, Any],
+            debug_prefix: str,
+            candidates: Sequence[KnowledgeSource],
+            limit: int,
+        ) -> list[KnowledgeSource]:
+            selected = list(candidates or [])[: max(1, int(limit))]
+            if not selected:
+                return []
+            reason = str(debug_meta.get(f"{debug_prefix}_selector_error") or "selector_unavailable").strip()
+            debug_meta[f"{debug_prefix}_selector_fallback_used"] = True
+            debug_meta[f"{debug_prefix}_selector_fallback_reason"] = reason
+            debug_meta[f"{debug_prefix}_selector_fallback_source_ids"] = [
+                str(getattr(source, "source_id", "") or getattr(source, "chunk_id", "") or "")
+                for source in selected
+            ]
+            return selected
+
+    async def _select_knowledge_sources_with_llm(
+            self,
+            *,
+            knowledge_query: str,
+            plan: Dict[str, Any],
+            candidates: Sequence[KnowledgeSource],
+            locale: str,
+            debug_prefix: str,
+            usage_kind: str,
+            debug_meta: Dict[str, Any],
+            spans: Dict[str, float],
+            external_call_counts: Dict[str, int],
+            limit: int = 3,
+        ) -> list[KnowledgeSource]:
+            candidate_list = list(candidates or [])
+            if not candidate_list:
+                debug_meta[f"{debug_prefix}_selector_source"] = "empty_candidates"
+                return []
+
+            model = str(
+                getattr(settings, "CHAT_KNOWLEDGE_SELECTOR_MODEL", "")
+                or getattr(settings, "CHAT_COMPANY_KNOWLEDGE_SELECTOR_MODEL", "")
+                or getattr(settings, "CHAT_INTENT_CLASSIFICATION_MODEL", "")
+                or getattr(settings, "NLU_MODEL", "gpt-5-mini")
+            ).strip()
+            if not model:
+                debug_meta[f"{debug_prefix}_selector_source"] = "unavailable_no_model"
+                return []
+
+            candidates_payload = [self._company_candidate_payload(source) for source in candidate_list[:6]]
+            system_prompt = (
+                "You select evidence for a grounded company/store knowledge answer across any FAQ topic. "
+                "Return ONLY compact strict JSON with keys: answerable, selected_source_ids, missing_evidence, reason. "
+                "Select at most 3 chunks that directly answer the user's question. "
+                "Reject unrelated or weak chunks even when broad words overlap. "
+                "The chunk content is authoritative. If no chunk directly supports the answer, set answerable=false. "
+                "Do not create facts."
+            )
+            payload = {
+                "question": str(knowledge_query or "").strip(),
+                "locale": str(locale or "en-US").strip() or "en-US",
+                "plan": {
+                    "topic": str(plan.get("topic") or ""),
+                    "required_evidence": list(plan.get("required_evidence") or []),
+                    "forbidden_topics": list(plan.get("forbidden_topics") or []),
+                    "answer_style": dict(plan.get("answer_style") or {}),
+                },
+                "candidates": candidates_payload,
+            }
+            try:
+                started = time.perf_counter()
+                data = await llm_service.generate_chat_json(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
+                    ],
+                    model=model,
+                    temperature=0.0,
+                    max_tokens=int(
+                        getattr(
+                            settings,
+                            "CHAT_KNOWLEDGE_SELECTOR_MAX_TOKENS",
+                            getattr(settings, "CHAT_COMPANY_KNOWLEDGE_SELECTOR_MAX_TOKENS", 700),
+                        )
+                    ),
+                    reasoning_effort="minimal",
+                    timeout=float(
+                        getattr(
+                            settings,
+                            "CHAT_KNOWLEDGE_SELECTOR_TIMEOUT_SECONDS",
+                            getattr(settings, "CHAT_COMPANY_KNOWLEDGE_SELECTOR_TIMEOUT_SECONDS", 15.0),
+                        )
+                    ),
+                    usage_kind=usage_kind,
+                )
+                spans["llm_answer_ms"] = float(spans.get("llm_answer_ms", 0.0)) + (
+                    time.perf_counter() - started
+                ) * 1000.0
+                count_key = "llm_company_selector" if debug_prefix == "company_info" else "llm_knowledge_selector"
+                external_call_counts[count_key] = int(external_call_counts.get(count_key, 0)) + 1
+            except Exception as exc:
+                debug_meta[f"{debug_prefix}_selector_source"] = "unavailable"
+                debug_meta[f"{debug_prefix}_selector_error"] = str(exc)
+                return []
+
+            answerable = self._coerce_llm_bool((data or {}).get("answerable"))
+            selected_ids = [
+                str(item or "").strip()
+                for item in self._clean_llm_string_list((data or {}).get("selected_source_ids"), limit=limit)
+                if str(item or "").strip()
+            ]
+            by_source_id = {str(getattr(source, "source_id", "") or "").strip(): source for source in candidate_list}
+            by_chunk_id = {str(getattr(source, "chunk_id", "") or "").strip(): source for source in candidate_list}
+            selected: list[KnowledgeSource] = []
+            for source_id in selected_ids:
+                source = by_source_id.get(source_id) or by_chunk_id.get(source_id)
+                if source is not None and source not in selected:
+                    selected.append(source)
+                if len(selected) >= max(1, int(limit)):
+                    break
+
+            debug_meta[f"{debug_prefix}_selector_source"] = "llm"
+            debug_meta[f"{debug_prefix}_selector_answerable"] = bool(answerable)
+            debug_meta[f"{debug_prefix}_selector_selected_ids"] = list(selected_ids)
+            debug_meta[f"{debug_prefix}_selector_missing_evidence"] = self._clean_llm_string_list(
+                (data or {}).get("missing_evidence"),
+                limit=8,
+            )
+            debug_meta[f"{debug_prefix}_selector_reason"] = str((data or {}).get("reason") or "").strip()
+            if not answerable:
+                return []
+            return selected
+
+    async def _select_company_info_sources_with_llm(
+            self,
+            *,
+            knowledge_query: str,
+            plan: Dict[str, Any],
+            candidates: Sequence[KnowledgeSource],
+            locale: str,
+            debug_meta: Dict[str, Any],
+            spans: Dict[str, float],
+            external_call_counts: Dict[str, int],
+            limit: int = 3,
+        ) -> list[KnowledgeSource]:
+            return await self._select_knowledge_sources_with_llm(
+                knowledge_query=knowledge_query,
+                plan=plan,
+                candidates=candidates,
+                locale=locale,
+                debug_prefix="company_info",
+                usage_kind="company_info_evidence_select",
+                debug_meta=debug_meta,
+                spans=spans,
+                external_call_counts=external_call_counts,
+                limit=limit,
+            )
+
     async def _retrieve_knowledge_sources(
             self,
             *,
@@ -461,13 +712,31 @@ class PipelineWorkflowKnowledgeMixin:
             external_call_counts: Dict[str, int],
         ) -> list[KnowledgeSource]:
             lexical_started = time.perf_counter()
+            effective_must_tags = list(must_tags or [])
+            effective_boost_tags = list(boost_tags or [])
             knowledge_sources = await self._search_company_info_lexical(
                 query_text=query_text,
-                must_tags=must_tags,
-                boost_tags=boost_tags,
+                must_tags=effective_must_tags,
+                boost_tags=effective_boost_tags,
                 limit=limit,
             )
             spans["db_product_lookup_ms"] += (time.perf_counter() - lexical_started) * 1000.0
+            if not knowledge_sources and effective_must_tags:
+                broadened_started = time.perf_counter()
+                effective_boost_tags = list(dict.fromkeys(effective_must_tags + effective_boost_tags))
+                effective_must_tags = []
+                knowledge_sources = await self._search_company_info_lexical(
+                    query_text=query_text,
+                    must_tags=effective_must_tags,
+                    boost_tags=effective_boost_tags,
+                    limit=limit,
+                )
+                spans["db_product_lookup_ms"] = float(spans.get("db_product_lookup_ms", 0.0)) + (
+                    time.perf_counter() - broadened_started
+                ) * 1000.0
+                debug_meta["component_company_info_broadened_strict_tags"] = True
+                debug_meta["component_company_info_effective_must_tags"] = list(effective_must_tags)
+                debug_meta["component_company_info_effective_boost_tags"] = list(effective_boost_tags)
             lexical_confidence = max(
                 (float(getattr(source, "relevance", 0.0) or 0.0) for source in list(knowledge_sources or [])),
                 default=0.0,
@@ -484,8 +753,8 @@ class PipelineWorkflowKnowledgeMixin:
                     query_text=query_text,
                     query_embedding=embedding,
                     limit=limit,
-                    must_tags=list(must_tags or []),
-                    boost_tags=list(boost_tags or []),
+                    must_tags=list(effective_must_tags or []),
+                    boost_tags=list(effective_boost_tags or []),
                     store_overview_request=store_overview_request,
                     run_id=run_id,
                 )
@@ -509,15 +778,27 @@ class PipelineWorkflowKnowledgeMixin:
             spans: Dict[str, float],
             external_call_counts: Dict[str, int],
         ) -> Dict[str, Any]:
-            knowledge_query = str(preferred_query or "").strip() or str(text or "").strip()
+            profile = await self._plan_knowledge_retrieval(
+                text=text,
+                preferred_query=preferred_query,
+                locale=locale,
+                store_overview_request=store_overview_request,
+                debug_prefix="knowledge",
+                usage_kind="knowledge_retrieval_plan",
+                debug_meta=debug_meta,
+                spans=spans,
+                external_call_counts=external_call_counts,
+            )
+            knowledge_query = str(profile["query_text"] or "").strip() or str(preferred_query or text or "").strip()
             knowledge_query_normalized = normalize_user_text(knowledge_query) or normalized_text
             capabilities = build_chat_runtime_capabilities()
             high_risk_guard_enabled = bool(capabilities.chat_knowledge_high_risk_guard_enabled)
             knowledge_is_high_risk = high_risk_guard_enabled and self._is_high_risk_knowledge_request(text=knowledge_query)
             min_knowledge_relevance = float(capabilities.chat_knowledge_min_relevance)
+            effective_store_overview_request = bool(store_overview_request or profile["store_overview_request"])
             knowledge_sources, knowledge_error_message = await self._retrieve_knowledge_sources(
                 knowledge_query=knowledge_query,
-                store_overview_request=store_overview_request,
+                store_overview_request=effective_store_overview_request,
                 run_id=run_id,
                 debug_meta=debug_meta,
                 spans=spans,
@@ -528,18 +809,33 @@ class PipelineWorkflowKnowledgeMixin:
                 knowledge_sources=knowledge_sources,
                 min_knowledge_relevance=min_knowledge_relevance,
             )
-            knowledge_focus = self._infer_knowledge_focus(
-                text=knowledge_query,
-                store_overview_request=store_overview_request,
-            )
-            focused_sources = self._prioritize_knowledge_sources(
-                sources=knowledge_sources,
-                focus=knowledge_focus,
+            selected_sources = await self._select_knowledge_sources_with_llm(
+                knowledge_query=knowledge_query,
+                plan=profile,
+                candidates=knowledge_sources,
+                locale=locale,
+                debug_prefix="knowledge",
+                usage_kind="knowledge_evidence_select",
+                debug_meta=debug_meta,
+                spans=spans,
+                external_call_counts=external_call_counts,
                 limit=3,
             )
-            debug_meta["knowledge_focus"] = knowledge_focus
-            debug_meta["knowledge_source_count_before_focus"] = len(list(knowledge_sources or []))
-            debug_meta["knowledge_source_count_after_focus"] = len(list(focused_sources or []))
+            if (
+                not selected_sources
+                and knowledge_sources
+                and not knowledge_sources_weak
+                and not knowledge_error_message
+                and self._knowledge_selector_failed(debug_meta=debug_meta, debug_prefix="knowledge")
+            ):
+                selected_sources = self._fallback_to_retrieved_knowledge_sources(
+                    debug_meta=debug_meta,
+                    debug_prefix="knowledge",
+                    candidates=knowledge_sources,
+                    limit=3,
+                )
+            debug_meta["knowledge_source_count_before_selector"] = len(list(knowledge_sources or []))
+            debug_meta["knowledge_source_count_after_selector"] = len(list(selected_sources or []))
             debug_meta["knowledge_sources_weak"] = knowledge_sources_weak
             debug_meta["knowledge_is_high_risk"] = knowledge_is_high_risk
             debug_meta["knowledge_high_risk_guard_enabled"] = high_risk_guard_enabled
@@ -547,7 +843,8 @@ class PipelineWorkflowKnowledgeMixin:
             debug_meta["knowledge_top_relevance"] = top_knowledge_relevance
             debug_meta["knowledge_query_text"] = knowledge_query
             skip_knowledge_answer = bool(
-                knowledge_is_high_risk and (bool(knowledge_error_message) or knowledge_sources_weak)
+                not selected_sources
+                or (knowledge_is_high_risk and (bool(knowledge_error_message) or knowledge_sources_weak))
             )
             debug_meta["knowledge_answer_skipped"] = skip_knowledge_answer
             knowledge_answer = ""
@@ -555,24 +852,27 @@ class PipelineWorkflowKnowledgeMixin:
                 knowledge_answer, knowledge_error_message = await self._attempt_grounded_knowledge_answer(
                     knowledge_query=knowledge_query,
                     knowledge_query_normalized=knowledge_query_normalized,
-                    knowledge_sources=focused_sources,
+                    knowledge_sources=selected_sources,
                     locale=locale,
-                    store_overview_request=store_overview_request,
+                    store_overview_request=effective_store_overview_request,
                     cache_prefix="knowledge_answer",
                     debug_meta=debug_meta,
                     spans=spans,
                     external_call_counts=external_call_counts,
                 )
 
-            ambiguity_reason = knowledge_degrade_reason(
-                knowledge_error_message=knowledge_error_message,
-                knowledge_is_high_risk=knowledge_is_high_risk,
-                knowledge_sources_weak=knowledge_sources_weak,
-            )
+            if not selected_sources and not knowledge_error_message:
+                ambiguity_reason = "knowledge_needs_clarification"
+            else:
+                ambiguity_reason = knowledge_degrade_reason(
+                    knowledge_error_message=knowledge_error_message,
+                    knowledge_is_high_risk=knowledge_is_high_risk,
+                    knowledge_sources_weak=knowledge_sources_weak,
+                )
 
             return {
                 "knowledge_query": knowledge_query,
-                "knowledge_sources": focused_sources,
+                "knowledge_sources": selected_sources,
                 "knowledge_answer": knowledge_answer,
                 "knowledge_error_message": knowledge_error_message,
                 "knowledge_is_high_risk": knowledge_is_high_risk,
@@ -597,16 +897,21 @@ class PipelineWorkflowKnowledgeMixin:
             spans: Dict[str, float],
             external_call_counts: Dict[str, int],
         ) -> Dict[str, Any]:
-            profile = self._company_info_search_profile(
+            profile = await self._plan_company_info_retrieval(
                 text=text,
                 preferred_query=preferred_query,
+                locale=locale,
+                store_overview_request=store_overview_request,
+                debug_meta=debug_meta,
+                spans=spans,
+                external_call_counts=external_call_counts,
             )
             knowledge_query = str(profile["query_text"] or "").strip() or str(preferred_query or text or "").strip()
             knowledge_sources = await self._retrieve_company_info_sources(
                 query_text=knowledge_query,
                 must_tags=list(profile["must_tags"] or []),
                 boost_tags=list(profile["boost_tags"] or []),
-                limit=5,
+                limit=12,
                 store_overview_request=bool(store_overview_request or profile["store_overview_request"]),
                 run_id=run_id,
                 debug_meta=debug_meta,
@@ -627,35 +932,45 @@ class PipelineWorkflowKnowledgeMixin:
                 knowledge_sources=knowledge_sources,
                 min_knowledge_relevance=min_knowledge_relevance,
             )
-            knowledge_focus = self._infer_knowledge_focus(
-                text=knowledge_query,
-                store_overview_request=bool(store_overview_request or profile["store_overview_request"]),
-            )
-            focused_sources = self._prioritize_knowledge_sources(
-                sources=knowledge_sources,
-                focus=knowledge_focus,
+            focused_sources = await self._select_company_info_sources_with_llm(
+                knowledge_query=knowledge_query,
+                plan=profile,
+                candidates=knowledge_sources,
+                locale=locale,
+                debug_meta=debug_meta,
+                spans=spans,
+                external_call_counts=external_call_counts,
                 limit=3,
             )
-            debug_meta["company_info_knowledge_focus"] = knowledge_focus
-            debug_meta["company_info_source_count_before_focus"] = len(list(knowledge_sources or []))
-            debug_meta["company_info_source_count_after_focus"] = len(list(focused_sources or []))
+            if (
+                not focused_sources
+                and knowledge_sources
+                and not knowledge_sources_weak
+                and self._knowledge_selector_failed(debug_meta=debug_meta, debug_prefix="company_info")
+            ):
+                focused_sources = self._fallback_to_retrieved_knowledge_sources(
+                    debug_meta=debug_meta,
+                    debug_prefix="company_info",
+                    candidates=knowledge_sources,
+                    limit=3,
+                )
+            debug_meta["company_info_plan_topic"] = str(profile.get("topic") or "")
+            debug_meta["company_info_source_count_before_selector"] = len(list(knowledge_sources or []))
+            debug_meta["company_info_source_count_after_selector"] = len(list(focused_sources or []))
             knowledge_answer = ""
             knowledge_error_message = ""
             if focused_sources:
-                if bool(store_overview_request or profile["store_overview_request"]):
-                    knowledge_answer = self._build_store_overview_knowledge_answer(sources=focused_sources)
-                if not knowledge_answer:
-                    knowledge_answer, knowledge_error_message = await self._attempt_grounded_knowledge_answer(
-                        knowledge_query=knowledge_query,
-                        knowledge_query_normalized=normalize_user_text(knowledge_query) or normalized_text,
-                        knowledge_sources=focused_sources,
-                        locale=locale,
-                        store_overview_request=bool(store_overview_request or profile["store_overview_request"]),
-                        cache_prefix="company_info_answer",
-                        debug_meta=debug_meta,
-                        spans=spans,
-                        external_call_counts=external_call_counts,
-                    )
+                knowledge_answer, knowledge_error_message = await self._attempt_grounded_knowledge_answer(
+                    knowledge_query=knowledge_query,
+                    knowledge_query_normalized=normalize_user_text(knowledge_query) or normalized_text,
+                    knowledge_sources=focused_sources,
+                    locale=locale,
+                    store_overview_request=bool(store_overview_request or profile["store_overview_request"]),
+                    cache_prefix="company_info_answer",
+                    debug_meta=debug_meta,
+                    spans=spans,
+                    external_call_counts=external_call_counts,
+                )
             else:
                 knowledge_error_message = self._KNOWLEDGE_UNAVAILABLE_MESSAGE
 

@@ -52,18 +52,18 @@ def test_projection_row_normalizes_structured_attributes() -> None:
 
     assert row["sku_norm"] == "br-001"
     assert row["material_norm"] == "surgical steel"
-    assert row["jewelry_type_norm"] == "barbell"
+    assert row["jewelry_type_norm"] == "barbells"
     assert row["presentation_type_norm"] == "sold by pack"
     assert row["body_part_norm"] == "upper lip / monroe"
     assert row["feature_norm"] == "pvd plated"
     assert row["gauge_norm"] == "16g"
-    assert row["threading_norm"] == "internal"
+    assert row["threading_norm"] == "internally threaded"
     assert row["color_norm"] == "black"
     assert row["opal_color_norm"] == "blue"
     assert row["is_active"] is True
 
 
-def test_projection_row_uses_search_text_fallback_when_material_missing() -> None:
+def test_projection_row_leaves_facets_empty_when_structured_attributes_missing() -> None:
     product = _product(
         sku="X-OPAL-1",
         attributes={},
@@ -72,11 +72,11 @@ def test_projection_row_uses_search_text_fallback_when_material_missing() -> Non
 
     row = ProductProjectionSyncService._build_projection_row(product=product, eav_attrs={})
 
-    assert row["material_norm"] == "titanium g23"
-    assert row["jewelry_type_norm"] == "circular barbell"
-    assert row["presentation_type_norm"] == "sold by pack"
-    assert row["body_part_norm"] == "upper lip / monroe"
-    assert row["feature_norm"] == "pvd plated"
+    assert row["material_norm"] is None
+    assert row["jewelry_type_norm"] is None
+    assert row["presentation_type_norm"] is None
+    assert row["body_part_norm"] is None
+    assert row["feature_norm"] is None
 
 
 def test_projection_row_prefers_eav_value_over_json_attributes() -> None:

@@ -6,15 +6,13 @@ from typing import Any, Dict, List, Optional, Sequence
 from app.services.chat.parsing.attribute_normalization import (
     clean_attribute_filters as shared_clean_attribute_filters,
     normalize_attribute_value as shared_normalize_attribute_value,
-    normalize_gauge_token as shared_normalize_gauge_token,
-    normalize_measurement_token as shared_normalize_measurement_token,
 )
+from app.services.chat.parsing.attribute_keys import canonicalize_filter_key
 from app.services.chat.parsing.llm_attribute_extractor import (
     DetailQueryInferenceResult,
     infer_detail_query,
 )
 from app.services.chat.parsing.parser_rule_types import ParserRuleSet, empty_rule_set
-from app.utils.synonym_rules import resolve_attribute_conflicts
 
 ALLOWED_DETAIL_FIELDS = ("price", "stock", "image", "attributes", "name", "sku")
 ALLOWED_DETAIL_FIELD_SET = set(ALLOWED_DETAIL_FIELDS)
@@ -33,14 +31,6 @@ class DetailQuery:
 
 class DetailQueryParser:
     _EMPTY_RULE_SET = empty_rule_set()
-
-    @staticmethod
-    def normalize_gauge_token(value: str) -> str:
-        return shared_normalize_gauge_token(value)
-
-    @staticmethod
-    def normalize_measurement_token(value: str) -> str:
-        return shared_normalize_measurement_token(value)
 
     @classmethod
     def normalize_attribute_value(
@@ -86,7 +76,6 @@ class DetailQueryParser:
             attribute_filters,
             allowed_attribute_filters=allowed_attribute_filters,
         )
-        clean_filters = resolve_attribute_conflicts(clean_filters)
         if confidence < 0.55:
             filtered_fields = []
             clean_filters = {}
@@ -109,7 +98,20 @@ class DetailQueryParser:
         *,
         inference: DetailQueryInferenceResult,
         parser_rules: Optional[ParserRuleSet] = None,
+        searchable_attribute_names: Optional[Sequence[str]] = None,
     ) -> DetailQuery:
+        allowed_filters = list((parser_rules or cls._EMPTY_RULE_SET).allowed_attribute_filters)
+        if searchable_attribute_names:
+            searchable = {
+                canonicalize_filter_key(item)
+                for item in list(searchable_attribute_names or [])
+                if canonicalize_filter_key(item)
+            }
+            allowed_filters = (
+                [item for item in allowed_filters if canonicalize_filter_key(item) in searchable]
+                if allowed_filters
+                else sorted(searchable)
+            )
         return cls._finalize_parsed_detail(
             requested_fields=list(inference.requested_fields or []),
             attribute_filters=dict(inference.attribute_filters or {}),
@@ -117,7 +119,7 @@ class DetailQueryParser:
             semantic_hints=list(inference.semantic_hints or []),
             clarify_focus=str(inference.clarify_focus or ""),
             confidence=float(inference.confidence or 0.0),
-            allowed_attribute_filters=list((parser_rules or cls._EMPTY_RULE_SET).allowed_attribute_filters),
+            allowed_attribute_filters=allowed_filters,
         )
 
     @classmethod
@@ -128,6 +130,8 @@ class DetailQueryParser:
         nlu_data: Dict[str, Any],
         alias_map: Optional[Dict[str, Dict[str, str]]] = None,
         parser_rules: Optional[ParserRuleSet] = None,
+        db: Any | None = None,
+        searchable_attribute_names: Optional[Sequence[str]] = None,
     ) -> DetailQuery:
         inference = await infer_detail_query(
             user_text=user_text,
@@ -135,5 +139,11 @@ class DetailQueryParser:
             alias_map=alias_map,
             parser_rules=parser_rules,
             existing_filters=(nlu_data or {}).get("attribute_filters"),
+            db=db,
+            searchable_attribute_names=searchable_attribute_names,
         )
-        return cls.build_from_inference(inference=inference, parser_rules=parser_rules)
+        return cls.build_from_inference(
+            inference=inference,
+            parser_rules=parser_rules,
+            searchable_attribute_names=searchable_attribute_names,
+        )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+from app.services.chat.parsing.attribute_normalization import normalize_text
 from app.services.chat.parsing.detail_query_parser import ALLOWED_DETAIL_FIELDS, DetailQueryParser
 
 
@@ -79,13 +80,13 @@ class ProductDetailResolver:
             return True
 
         if key == "gauge":
-            expected_gauge = DetailQueryParser.normalize_gauge_token(expected_norm)
-            actual_gauge = DetailQueryParser.normalize_gauge_token(str(attrs.get("gauge") or ""))
+            expected_gauge = normalize_text(expected_norm)
+            actual_gauge = normalize_text(str(attrs.get("gauge") or ""))
             return bool(actual_gauge) and actual_gauge == expected_gauge
 
         if key in {"length", "size", "outer_diameter", "height", "pincher_size"}:
-            expected_size = DetailQueryParser.normalize_measurement_token(expected_norm)
-            actual_size = DetailQueryParser.normalize_measurement_token(str(attrs.get(key) or ""))
+            expected_size = normalize_text(expected_norm)
+            actual_size = normalize_text(str(attrs.get(key) or ""))
             return bool(actual_size) and actual_size == expected_size
 
         if key in {"ring_size", "size_in_pack", "quantity_in_bulk", "rack"}:

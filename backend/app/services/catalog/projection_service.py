@@ -12,13 +12,6 @@ from app.models.product import Product
 from app.models.product_search_projection import ProductSearchProjection
 from app.services.catalog.attributes_service import eav_service
 from app.services.catalog.attribute_sync_service import product_attribute_sync_service
-from app.utils.synonym_rules import (
-    BODY_PART_FALLBACK_TOKENS,
-    FEATURE_FALLBACK_TOKENS,
-    JEWELRY_TYPE_FALLBACK_TOKENS,
-    MATERIAL_FALLBACK_TOKENS,
-    PRESENTATION_TYPE_FALLBACK_TOKENS,
-)
 
 
 class ProductProjectionSyncService:
@@ -97,10 +90,6 @@ class ProductProjectionSyncService:
         return cls._norm(normalized)
 
     @classmethod
-    def _normalize_color(cls, value: Any) -> str:
-        return cls._norm(value)
-
-    @classmethod
     def _build_projection_row(
         cls,
         *,
@@ -111,44 +100,10 @@ class ProductProjectionSyncService:
         search_text_norm = cls._norm(getattr(product, "search_text", None))
 
         material_norm = cls._normalize_material(attrs.get("material"))
-        if not material_norm:
-            inferred = cls._infer_from_search_text(
-                search_text=search_text_norm,
-                token_map=MATERIAL_FALLBACK_TOKENS,
-            )
-            material_norm = cls._norm(inferred)
-
         jewelry_type_norm = cls._normalize_jewelry_type(attrs.get("jewelry_type") or attrs.get("type"))
-        if not jewelry_type_norm:
-            inferred = cls._infer_from_search_text(
-                search_text=search_text_norm,
-                token_map=JEWELRY_TYPE_FALLBACK_TOKENS,
-            )
-            jewelry_type_norm = cls._norm(inferred)
-
         presentation_type_norm = cls._normalize_presentation_type(attrs.get("presentation_type"))
-        if not presentation_type_norm:
-            inferred = cls._infer_from_search_text(
-                search_text=search_text_norm,
-                token_map=PRESENTATION_TYPE_FALLBACK_TOKENS,
-            )
-            presentation_type_norm = cls._norm(inferred)
-
         body_part_norm = cls._normalize_body_part(attrs.get("body_part"))
-        if not body_part_norm:
-            inferred = cls._infer_from_search_text(
-                search_text=search_text_norm,
-                token_map=BODY_PART_FALLBACK_TOKENS,
-            )
-            body_part_norm = cls._norm(inferred)
-
         feature_norm = cls._normalize_feature(attrs.get("feature"))
-        if not feature_norm:
-            inferred = cls._infer_from_search_text(
-                search_text=search_text_norm,
-                token_map=FEATURE_FALLBACK_TOKENS,
-            )
-            feature_norm = cls._norm(inferred)
 
         return {
             "product_id": product.id,
@@ -160,8 +115,8 @@ class ProductProjectionSyncService:
             "feature_norm": feature_norm or None,
             "gauge_norm": cls._normalize_gauge(attrs.get("gauge")) or None,
             "threading_norm": cls._normalize_threading(attrs.get("threading")) or None,
-            "color_norm": cls._normalize_color(attrs.get("color")) or None,
-            "opal_color_norm": cls._normalize_color(attrs.get("opal_color")) or None,
+            "color_norm": cls._norm(attrs.get("color")) or None,
+            "opal_color_norm": cls._norm(attrs.get("opal_color")) or None,
             "search_text_norm": search_text_norm or None,
             "stock_status_norm": cls._norm(getattr(getattr(product, "stock_status", None), "value", product.stock_status)),
             "is_active": bool(getattr(product, "is_active", True)),

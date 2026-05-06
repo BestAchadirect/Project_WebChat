@@ -15,7 +15,7 @@
     },
     "llm_responses": [
       {
-        "workflow": "off_topic",
+        "workflow": "general_talking",
         "execution_mode": "component",
         "needs_products": false,
         "needs_knowledge": false,
@@ -26,7 +26,7 @@
       }
     ],
     "expected": {
-      "workflow": "off_topic",
+      "workflow": "general_talking",
       "execution_mode": "component",
       "needs_products": false,
       "needs_knowledge": false,
@@ -35,7 +35,7 @@
       "selection_source": "llm",
       "reason": "casual store greeting",
       "confidence": 0.91,
-      "llm_workflow": "off_topic"
+      "llm_workflow": "general_talking"
     }
   },
   {

@@ -1,18 +1,9 @@
 from __future__ import annotations
 
-import re
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
-from app.services.chat.parsing.attribute_normalization import (
-    normalize_catalog_family_value,
-    normalize_text,
-)
-from app.utils.synonym_rules import (
-    ATTRIBUTE_LIST_QUERY_SYNONYMS,
-    ATTRIBUTE_LIST_TARGETS,
-    BODY_PART_SUITABILITY_AMBIGUOUS_MODIFIERS,
-    BODY_PART_SUITABILITY_TERMS,
-)
+from app.services.chat.parsing.attribute_normalization import normalize_text
+from app.services.chat.parsing.attribute_keys import ATTRIBUTE_KEY_ALIASES, canonicalize_filter_key
 
 ALLOWED_PRODUCT_FILTERS = frozenset(
     {
@@ -20,7 +11,7 @@ ALLOWED_PRODUCT_FILTERS = frozenset(
         "max_price",
         "stock_status",
         "category",
-        "body_part",
+        "body_location",
         "feature",
         "presentation_type",
         "material",
@@ -32,7 +23,7 @@ ALLOWED_PRODUCT_FILTERS = frozenset(
 
 HARD_FILTER_KEYS = frozenset(
     {
-        "body_part",
+        "body_location",
         "gauge",
         "feature",
         "presentation_type",
@@ -46,35 +37,16 @@ HARD_FILTER_KEYS = frozenset(
     }
 )
 
-
 def detect_attribute_list_target(text: str) -> str:
-    if not is_attribute_list_query(text):
-        return ""
-    normalized = normalize_text(text)
-    for token, target in ATTRIBUTE_LIST_QUERY_SYNONYMS.items():
-        if re.search(rf"\b{re.escape(token)}\b", normalized):
-            return target
     return ""
 
 
 def is_attribute_list_query(text: str) -> bool:
-    normalized = normalize_text(text)
-    if not normalized:
-        return False
-    return bool(
-        re.search(r"\b(what|which|list|show|available|sell|have|offer|carry)\b", normalized)
-        or normalized.endswith("?")
-    )
+    return False
 
 
 def needs_body_part_suitability_clarification(text: str) -> bool:
-    normalized = normalize_text(text)
-    if not normalized:
-        return False
-    modifier_hit = any(re.search(rf"\b{re.escape(modifier)}\b", normalized) for modifier in BODY_PART_SUITABILITY_AMBIGUOUS_MODIFIERS)
-    if not modifier_hit:
-        return False
-    return any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in BODY_PART_SUITABILITY_TERMS)
+    return False
 
 
 def split_hard_and_soft_filters(
@@ -84,7 +56,7 @@ def split_hard_and_soft_filters(
     hard_filters: Dict[str, str] = {}
     soft_filters: Dict[str, str] = {}
     for key, value in dict(attribute_filters or {}).items():
-        clean_key = str(key or "").strip().lower()
+        clean_key = canonicalize_filter_key(key)
         clean_value = str(value or "").strip()
         if not clean_key or not clean_value:
             continue
@@ -107,13 +79,13 @@ def normalize_filter_map(
         if str(item or "").strip()
     }
     aliases = {
-        str(key or "").strip().lower(): str(value or "").strip().lower()
+        canonicalize_filter_key(key): canonicalize_filter_key(value)
         for key, value in dict(key_aliases or {}).items()
         if str(key or "").strip() and str(value or "").strip()
     }
     clean: Dict[str, Any] = {}
     for key, value in dict(filters or {}).items():
-        clean_key = str(key or "").strip().lower()
+        clean_key = canonicalize_filter_key(key)
         clean_key = aliases.get(clean_key, clean_key)
         if allowed and clean_key not in allowed:
             continue
@@ -123,8 +95,7 @@ def normalize_filter_map(
             trimmed = value.strip()
             if not trimmed:
                 continue
-            family_value = normalize_catalog_family_value(key=clean_key, value=trimmed)
-            clean[clean_key] = family_value or trimmed
+            clean[clean_key] = normalize_text(trimmed)
         else:
             clean[clean_key] = value
     return clean

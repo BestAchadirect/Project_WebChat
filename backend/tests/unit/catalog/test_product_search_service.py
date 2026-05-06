@@ -115,7 +115,6 @@ async def test_structured_search_uses_eav_filters_for_single_and_multi_filter_ca
         [
             _FakeResult(rows=[(product.id,)]),
             _FakeResult(rows=[product]),
-            _FakeResult(rows=[(product.id,)]),
             _FakeResult(rows=[product]),
         ]
     )
@@ -160,7 +159,7 @@ async def test_structured_search_uses_eav_filters_for_single_and_multi_filter_ca
 
 
 @pytest.mark.asyncio
-async def test_structured_search_material_fallback_still_works_without_projection_read(
+async def test_structured_search_material_lookup_uses_explicit_attributes_without_projection_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     product = _ProductStub(id=uuid4(), sku="MAT-2", search_text="implant grade titanium")
@@ -230,3 +229,20 @@ def test_catalog_eav_partial_match_keys_default_includes_new_facets(monkeypatch:
     keys = catalog_eav_partial_match_keys()
 
     assert {"body_part", "feature", "presentation_type", "theme"}.issubset(keys)
+
+
+def test_product_search_normalizes_legacy_attribute_keys_to_db_names() -> None:
+    clean = CatalogProductSearchService._normalize_filter_map(
+        {
+            "body_part": "nose",
+            "body part": "ear",
+            "diameter": "8mm",
+            "type": "labret",
+        }
+    )
+
+    assert clean["body_location"] == "ear"
+    assert clean["outer_diameter"] == "8mm"
+    assert clean["jewelry_type"] == "labret"
+    assert "body_part" not in clean
+    assert "diameter" not in clean

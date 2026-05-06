@@ -3,10 +3,6 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 from app.core.config import settings
-from app.utils.synonym_rules import (
-    JEWELRY_TYPE_FALLBACK_TOKENS,
-    MATERIAL_FALLBACK_TOKENS,
-)
 
 DEFAULT_EAV_PARTIAL_MATCH_KEYS = frozenset(
     {

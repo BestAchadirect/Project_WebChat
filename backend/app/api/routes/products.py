@@ -25,14 +25,6 @@ from app.services.catalog.projection_service import product_projection_sync_serv
 from app.services.imports.service import data_import_service
 from app.services.catalog.attribute_sync_service import product_attribute_sync_service
 from app.services.catalog.category_taxonomy_service import category_taxonomy_service
-from app.utils.synonym_rules import (
-    BODY_PART_FALLBACK_TOKENS,
-    JEWELRY_TYPE_FALLBACK_TOKENS,
-    MATERIAL_FALLBACK_TOKENS,
-    PRESENTATION_TYPE_FALLBACK_TOKENS,
-    FEATURE_FALLBACK_TOKENS,
-    THEME_FALLBACK_TOKENS,
-)
 from app.utils.pagination import normalize_pagination
 
 router = APIRouter()
@@ -143,40 +135,6 @@ def _normalize_casefold_values(values: List[str]) -> List[str]:
 
 def _json_attr_text_expr(field: str):
     return func.lower(func.btrim(Product.attributes[field].astext))
-
-
-def _search_text_token_condition(tokens: List[str]):
-    clean_tokens = [str(token or "").strip().lower() for token in tokens if str(token or "").strip()]
-    if not clean_tokens:
-        return false()
-    search_text = func.lower(func.coalesce(Product.search_text, ""))
-    return or_(*[search_text.like(f"%{token}%") for token in clean_tokens])
-
-
-def _infer_fallback_attribute_value(field: str, search_text: Optional[str]) -> Optional[str]:
-    text = str(search_text or "").strip().lower()
-    if not text:
-        return None
-    if field == "material":
-        mapping = MATERIAL_FALLBACK_TOKENS
-    elif field == "jewelry_type":
-        mapping = JEWELRY_TYPE_FALLBACK_TOKENS
-    elif field == "presentation_type":
-        mapping = PRESENTATION_TYPE_FALLBACK_TOKENS
-    elif field == "body_part":
-        mapping = BODY_PART_FALLBACK_TOKENS
-    elif field == "theme":
-        mapping = THEME_FALLBACK_TOKENS
-    elif field == "feature":
-        mapping = FEATURE_FALLBACK_TOKENS
-    else:
-        mapping = {}
-    for label, tokens in mapping.items():
-        for token in tokens:
-            needle = str(token or "").strip().lower()
-            if needle and needle in text:
-                return label
-    return None
 
 
 def _apply_dual_source_attr_filter(
@@ -486,36 +444,6 @@ def _build_product_schema(product: Product, attrs: dict) -> ProductSchema:
             continue
         merged_attrs[key] = value
 
-    if not merged_attrs.get("material"):
-        inferred_material = _infer_fallback_attribute_value("material", getattr(product, "search_text", None))
-        if inferred_material:
-            merged_attrs["material"] = inferred_material
-
-    if not merged_attrs.get("jewelry_type"):
-        inferred_type = _infer_fallback_attribute_value("jewelry_type", getattr(product, "search_text", None))
-        if inferred_type:
-            merged_attrs["jewelry_type"] = inferred_type
-
-    if not merged_attrs.get("presentation_type"):
-        inferred_presentation_type = _infer_fallback_attribute_value("presentation_type", getattr(product, "search_text", None))
-        if inferred_presentation_type:
-            merged_attrs["presentation_type"] = inferred_presentation_type
-
-    if not merged_attrs.get("body_part"):
-        inferred_body_part = _infer_fallback_attribute_value("body_part", getattr(product, "search_text", None))
-        if inferred_body_part:
-            merged_attrs["body_part"] = inferred_body_part
-
-    if not merged_attrs.get("theme"):
-        inferred_theme = _infer_fallback_attribute_value("theme", getattr(product, "search_text", None))
-        if inferred_theme:
-            merged_attrs["theme"] = inferred_theme
-
-    if not merged_attrs.get("feature"):
-        inferred_feature = _infer_fallback_attribute_value("feature", getattr(product, "search_text", None))
-        if inferred_feature:
-            merged_attrs["feature"] = inferred_feature
-
     return ProductSchema(
         id=str(product.id),
         klevu_id=product.klevu_id,
@@ -713,26 +641,7 @@ async def _build_attribute_facet_rows(
     if payload:
         return payload
 
-    inferred_rows: List[Dict[str, Any]] = []
-    if field == "material":
-        fallback_map = MATERIAL_FALLBACK_TOKENS
-    elif field == "jewelry_type":
-        fallback_map = JEWELRY_TYPE_FALLBACK_TOKENS
-    else:
-        fallback_map = {}
-    for label, tokens in fallback_map.items():
-        if not tokens:
-            continue
-        inferred_stmt = (
-            select(func.count(func.distinct(Product.id)).label("count"))
-            .join(base_subq, Product.id == base_subq.c.id)
-            .where(_search_text_token_condition(tokens))
-        )
-        inferred_count = int((await db.execute(inferred_stmt)).scalar() or 0)
-        if inferred_count > 0:
-            inferred_rows.append({"value": label, "count": inferred_count})
-    inferred_rows.sort(key=lambda item: int(item.get("count", 0)), reverse=True)
-    return inferred_rows
+    return []
 
 
 def _normalize_id_list(ids: List[UUID]) -> List[UUID]:

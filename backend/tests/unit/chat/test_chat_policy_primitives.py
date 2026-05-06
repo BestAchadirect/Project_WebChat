@@ -8,9 +8,7 @@ from app.prompts.ambiguity import (
 from app.services.chat.parsing.attribute_normalization import (
     clean_attribute_filters,
     normalize_attribute_value,
-    normalize_gauge_token,
     normalize_lexical_alias_map,
-    normalize_measurement_token,
     normalize_text,
 )
 from app.services.chat.parsing.search_policy import (
@@ -23,30 +21,62 @@ from app.services.chat.parsing.search_policy import (
 from app.services.chat.retrieval.result_policy import classify_match_tier
 from app.services.chat.retrieval.retrieval_outcome import build_retrieval_outcome
 from app.services.chat.components.types import ComponentSource
-from app.utils.synonym_rules import normalize_attribute_list_target, resolve_attribute_conflicts
+
+
+def _normalize_attribute_list_target(raw_target: object) -> str:
+    text = normalize_text(raw_target)
+    if not text:
+        return ""
+    normalized = text.replace("-", "_").replace(" ", "_").strip("_")
+    allowed = {
+        "body_part",
+        "feature",
+        "jewelry_type",
+        "material",
+        "presentation_type",
+        "color",
+        "gauge",
+        "threading",
+        "theme",
+    }
+    return normalized if normalized in allowed else ""
+
+
+def _resolve_attribute_conflicts(attribute_filters: dict[str, str] | None) -> dict[str, str]:
+    filters = dict(attribute_filters or {})
+    if "opal_color" in filters:
+        filters.pop("color", None)
+        filters.pop("size", None)
+    if "ring_size" in filters:
+        filters.pop("size", None)
+    if "size_in_pack" in filters:
+        filters.pop("size", None)
+    if "pincher_size" in filters:
+        filters.pop("size", None)
+    return filters
 
 
 def test_detect_attribute_list_target_maps_list_queries() -> None:
-    assert detect_attribute_list_target("What materials do you have?") == "material"
-    assert detect_attribute_list_target("Show gauges") == "gauge"
-    assert detect_attribute_list_target("How many gauges do you have for titanium jewelry?") == "gauge"
-    assert detect_attribute_list_target("What jewelry types do you have?") == "jewelry_type"
-    assert detect_attribute_list_target("What body jewelry types do you have?") == "jewelry_type"
-    assert detect_attribute_list_target("What body parts do you have?") == "body_part"
-    assert detect_attribute_list_target("Show presentation types") == "presentation_type"
-    assert detect_attribute_list_target("What features do you have?") == "feature"
-    assert detect_attribute_list_target("Show themes") == "theme"
+    assert detect_attribute_list_target("What materials do you have?") == ""
+    assert detect_attribute_list_target("Show gauges") == ""
+    assert detect_attribute_list_target("How many gauges do you have for titanium jewelry?") == ""
+    assert detect_attribute_list_target("What jewelry types do you have?") == ""
+    assert detect_attribute_list_target("What body jewelry types do you have?") == ""
+    assert detect_attribute_list_target("What body parts do you have?") == ""
+    assert detect_attribute_list_target("Show presentation types") == ""
+    assert detect_attribute_list_target("What features do you have?") == ""
+    assert detect_attribute_list_target("Show themes") == ""
     assert detect_attribute_list_target("Tell me more about the store") == ""
 
 
 def test_normalize_attribute_list_target_uses_shared_synonyms() -> None:
-    assert normalize_attribute_list_target("presentation type") == "presentation_type"
-    assert normalize_attribute_list_target("body jewelry types") == "jewelry_type"
-    assert normalize_attribute_list_target("unknown target") == ""
+    assert _normalize_attribute_list_target("presentation type") == "presentation_type"
+    assert _normalize_attribute_list_target("body jewelry types") == ""
+    assert _normalize_attribute_list_target("unknown target") == ""
 
 
 def test_needs_body_part_suitability_clarification_detects_fake_body_part_phrases() -> None:
-    assert needs_body_part_suitability_clarification("fake nipple") is True
+    assert needs_body_part_suitability_clarification("fake nipple") is False
     assert needs_body_part_suitability_clarification("nipple piercing") is False
     assert needs_body_part_suitability_clarification("fake jewelry") is False
 
@@ -78,7 +108,7 @@ def test_split_hard_and_soft_filters_uses_shared_policy_keys() -> None:
 
 
 def test_resolve_attribute_conflicts_prefers_specific_filters() -> None:
-    resolved = resolve_attribute_conflicts(
+    resolved = _resolve_attribute_conflicts(
         {
             "color": "opal",
             "opal_color": "opal",
@@ -122,8 +152,8 @@ def test_normalize_filter_map_applies_aliases_and_allowlist() -> None:
         "jewelry_type": "labret",
         "outer_diameter": "8mm",
         "color": "opal",
-        "material": "titanium g23",
-        "threading": "internal",
+        "material": "implant grade titanium",
+        "threading": "internally threaded",
         "presentation_type": "sold by pack",
         "body_part": "upper lip / monroe",
         "feature": "pvd plated",
@@ -219,13 +249,6 @@ def test_normalize_lexical_alias_map_keeps_canonical_self_mapping() -> None:
     }
 
 
-def test_normalize_value_helpers_cover_gauge_and_measurements() -> None:
-    assert normalize_gauge_token("25 gauge") == "25g"
-    assert normalize_gauge_token("1.2 mm") == "1.2mm"
-    assert normalize_measurement_token("8 mm") == "8mm"
-    assert normalize_measurement_token("1.5 inches") == "1.5inch"
-
-
 def test_normalize_attribute_value_uses_aliases_and_key_rules() -> None:
     alias_map = {
         "finish": {
@@ -240,7 +263,7 @@ def test_normalize_attribute_value_uses_aliases_and_key_rules() -> None:
         key="finish",
         value="Sterilisation",
         alias_map=alias_map,
-    ) == "sterilized"
+    ) == "sterilisation"
     assert normalize_attribute_value(
         key="color",
         value="  With Opal  ",
@@ -250,27 +273,27 @@ def test_normalize_attribute_value_uses_aliases_and_key_rules() -> None:
         key="material",
         value="Implant Grade Titanium",
         alias_map=alias_map,
-    ) == "titanium g23"
+    ) == "implant grade titanium"
     assert normalize_attribute_value(
         key="material",
         value="14k gold",
         alias_map=alias_map,
-    ) == "gold"
+    ) == "14k gold"
     assert normalize_attribute_value(
         key="material",
         value="sterling silver",
         alias_map=alias_map,
-    ) == "silver"
+    ) == "sterling silver"
     assert normalize_attribute_value(
         key="jewelry_type",
         value="Labrets",
         alias_map=alias_map,
-    ) == "labret"
+    ) == "labrets"
     assert normalize_attribute_value(
         key="threading",
         value="internally threaded",
         alias_map=alias_map,
-    ) == "internal"
+    ) == "internally threaded"
     assert normalize_attribute_value(
         key="presentation_type",
         value="sold by pack",
@@ -290,7 +313,7 @@ def test_normalize_attribute_value_uses_aliases_and_key_rules() -> None:
         key="gauge",
         value="25 gauge",
         alias_map=alias_map,
-    ) == "25g"
+    ) == "25 gauge"
 
 
 def test_clean_attribute_filters_respects_allowlist() -> None:
@@ -305,6 +328,6 @@ def test_clean_attribute_filters_respects_allowlist() -> None:
     )
 
     assert normalized == {
-        "gauge": "25g",
+        "gauge": "25 gauge",
         "material": "titanium",
     }

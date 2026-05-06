@@ -17,19 +17,9 @@ from app.models.product import Product, ProductEmbedding, StockStatus
 from app.models.product_attribute import ProductAttributeValue
 from app.schemas.chat import ProductCard
 from app.services.catalog.attributes_service import eav_service
-from app.services.catalog.search_policy import (
-    JEWELRY_TYPE_FALLBACK_TOKENS,
-    MATERIAL_FALLBACK_TOKENS,
-    uses_eav_partial_match,
-)
+from app.services.catalog.search_policy import uses_eav_partial_match
 from app.services.chat.parsing.attribute_normalization import normalize_text
-from app.services.chat.parsing.search_policy import normalize_filter_map
-from app.utils.synonym_rules import (
-    BODY_PART_FALLBACK_TOKENS,
-    FEATURE_FALLBACK_TOKENS,
-    PRESENTATION_TYPE_FALLBACK_TOKENS,
-    THEME_FALLBACK_TOKENS,
-)
+from app.services.chat.parsing.search_policy import ATTRIBUTE_KEY_ALIASES, normalize_filter_map
 
 
 @dataclass
@@ -64,19 +54,7 @@ class CatalogProductSearchService:
         "want",
     }
 
-    _FILTER_KEY_ALIASES: Dict[str, str] = {
-        "body part": "body_part",
-        "body parts": "body_part",
-        "feature": "feature",
-        "features": "feature",
-        "presentation type": "presentation_type",
-        "presentation types": "presentation_type",
-        "theme": "theme",
-        "themes": "theme",
-        "type": "jewelry_type",
-        "types": "jewelry_type",
-        "diameter": "outer_diameter",
-    }
+    _FILTER_KEY_ALIASES: Dict[str, str] = dict(ATTRIBUTE_KEY_ALIASES)
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -222,55 +200,6 @@ class CatalogProductSearchService:
     ) -> ProductCard:
         attrs = self._merge_product_attrs(product.attributes, eav_attrs)
 
-        search_text = str(getattr(product, "search_text", "") or "").lower()
-        if not str(attrs.get("material") or "").strip():
-            inferred_material = self._infer_from_search_text(
-                search_text=search_text,
-                token_map=MATERIAL_FALLBACK_TOKENS,
-            )
-            if inferred_material:
-                attrs["material"] = inferred_material
-
-        if not str(attrs.get("jewelry_type") or attrs.get("type") or "").strip():
-            inferred_type = self._infer_from_search_text(
-                search_text=search_text,
-                token_map=JEWELRY_TYPE_FALLBACK_TOKENS,
-            )
-            if inferred_type:
-                attrs["jewelry_type"] = inferred_type
-
-        if not str(attrs.get("presentation_type") or "").strip():
-            inferred_presentation_type = self._infer_from_search_text(
-                search_text=search_text,
-                token_map=PRESENTATION_TYPE_FALLBACK_TOKENS,
-            )
-            if inferred_presentation_type:
-                attrs["presentation_type"] = inferred_presentation_type
-
-        if not str(attrs.get("body_part") or "").strip():
-            inferred_body_part = self._infer_from_search_text(
-                search_text=search_text,
-                token_map=BODY_PART_FALLBACK_TOKENS,
-            )
-            if inferred_body_part:
-                attrs["body_part"] = inferred_body_part
-
-        if not str(attrs.get("theme") or "").strip():
-            inferred_theme = self._infer_from_search_text(
-                search_text=search_text,
-                token_map=THEME_FALLBACK_TOKENS,
-            )
-            if inferred_theme:
-                attrs["theme"] = inferred_theme
-
-        if not str(attrs.get("feature") or "").strip():
-            inferred_feature = self._infer_from_search_text(
-                search_text=search_text,
-                token_map=FEATURE_FALLBACK_TOKENS,
-            )
-            if inferred_feature:
-                attrs["feature"] = inferred_feature
-
         return ProductCard(
             id=product.id,
             object_id=product.object_id,
@@ -286,22 +215,6 @@ class CatalogProductSearchService:
             attributes=attrs,
             search_text=product.search_text,
         )
-
-    @staticmethod
-    def _infer_from_search_text(
-        *,
-        search_text: str,
-        token_map: Dict[str, Sequence[str]],
-    ) -> Optional[str]:
-        text = str(search_text or "").strip().lower()
-        if not text:
-            return None
-        for label, tokens in token_map.items():
-            for token in tokens:
-                needle = str(token or "").strip().lower()
-                if needle and needle in text:
-                    return label
-        return None
 
     @staticmethod
     def _clean_code_candidate(token: str) -> str:
@@ -637,99 +550,75 @@ class CatalogProductSearchService:
         if not candidates and clean_filters:
             definitions = await eav_service.get_definitions_by_name(self.db, list(clean_filters.keys()))
             if len(definitions) == len(clean_filters):
-                first_key = "material" if "material" in clean_filters else sorted(clean_filters.keys())[0]
-                first_def = definitions[first_key]
-                first_value = clean_filters[first_key]
-                first_value_norm = self._normalize_filter_value(first_value)
-                material_fallback_used = False
-                candidate_stmt = (
-                    select(ProductAttributeValue.product_id)
-                    .where(
-                        self._eav_filter_condition(
-                            attribute_id=int(first_def.id),
-                            key=first_key,
-                            expected_norm=first_value_norm,
+                if len(clean_filters) > 1:
+                    conditions = []
+                    filtered_count = 0
+                    for name, expected in clean_filters.items():
+                        definition = definitions.get(name)
+                        if not definition:
+                            conditions = []
+                            break
+                        expected_norm = self._normalize_filter_value(expected)
+                        conditions.append(
+                            self._eav_filter_condition(
+                                attribute_id=int(definition.id),
+                                key=name,
+                                expected_norm=expected_norm,
+                            )
                         )
-                    )
-                    .limit(cap)
-                )
-                candidate_ids = [row[0] for row in (await self.db.execute(candidate_stmt)).all()]
-                if first_key == "material" and not candidate_ids and first_value_norm:
-                    material_fallback_stmt = (
-                        select(Product.id)
-                        .where(Product.is_active.is_(True))
-                        .where(func.lower(func.coalesce(Product.search_text, "")).like(f"%{first_value_norm}%"))
+                        filtered_count += 1
+                    if conditions:
+                        refined_subq = (
+                            select(ProductAttributeValue.product_id)
+                            .where(or_(*conditions))
+                            .group_by(ProductAttributeValue.product_id)
+                            .having(
+                                func.count(func.distinct(ProductAttributeValue.attribute_id))
+                                == filtered_count
+                            )
+                            .subquery()
+                        )
+                        product_stmt = (
+                            select(Product)
+                            .where(Product.id.in_(select(refined_subq.c.product_id)))
+                            .where(Product.is_active.is_(True))
+                            .order_by(
+                                case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
+                                Product.created_at.desc(),
+                            )
+                            .limit(max(1, int(limit)))
+                        )
+                        product_result = await self.db.execute(product_stmt)
+                        candidates = list(product_result.scalars().all())
+                else:
+                    first_key = "material" if "material" in clean_filters else sorted(clean_filters.keys())[0]
+                    first_def = definitions[first_key]
+                    first_value = clean_filters[first_key]
+                    first_value_norm = self._normalize_filter_value(first_value)
+                    material_fallback_used = False
+                    candidate_stmt = (
+                        select(ProductAttributeValue.product_id)
+                        .where(
+                            self._eav_filter_condition(
+                                attribute_id=int(first_def.id),
+                                key=first_key,
+                                expected_norm=first_value_norm,
+                            )
+                        )
                         .limit(cap)
                     )
-                    candidate_ids = [row[0] for row in (await self.db.execute(material_fallback_stmt)).all()]
-                    material_fallback_used = bool(candidate_ids)
+                    candidate_ids = [row[0] for row in (await self.db.execute(candidate_stmt)).all()]
+                    if first_key == "material" and not candidate_ids and first_value_norm:
+                        material_fallback_stmt = (
+                            select(Product.id)
+                            .where(Product.is_active.is_(True))
+                            .where(func.lower(func.coalesce(Product.search_text, "")).like(f"%{first_value_norm}%"))
+                            .limit(cap)
+                        )
+                        candidate_ids = [row[0] for row in (await self.db.execute(material_fallback_stmt)).all()]
+                        material_fallback_used = bool(candidate_ids)
 
-                if candidate_ids:
-                    if len(clean_filters) > 1:
-                        conditions = []
-                        filtered_count = 0
-                        for name, expected in clean_filters.items():
-                            if material_fallback_used and name == "material":
-                                continue
-                            definition = definitions.get(name)
-                            if not definition:
-                                conditions = []
-                                break
-                            expected_norm = self._normalize_filter_value(expected)
-                            conditions.append(
-                                self._eav_filter_condition(
-                                    attribute_id=int(definition.id),
-                                    key=name,
-                                    expected_norm=expected_norm,
-                                )
-                            )
-                            filtered_count += 1
-                        if conditions:
-                            refined_subq = (
-                                select(ProductAttributeValue.product_id)
-                                .where(ProductAttributeValue.product_id.in_(candidate_ids))
-                                .where(or_(*conditions))
-                                .group_by(ProductAttributeValue.product_id)
-                                .having(
-                                    func.count(func.distinct(ProductAttributeValue.attribute_id))
-                                    == filtered_count
-                                )
-                                .subquery()
-                            )
-                            product_stmt = (
-                                select(Product)
-                                .where(Product.id.in_(select(refined_subq.c.product_id)))
-                                .where(Product.is_active.is_(True))
-                                .order_by(
-                                    case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
-                                    Product.created_at.desc(),
-                                )
-                                .limit(max(1, int(limit)))
-                            )
-                            if material_fallback_used and first_value_norm:
-                                product_stmt = product_stmt.where(
-                                    func.lower(func.coalesce(Product.search_text, "")).like(f"%{first_value_norm}%")
-                                )
-                            product_result = await self.db.execute(product_stmt)
-                            candidates = list(product_result.scalars().all())
-                        else:
-                            product_stmt = (
-                                select(Product)
-                                .where(Product.id.in_(candidate_ids))
-                                .where(Product.is_active.is_(True))
-                                .order_by(
-                                    case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
-                                    Product.created_at.desc(),
-                                )
-                                .limit(max(1, int(limit)))
-                            )
-                            if material_fallback_used and first_value_norm:
-                                product_stmt = product_stmt.where(
-                                    func.lower(func.coalesce(Product.search_text, "")).like(f"%{first_value_norm}%")
-                                )
-                            product_result = await self.db.execute(product_stmt)
-                            candidates = list(product_result.scalars().all())
-                    else:
+                    if candidate_ids:
                         product_stmt = (
                             select(Product)
                             .where(Product.id.in_(candidate_ids))

@@ -17,14 +17,6 @@ def _source_for_public_workflow(public_workflow: str) -> ComponentSource:
     return ComponentSource.ERROR
 
 
-def _entity_hint_bool(understanding: UnderstandingResult, key: str) -> bool:
-    return bool((understanding.entity_hints or {}).get(key))
-
-
-def _entity_hint_text(understanding: UnderstandingResult, key: str) -> str:
-    return str((understanding.entity_hints or {}).get(key) or "").strip()
-
-
 _COMPANY_INFO_SUBINTENTS = {
     "about_company",
     "assistant_handoff",
@@ -43,14 +35,31 @@ _COMPANY_INFO_SUBINTENTS = {
     "support_contact",
 }
 
+_CONTACT_LIKE_SUBINTENTS = {
+    "contact",
+    "company_contact",
+    "sales_contact",
+    "support",
+    "support_contact",
+    "human_help",
+    "assistant_handoff",
+    "store_overview",
+    "store_location",
+    "location",
+    "showroom",
+    "store_hours",
+}
+
 
 def _uses_response_intent_contract(understanding: UnderstandingResult) -> bool:
     debug = dict(getattr(understanding, "debug", {}) or {})
     intent = str(getattr(understanding, "intent", "") or "").strip().lower()
     response_policy = str(getattr(understanding, "response_policy", "") or "").strip().lower()
+    workflow_hypothesis = str(getattr(understanding, "workflow_hypothesis", "") or "").strip().lower()
     return bool(
         debug.get("understanding_intent")
         or intent in {"product_information", "knowledge_policy", "general_talking", "off_topic"}
+        or workflow_hypothesis
         or response_policy
         not in {
             "",
@@ -65,12 +74,27 @@ def _uses_response_intent_contract(understanding: UnderstandingResult) -> bool:
     )
 
 
+def _is_contact_like_request(understanding: UnderstandingResult) -> bool:
+    intent = str(getattr(understanding, "intent", "") or "").strip().lower()
+    if intent not in {"knowledge_policy", "general_talking"}:
+        return False
+
+    subintent = str(getattr(understanding, "subintent", "") or "").strip().lower()
+    if not subintent:
+        return False
+
+    subintent_parts = {
+        part
+        for part in subintent.replace("/", " ").replace("-", " ").replace("_", " ").split()
+        if part
+    }
+    return bool(subintent in _CONTACT_LIKE_SUBINTENTS or subintent_parts.intersection(_CONTACT_LIKE_SUBINTENTS))
+
+
 def _is_company_info_request(understanding: UnderstandingResult) -> bool:
-    if not _uses_response_intent_contract(understanding):
-        return bool(
-            _entity_hint_bool(understanding, "has_company_signal")
-            or understanding.workflow_hypothesis == "company_info"
-        )
+    legacy_workflow = str(getattr(understanding, "workflow_hypothesis", "") or "").strip().lower()
+    if legacy_workflow == "company_info":
+        return True
 
     intent = str(getattr(understanding, "intent", "") or "").strip().lower()
     if intent != "knowledge_policy":
@@ -86,6 +110,8 @@ def _is_company_info_request(understanding: UnderstandingResult) -> bool:
         return bool(
             subintent in _COMPANY_INFO_SUBINTENTS
             or subintent_parts.intersection(_COMPANY_INFO_SUBINTENTS)
+            or subintent in _CONTACT_LIKE_SUBINTENTS
+            or subintent_parts.intersection(_CONTACT_LIKE_SUBINTENTS)
         )
 
     return bool(understanding.store_overview_request)
@@ -96,38 +122,33 @@ def _derive_internal_workflow(understanding: UnderstandingResult) -> str:
         return "clarify"
     if _uses_response_intent_contract(understanding):
         intent = str(getattr(understanding, "intent", "") or "").strip().lower()
+        legacy_workflow = str(getattr(understanding, "workflow_hypothesis", "") or "").strip().lower()
+        response_policy = str(getattr(understanding, "response_policy", "") or "").strip().lower()
         if intent == "product_information":
             if bool(understanding.needs_products) and bool(understanding.needs_knowledge):
                 return "mixed"
             if bool(understanding.needs_products):
                 return "product_detail" if list(understanding.sku_tokens or []) else "catalog_search"
+            if bool(understanding.needs_knowledge):
+                return "policy_info"
             return "general_talking"
         if intent == "knowledge_policy":
             if _is_company_info_request(understanding):
                 return "company_info"
             return "policy_info"
         if intent == "general_talking":
+            if _is_contact_like_request(understanding):
+                return "company_info"
+            if bool(understanding.needs_knowledge) or response_policy == "answer_from_retrieved_data":
+                return "policy_info"
             return "general_talking"
         if intent == "off_topic":
             return "off_topic"
+        if legacy_workflow in {"company_info", "policy_info", "mixed", "smalltalk", "off_topic", "catalog_search", "product_detail"}:
+            return legacy_workflow
+        if intent == "clarify":
+            return "clarify"
         return "clarify"
-    if _entity_hint_bool(understanding, "has_smalltalk_signal"):
-        return "smalltalk"
-    if _entity_hint_bool(understanding, "has_off_topic_signal"):
-        return "off_topic"
-    if _entity_hint_bool(understanding, "has_mixed_signal"):
-        return "mixed"
-    if _entity_hint_bool(understanding, "has_company_signal"):
-        return "company_info"
-    if _entity_hint_bool(understanding, "has_policy_signal"):
-        return "policy_info"
-    if _entity_hint_bool(understanding, "has_product_detail_signal"):
-        return "product_detail"
-    if _entity_hint_bool(understanding, "has_product_search_signal") or _entity_hint_bool(
-        understanding,
-        "has_product_signal",
-    ):
-        return "catalog_search"
     return "clarify"
 
 
@@ -136,31 +157,35 @@ def _derive_public_workflow(understanding: UnderstandingResult) -> str:
         return "fallback"
     if _uses_response_intent_contract(understanding):
         intent = str(getattr(understanding, "intent", "") or "").strip().lower()
+        legacy_workflow = str(getattr(understanding, "workflow_hypothesis", "") or "").strip().lower()
+        response_policy = str(getattr(understanding, "response_policy", "") or "").strip().lower()
         if intent == "product_information":
-            return "catalog" if bool(understanding.needs_products) else "general_talking"
+            if bool(understanding.needs_products):
+                return "catalog"
+            if bool(understanding.needs_knowledge):
+                return "knowledge"
+            return "general_talking"
         if intent == "knowledge_policy":
             return "knowledge" if bool(understanding.needs_knowledge) else "general_talking"
         if intent == "general_talking":
+            if _is_contact_like_request(understanding):
+                return "knowledge"
+            if bool(understanding.needs_knowledge) or response_policy == "answer_from_retrieved_data":
+                return "knowledge"
             return "general_talking"
         if intent == "off_topic":
             return "off_topic"
+        if legacy_workflow in {"company_info", "policy_info"}:
+            return "knowledge"
+        if legacy_workflow in {"mixed", "catalog_search", "product_detail"}:
+            return "catalog"
+        if legacy_workflow == "smalltalk":
+            return "general_talking"
+        if legacy_workflow == "off_topic":
+            return "off_topic"
+        if intent == "clarify":
+            return "fallback"
         return "fallback"
-    if str(understanding.failure_reason or "").strip() and not (
-        _entity_hint_bool(understanding, "has_product_signal")
-        or _entity_hint_bool(understanding, "has_knowledge_signal")
-        or _entity_hint_bool(understanding, "has_smalltalk_signal")
-        or _entity_hint_bool(understanding, "has_off_topic_signal")
-    ):
-        return "fallback"
-    if _entity_hint_bool(understanding, "has_smalltalk_signal") or _entity_hint_bool(
-        understanding,
-        "has_off_topic_signal",
-    ):
-        return "off_topic"
-    if _entity_hint_bool(understanding, "has_product_signal"):
-        return "catalog"
-    if _entity_hint_bool(understanding, "has_knowledge_signal"):
-        return "knowledge"
     return "fallback"
 
 
@@ -177,20 +202,10 @@ def _fallback_reason(understanding: UnderstandingResult) -> str:
         route_reason=str(understanding.reason or ""),
         blank_reason="fallback_missing_signal",
         default_reason="fallback_vague_store_request",
-        has_product_signal=any(
-            _entity_hint_bool(understanding, key)
-            for key in (
-                "has_product_signal",
-                "has_knowledge_signal",
-                "has_product_search_signal",
-                "has_product_detail_signal",
-                "has_policy_signal",
-                "has_company_signal",
-            )
-        ),
-        has_knowledge_signal=_entity_hint_bool(understanding, "has_knowledge_signal"),
-        has_smalltalk_signal=_entity_hint_bool(understanding, "has_smalltalk_signal"),
-        has_off_topic_signal=_entity_hint_bool(understanding, "has_off_topic_signal"),
+        has_product_signal=bool(understanding.needs_products),
+        has_knowledge_signal=bool(understanding.needs_knowledge),
+        has_smalltalk_signal=str(getattr(understanding, "intent", "") or "").strip().lower() == "general_talking",
+        has_off_topic_signal=str(getattr(understanding, "intent", "") or "").strip().lower() == "off_topic",
     )
 
 
@@ -210,32 +225,18 @@ def _build_route_decision(understanding: UnderstandingResult) -> routing_policy.
             confidence=float(understanding.intent_confidence or 0.0),
         )
 
-    has_product_signal = _entity_hint_bool(understanding, "has_product_signal")
-    has_knowledge_signal = _entity_hint_bool(understanding, "has_knowledge_signal")
-    preferred_knowledge_query = _entity_hint_text(understanding, "preferred_knowledge_query")
-    preferred_store_overview_request = _entity_hint_bool(
-        understanding,
-        "preferred_store_overview_request",
-    )
+    needs_products = bool(understanding.needs_products or public_workflow == "catalog")
+    needs_knowledge = bool(understanding.needs_knowledge or public_workflow == "knowledge")
+    needs_clarification = bool(public_workflow == "fallback")
     store_overview_request = bool(
-        preferred_store_overview_request or understanding.store_overview_request
+        understanding.store_overview_request and _is_company_info_request(understanding)
     )
-    if _uses_response_intent_contract(understanding):
-        store_overview_request = bool(
-            store_overview_request and _is_company_info_request(understanding)
-        )
-
-    needs_products = bool(has_product_signal or understanding.needs_products or public_workflow == "catalog")
-    needs_knowledge = bool(
-        has_knowledge_signal
-        or understanding.needs_knowledge
-        or public_workflow == "knowledge"
-    )
-    needs_clarification = False
     if public_workflow == "off_topic":
         needs_products = False
         needs_knowledge = False
         needs_clarification = False
+
+    preferred_knowledge_query = str(getattr(understanding, "knowledge_query", "") or "").strip()
 
     return routing_policy.WorkflowDecision(
         workflow=public_workflow,

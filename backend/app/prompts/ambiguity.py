@@ -10,6 +10,7 @@ AMBIGUITY_FAMILY_KEYS = (
     "finish",
     "measurement",
     "compatibility",
+    "body_part",
     "policy",
 )
 

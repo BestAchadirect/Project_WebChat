@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import time
 from typing import Any, Dict, Optional
 
@@ -14,8 +13,6 @@ from app.services.catalog.product_search import CatalogProductSearchService
 from app.services.chat.runtime import conversation_state
 from app.services.chat.presentation import product_presentation
 from app.services.chat.routing import routing_policy
-from app.services.chat.parsing.search_policy import detect_attribute_list_target
-from app.services.chat.parsing.search_policy import needs_body_part_suitability_clarification
 from app.services.chat.components.cache import ComponentCache
 from app.services.chat.components.field_resolver import FieldDependencyResolver
 from app.services.chat.components.pipeline_runtime.state import (
@@ -45,7 +42,6 @@ from app.services.chat.components.pipeline_runtime.workflow_policy import Pipeli
 from app.services.chat.retrieval.pipeline_support import PipelineSupportMixin
 from app.services.chat.presentation.pipeline_presentation import PipelinePresentationMixin
 from app.services.chat.parsing.llm_attribute_extractor import infer_attribute_list_target
-from app.services.chat.parsing.search_policy import is_attribute_list_query
 from app.services.chat.routing.contracts import DecisionState
 
 
@@ -180,38 +176,25 @@ class ComponentPipeline(
             detail_clarify_focus = str(getattr(detail, "clarify_focus", "") or "").strip()
             attribute_list_target = ""
             attribute_list_target_source = ""
-            attribute_list_allowed = not detail_semantic_hints and not detail_clarify_focus
-            if attribute_list_allowed:
-                attribute_list_target = detect_attribute_list_target(text)
-                attribute_list_target_source = "deterministic" if attribute_list_target else ""
-                if (
-                    not attribute_list_target
-                    and workflow == "catalog"
-                    and is_attribute_list_query(text)
-                    and not dict(getattr(detail, "attribute_filters", {}) or {})
-                ):
-                    attribute_list_result = await infer_attribute_list_target(
-                        user_text=text,
-                        workflow=workflow,
-                    )
-                    attribute_list_confidence = float(getattr(attribute_list_result, "confidence", 0.0) or 0.0)
-                    if attribute_list_confidence >= float(getattr(setup.runtime_capabilities, "chat_attribute_interpretation_min_confidence", 0.55) or 0.55):
-                        attribute_list_target = str(attribute_list_result.target or "").strip().lower()
-                        attribute_list_target_source = "llm" if attribute_list_target else "none"
-                    if int(attribute_list_result.llm_call_count or 0) > 0:
-                        llm_calls += int(attribute_list_result.llm_call_count or 0)
-                        external_call_counts["llm_attribute_list_target"] = int(attribute_list_result.llm_call_count or 0)
-                    debug_meta.update(dict(attribute_list_result.debug or {}))
-            if attribute_list_target_source:
-                debug_meta["attribute_list_target_source"] = attribute_list_target_source
             if (
                 workflow == "catalog"
-                and not catalog_pagination_requested
-                and needs_body_part_suitability_clarification(text)
+                and not dict(getattr(detail, "attribute_filters", {}) or {})
+                and not ambiguity_blocks_retrieval(detail_clarify_focus)
             ):
-                detail = replace(detail, clarify_focus="body_part")
-                debug_meta["product_suitability_gate_used"] = True
-                debug_meta["product_suitability_gate_focus"] = "body_part"
+                attribute_list_result = await infer_attribute_list_target(
+                    user_text=text,
+                    workflow=workflow,
+                )
+                attribute_list_confidence = float(getattr(attribute_list_result, "confidence", 0.0) or 0.0)
+                if attribute_list_confidence >= float(getattr(setup.runtime_capabilities, "chat_attribute_interpretation_min_confidence", 0.55) or 0.55):
+                    attribute_list_target = str(attribute_list_result.target or "").strip().lower()
+                    attribute_list_target_source = "llm" if attribute_list_target else "none"
+                if int(attribute_list_result.llm_call_count or 0) > 0:
+                    llm_calls += int(attribute_list_result.llm_call_count or 0)
+                    external_call_counts["llm_attribute_list_target"] = int(attribute_list_result.llm_call_count or 0)
+                debug_meta.update(dict(attribute_list_result.debug or {}))
+            if attribute_list_target_source:
+                debug_meta["attribute_list_target_source"] = attribute_list_target_source
             state = PipelineWorkflowState(
                 retrieval=PipelineRetrievalState(source=source),
                 decision=PipelineDecisionRuntimeState(
@@ -232,9 +215,7 @@ class ComponentPipeline(
             )
             if not catalog_pagination_requested and ambiguity_blocks_retrieval(getattr(detail, "clarify_focus", "")):
                 state.decision.ambiguity_reason = (
-                    "structured_no_match"
-                    if bool(debug_meta.get("product_suitability_gate_used"))
-                    else "semantic_concept_unclear"
+                    "semantic_concept_unclear"
                 )
                 state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
                 state.presentation.canonical_products = []

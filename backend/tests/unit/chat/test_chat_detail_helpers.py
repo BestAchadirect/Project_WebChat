@@ -317,7 +317,7 @@ async def test_detail_query_parser_async_uses_llm_result(monkeypatch: pytest.Mon
 
     assert parsed.requested_fields == ["price", "image"]
     assert parsed.attribute_filters.get("color") == "opal"
-    assert parsed.attribute_filters.get("gauge") == "25g"
+    assert parsed.attribute_filters.get("gauge") == "25 gauge"
     assert parsed.wants_image is True
     assert parsed.semantic_hints == ["heart"]
     assert parsed.is_detail_request is True

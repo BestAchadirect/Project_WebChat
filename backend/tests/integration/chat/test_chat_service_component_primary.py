@@ -492,14 +492,14 @@ async def test_process_chat_uses_entity_hints_for_knowledge_agentic_selection(
             locale="en-US",
             channel="widget",
             sku_tokens=[],
-            workflow_hypothesis="clarify",
+            workflow_hypothesis="policy_info",
             intent_confidence=0.91,
             reason="policy_signal_detected",
             knowledge_query="what is your return policy",
             needs_knowledge=True,
+            intent="knowledge_policy",
+            response_policy="answer_from_retrieved_data",
             entity_hints={
-                "has_policy_signal": True,
-                "has_knowledge_signal": True,
                 "preferred_knowledge_query": "what is your return policy",
             },
             debug={"understanding_source": "deterministic"},
@@ -554,12 +554,11 @@ async def test_process_chat_keeps_off_topic_requests_component_first_even_when_a
             locale="en-US",
             channel="widget",
             sku_tokens=[],
-            workflow_hypothesis="clarify",
+            workflow_hypothesis="off_topic",
             intent_confidence=0.96,
             reason="smalltalk_detected",
-            entity_hints={
-                "has_smalltalk_signal": True,
-            },
+            intent="off_topic",
+            response_policy="safe_redirect",
             debug={"understanding_source": "deterministic"},
         )
 

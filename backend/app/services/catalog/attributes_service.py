@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import sqlalchemy as sa
@@ -14,6 +15,11 @@ from app.models.product_attribute import (
 
 class EAVService:
     """Helpers for reading and writing product EAV attributes."""
+
+    _INTERNAL_SEARCH_ATTRIBUTE_NAMES = frozenset({"source_id", "source_raw_sku"})
+
+    def __init__(self) -> None:
+        self._searchable_attribute_cache: Tuple[float, Tuple[str, ...]] = (0.0, tuple())
 
     @staticmethod
     def _normalize_name(name: str) -> str:
@@ -78,6 +84,43 @@ class EAVService:
         result = await db.execute(stmt)
         rows = result.scalars().all()
         return {row.name: row for row in rows}
+
+    async def get_searchable_attribute_names(
+        self,
+        db: AsyncSession,
+        *,
+        exclude_internal: bool = True,
+        ttl_seconds: int = 300,
+    ) -> List[str]:
+        """Return enabled attributes that currently have at least one catalog value."""
+        now = time.time()
+        cached_at, cached_names = self._searchable_attribute_cache
+        if cached_names and cached_at + max(1, int(ttl_seconds)) > now:
+            return list(cached_names)
+
+        exists_values = (
+            select(ProductAttributeValue.id)
+            .where(ProductAttributeValue.attribute_id == AttributeDefinition.id)
+            .limit(1)
+            .exists()
+        )
+        stmt = (
+            select(AttributeDefinition.name)
+            .where(AttributeDefinition.is_enabled.is_(True))
+            .where(exists_values)
+            .order_by(AttributeDefinition.display_order.asc(), AttributeDefinition.name.asc())
+        )
+        rows = list((await db.execute(stmt)).scalars().all() or [])
+        names = [
+            str(name or "").strip().lower()
+            for name in rows
+            if str(name or "").strip()
+        ]
+        if exclude_internal:
+            names = [name for name in names if name not in self._INTERNAL_SEARCH_ATTRIBUTE_NAMES]
+        deduped = tuple(dict.fromkeys(names))
+        self._searchable_attribute_cache = (now, deduped)
+        return list(deduped)
 
     async def ensure_definitions(
         self,

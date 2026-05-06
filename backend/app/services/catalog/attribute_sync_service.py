@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.product import Product
 from app.services.catalog.attributes_service import eav_service
-from app.utils.synonym_rules import SEARCH_SYNONYMS, normalize_family_value
 
 ATTRIBUTE_FIELDS: List[str] = [
     "body_part",
@@ -72,7 +71,7 @@ class ProductAttributeSyncService:
 
     @staticmethod
     def _normalize_material(value: str) -> str:
-        return normalize_family_value(family="material", value=value) or value.strip()
+        return value.strip()
 
     @staticmethod
     def _normalize_gauge(value: str) -> str:
@@ -86,27 +85,27 @@ class ProductAttributeSyncService:
 
     @staticmethod
     def _normalize_threading(value: str) -> str:
-        return normalize_family_value(family="threading", value=value) or value.strip()
+        return value.strip()
 
     @staticmethod
     def _normalize_presentation_type(value: str) -> str:
-        return normalize_family_value(family="presentation_type", value=value) or value.strip()
+        return value.strip()
 
     @staticmethod
     def _normalize_body_part(value: str) -> str:
-        return normalize_family_value(family="body_part", value=value) or value.strip()
+        return value.strip()
 
     @staticmethod
     def _normalize_theme(value: str) -> str:
-        return normalize_family_value(family="theme", value=value) or value.strip()
+        return value.strip()
 
     @staticmethod
     def _normalize_feature(value: str) -> str:
-        return normalize_family_value(family="feature", value=value) or value.strip()
+        return value.strip()
 
     @staticmethod
     def _normalize_jewelry_type(value: str) -> str:
-        return normalize_family_value(family="jewelry_type", value=value) or value.strip()
+        return value.strip()
 
     def normalize_attribute_value(self, key: str, value: Any) -> Any:
         if value is None:
@@ -184,18 +183,6 @@ class ProductAttributeSyncService:
                 expanded.append(clean)
         return expanded
 
-    def _build_search_synonyms(self, attributes: Mapping[str, Any]) -> List[str]:
-        synonyms: List[str] = []
-        for key in SEARCH_KEYWORD_FIELDS:
-            value = attributes.get(key)
-            if not isinstance(value, str) or not value.strip():
-                continue
-            canonical = value.strip().lower()
-            synonyms.extend(SEARCH_SYNONYMS.get(canonical, []))
-            if key == "gauge" and canonical.endswith("g"):
-                synonyms.append(f"{canonical[:-1]} gauge")
-        return synonyms
-
     def _build_search_keywords(
         self,
         *,
@@ -246,16 +233,14 @@ class ProductAttributeSyncService:
         attributes: Mapping[str, Any],
         manual_keywords: Optional[Sequence[str]] = None,
         attribute_columns: Optional[Sequence[str]] = None,
-    ) -> Dict[str, Any]:
+        ) -> Dict[str, Any]:
         columns = list(attribute_columns or ATTRIBUTE_FIELDS)
-        synonyms = self._build_search_synonyms(attributes)
         parts: List[Any] = [
             display_name,
             sku,
             object_id,
             description,
             *(legacy_skus or []),
-            *synonyms,
             *(manual_keywords or []),
         ]
         for key in columns:

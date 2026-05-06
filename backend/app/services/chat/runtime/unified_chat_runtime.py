@@ -13,6 +13,7 @@ import app.services.chat.parsing.parser_rule_cache as parser_rule_cache
 import app.services.chat.routing.routing_policy as routing_policy
 from app.services.chat.parsing.detail_query_parser import DetailQuery, DetailQueryParser
 from app.services.chat.parsing.llm_attribute_extractor import infer_detail_query
+from app.services.catalog.attributes_service import eav_service
 from app.services.chat.routing.decision_engine import build_decision_state
 from app.services.chat.routing.understanding import build_understanding_result
 from app.services.chat.runtime.capabilities import build_chat_runtime_capabilities
@@ -69,6 +70,13 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
             except Exception as parser_exc:
                 debug_meta["parser_rule_cache_error"] = str(parser_exc)
         sku_tokens = routing_policy.extract_sku_tokens(text)
+        searchable_attribute_names = []
+        if hasattr(self.db, "execute"):
+            try:
+                searchable_attribute_names = await eav_service.get_searchable_attribute_names(self.db)
+                debug_meta["catalog_searchable_attribute_names"] = list(searchable_attribute_names)
+            except Exception as attr_exc:
+                debug_meta["catalog_searchable_attribute_error"] = str(attr_exc)
         understanding = await build_understanding_result(
             user_text=text,
             locale=str(req.locale or ""),
@@ -98,10 +106,12 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
                 workflow="catalog",
                 alias_map=alias_map,
                 parser_rules=parser_rules,
+                searchable_attribute_names=searchable_attribute_names,
             )
             detail = DetailQueryParser.build_from_inference(
                 inference=detail_inference,
                 parser_rules=parser_rules,
+                searchable_attribute_names=searchable_attribute_names,
             )
             if has_product_detail_signal and not detail.is_detail_request:
                 detail = DetailQuery(

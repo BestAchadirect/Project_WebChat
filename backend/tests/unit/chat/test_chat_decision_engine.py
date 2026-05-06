@@ -283,6 +283,9 @@ def test_understanding_prompt_uses_response_intent_contract() -> None:
     assert "knowledge_policy" in prompt
     assert "general_talking" in prompt
     assert "response_policy" in prompt
+    assert "marketing assets" in prompt
+    assert "stock or out-of-stock policy" in prompt
+    assert "trust/references/compliance" in prompt
     assert "fallback" not in prompt
 
 
@@ -314,6 +317,39 @@ def test_decision_engine_routes_product_capability_intent_to_terminal_reply() ->
     assert decision.route_decision is not None
     assert decision.route_decision.needs_clarification is False
     assert decision.response_policy == "answer_from_allowed_capabilities"
+
+
+def test_decision_engine_routes_product_faq_intent_to_knowledge_when_retrieval_needed() -> None:
+    understanding = UnderstandingResult(
+        normalized_text="do you offer displays and boards?",
+        locale="en-US",
+        channel="widget",
+        sku_tokens=[],
+        workflow_hypothesis="general_talking",
+        intent_confidence=0.88,
+        reason="product FAQ question",
+        intent="product_information",
+        subintent="product_faq",
+        user_goal="User wants to know whether the store offers displays and boards.",
+        response_policy="answer_from_retrieved_data",
+        product_query="",
+        knowledge_query="do you offer displays and boards?",
+        needs_products=False,
+        needs_knowledge=True,
+    )
+
+    decision = build_decision_state(
+        understanding=understanding,
+        user_text="do you offer displays and boards?",
+        channel="widget",
+    )
+
+    assert decision.internal_workflow == "policy_info"
+    assert decision.public_workflow == "knowledge"
+    assert decision.route_decision is not None
+    assert decision.route_decision.workflow == "knowledge"
+    assert decision.route_decision.needs_knowledge is True
+    assert decision.route_decision.knowledge_query == "do you offer displays and boards?"
 
 
 def test_decision_engine_keeps_store_policy_intent_on_policy_workflow() -> None:
@@ -385,6 +421,37 @@ def test_decision_engine_routes_contact_subintent_to_company_info() -> None:
     assert decision.public_workflow == "knowledge"
     assert decision.route_decision is not None
     assert decision.route_decision.store_overview_request is True
+
+
+def test_decision_engine_routes_general_talking_contact_question_to_company_info() -> None:
+    understanding = UnderstandingResult(
+        normalized_text="how can i contact you",
+        locale="en-US",
+        channel="widget",
+        sku_tokens=[],
+        workflow_hypothesis="general_talking",
+        intent_confidence=0.89,
+        reason="contact question",
+        intent="general_talking",
+        subintent="contact",
+        user_goal="User wants contact details.",
+        response_policy="friendly_scoped_reply",
+        knowledge_query="how can I contact you?",
+        store_overview_request=False,
+        needs_products=False,
+        needs_knowledge=False,
+    )
+
+    decision = build_decision_state(
+        understanding=understanding,
+        user_text="how can i contact you",
+        channel="widget",
+    )
+
+    assert decision.internal_workflow == "company_info"
+    assert decision.public_workflow == "knowledge"
+    assert decision.route_decision is not None
+    assert decision.route_decision.workflow == "knowledge"
 
 
 def test_decision_engine_routes_compound_company_subintent_to_company_info() -> None:
@@ -470,10 +537,10 @@ def test_decision_engine_can_project_from_entity_hints_without_workflow_ownershi
         channel="widget",
     )
 
-    assert decision.internal_workflow == "catalog_search"
-    assert decision.public_workflow == "catalog"
+    assert decision.internal_workflow == "clarify"
+    assert decision.public_workflow == "fallback"
     assert decision.route_decision is not None
-    assert decision.route_decision.needs_products is True
+    assert decision.route_decision.needs_clarification is True
 
 
 def test_decision_engine_public_workflow_no_longer_depends_on_internal_workflow() -> None:
@@ -498,11 +565,11 @@ def test_decision_engine_public_workflow_no_longer_depends_on_internal_workflow(
         channel="widget",
     )
 
-    assert decision.internal_workflow == "policy_info"
-    assert decision.public_workflow == "knowledge"
+    assert decision.internal_workflow == "catalog_search"
+    assert decision.public_workflow == "catalog"
     assert decision.route_decision is not None
-    assert decision.route_decision.workflow == "knowledge"
-    assert decision.route_decision.knowledge_query == "what is your return policy"
+    assert decision.route_decision.workflow == "catalog"
+    assert decision.route_decision.knowledge_query == ""
 
 
 def test_decision_engine_execution_mode_no_longer_depends_on_legacy_workflow_label(
@@ -532,10 +599,10 @@ def test_decision_engine_execution_mode_no_longer_depends_on_legacy_workflow_lab
         channel="widget",
     )
 
-    assert decision.public_workflow == "catalog"
+    assert decision.public_workflow == "off_topic"
     assert decision.execution_decision is not None
-    assert decision.execution_decision.execution_mode == "agentic"
-    assert decision.execution_decision.tool_suitable is True
+    assert decision.execution_decision.execution_mode == "component"
+    assert decision.execution_decision.tool_suitable is False
 
 
 def test_classify_fallback_reason_is_shared_between_routing_and_knowledge_paths() -> None:

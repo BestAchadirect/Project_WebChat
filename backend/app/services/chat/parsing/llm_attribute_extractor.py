@@ -11,12 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.prompts.ambiguity import AMBIGUITY_FAMILY_KEYS, normalize_focus_key
 from app.models.product_attribute import AttributeDefinition, FacetValueAlias, ProductAttributeValue
+from app.services.catalog.attributes_service import eav_service
 from app.services.ai.llm_service import llm_service
-from app.services.chat.parsing.attribute_normalization import (
-    normalize_attribute_value,
-    normalize_lexical_alias_map,
-    normalize_text,
-)
+from app.services.chat.parsing.attribute_keys import canonicalize_filter_key
+from app.services.chat.parsing.attribute_normalization import normalize_text
 from app.services.chat.parsing.parser_rule_types import ParserRuleSet, empty_rule_set
 from app.services.chat.parsing.search_policy import HARD_FILTER_KEYS
 import app.services.chat.routing.routing_policy as routing_policy
@@ -25,13 +23,52 @@ from app.services.chat.routing.understanding import build_understanding_result
 from app.services.chat.runtime.capabilities import build_chat_runtime_capabilities
 from app.services.knowledge.retrieval import KnowledgeRetrievalService
 from app.services.knowledge.tagging import build_knowledge_query_tags
-from app.utils.synonym_rules import (
-    ATTRIBUTE_LIST_TARGETS,
-    DEFAULT_SOFT_ATTRIBUTE_KEYS,
-    normalize_attribute_list_target,
+
+ATTRIBUTE_LIST_TARGETS = frozenset(
+    {
+        "body_part",
+        "feature",
+        "jewelry_type",
+        "material",
+        "presentation_type",
+        "color",
+        "gauge",
+        "threading",
+        "theme",
+    }
+)
+
+DEFAULT_SOFT_ATTRIBUTE_KEYS = frozenset(
+    {
+        "category",
+        "color",
+        "crystal_color",
+        "design",
+        "finish",
+        "jewelry_type",
+        "material",
+        "opal_color",
+        "pearl_color",
+        "theme",
+        "stone",
+        "threading",
+    }
 )
 
 logger = logging.getLogger(__name__)
+
+INTERNAL_ATTRIBUTE_KEYS = frozenset({"source_id", "source_raw_sku"})
+
+
+def _attribute_reasoning_effort() -> str:
+    return str(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_REASONING_EFFORT", "low") or "low").strip() or "low"
+
+
+def _attribute_timeout_seconds() -> float:
+    try:
+        return max(8.0, float(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_TIMEOUT_SECONDS", 20.0) or 20.0))
+    except Exception:
+        return 20.0
 
 
 def _understanding_hint_bool(understanding: Any, key: str) -> bool:
@@ -92,48 +129,65 @@ class ChatInterpretationResult:
     debug: Dict[str, Any] = field(default_factory=dict)
 
 
-def _allowed_exact_attributes(rule_set: ParserRuleSet | None) -> List[str]:
-    active_rules = rule_set or empty_rule_set()
-    declared = {
-        str(item or "").strip().lower()
-        for item in list(active_rules.allowed_attribute_filters or [])
-        if str(item or "").strip()
+def _canonical_attribute_names(values: Sequence[str] | None) -> set[str]:
+    return {
+        canonicalize_filter_key(item)
+        for item in list(values or [])
+        if canonicalize_filter_key(item) and canonicalize_filter_key(item) not in INTERNAL_ATTRIBUTE_KEYS
     }
+
+
+async def _load_searchable_attribute_names(db: AsyncSession | None) -> List[str]:
+    if db is None or not hasattr(db, "execute"):
+        return []
+    try:
+        return await eav_service.get_searchable_attribute_names(db)
+    except Exception as exc:
+        logger.warning("searchable attribute metadata unavailable: %s", exc)
+        return []
+
+
+def _allowed_exact_attributes(
+    rule_set: ParserRuleSet | None,
+    searchable_attribute_names: Sequence[str] | None = None,
+) -> List[str]:
+    active_rules = rule_set or empty_rule_set()
+    declared = _canonical_attribute_names(active_rules.allowed_attribute_filters)
+    searchable = _canonical_attribute_names(searchable_attribute_names)
+    if searchable:
+        declared = declared.intersection(searchable) if declared else searchable
     if declared:
         return sorted(declared.intersection(HARD_FILTER_KEYS))
-    return sorted(HARD_FILTER_KEYS)
+    return sorted(_canonical_attribute_names(HARD_FILTER_KEYS).intersection(searchable) if searchable else HARD_FILTER_KEYS)
 
 
-def _allowed_soft_attributes(rule_set: ParserRuleSet | None) -> List[str]:
+def _allowed_soft_attributes(
+    rule_set: ParserRuleSet | None,
+    searchable_attribute_names: Sequence[str] | None = None,
+) -> List[str]:
     active_rules = rule_set or empty_rule_set()
-    declared = {
-        str(item or "").strip().lower()
-        for item in list(active_rules.allowed_attribute_filters or [])
-        if str(item or "").strip()
-    }
+    declared = _canonical_attribute_names(active_rules.allowed_attribute_filters)
+    searchable = _canonical_attribute_names(searchable_attribute_names)
+    if searchable:
+        declared = declared.intersection(searchable) if declared else searchable
     if declared:
         return sorted(declared.difference(HARD_FILTER_KEYS))
-    return sorted(DEFAULT_SOFT_ATTRIBUTE_KEYS)
+    defaults = _canonical_attribute_names(DEFAULT_SOFT_ATTRIBUTE_KEYS)
+    return sorted(defaults.intersection(searchable) if searchable else defaults)
 
 
 def _normalize_candidate_filters(
     *,
     filters: Mapping[str, str] | None,
-    alias_map: Mapping[str, Dict[str, str]] | None,
     allowed_attributes: Sequence[str],
 ) -> Dict[str, str]:
     allowed = {str(item or "").strip().lower() for item in list(allowed_attributes or []) if str(item or "").strip()}
-    normalized_aliases = normalize_lexical_alias_map(dict(alias_map or {}))
     clean: Dict[str, str] = {}
     for raw_key, raw_value in dict(filters or {}).items():
-        key = normalize_text(raw_key)
+        key = canonicalize_filter_key(raw_key)
         if not key or (allowed and key not in allowed):
             continue
-        value = normalize_attribute_value(
-            key=key,
-            value=raw_value,
-            alias_map=normalized_aliases,
-        )
+        value = normalize_text(raw_value)
         if value:
             clean[key] = value
     return clean
@@ -145,7 +199,7 @@ async def _value_exists_for_attribute(
     attribute_name: str,
     normalized_value: str,
 ) -> bool:
-    clean_attribute = normalize_text(attribute_name)
+    clean_attribute = canonicalize_filter_key(attribute_name)
     clean_value = normalize_text(normalized_value)
     if not clean_attribute or not clean_value:
         return False
@@ -193,7 +247,6 @@ async def _validate_attribute_filters(
 ) -> Dict[str, str]:
     clean_filters = _normalize_candidate_filters(
         filters=filters,
-        alias_map=alias_map,
         allowed_attributes=allowed_attributes,
     )
     if not clean_filters or not hasattr(db, "execute"):
@@ -228,7 +281,10 @@ def _normalize_semantic_hints(raw_hints: Any) -> List[str]:
 
 
 def _normalize_attribute_list_target(raw_target: Any) -> str:
-    return normalize_attribute_list_target(raw_target)
+    text = normalize_text(str(raw_target or ""))
+    if not text:
+        return ""
+    return text.replace("-", "_").replace(" ", "_").strip("_")
 
 
 def _normalize_requested_fields(raw_fields: Any) -> List[str]:
@@ -240,8 +296,8 @@ def _normalize_requested_fields(raw_fields: Any) -> List[str]:
         field = normalize_text(str(raw or ""))
         if not field or field in seen:
             continue
-            seen.add(field)
-            clean.append(field)
+        seen.add(field)
+        clean.append(field)
     return clean
 
 
@@ -488,7 +544,6 @@ async def classify_chat_surface_intent(
 def _build_detail_inference_from_llm_data(
     *,
     llm_data: Mapping[str, Any] | None,
-    alias_map: Mapping[str, Dict[str, str]] | None,
     allowed_exact_attributes: Sequence[str],
     allowed_soft_attributes: Sequence[str],
     confidence: float,
@@ -498,7 +553,6 @@ def _build_detail_inference_from_llm_data(
     requested_fields = _normalize_requested_fields((llm_data or {}).get("requested_fields"))
     attribute_filters = _normalize_candidate_filters(
         filters=(llm_data or {}).get("attribute_filters"),
-        alias_map=alias_map,
         allowed_attributes=list(allowed_exact_attributes) + list(allowed_soft_attributes),
     )
     semantic_hints = _normalize_semantic_hints((llm_data or {}).get("semantic_hints"))
@@ -538,6 +592,8 @@ async def infer_detail_query(
     alias_map: Mapping[str, Dict[str, str]] | None,
     parser_rules: ParserRuleSet | None,
     existing_filters: Mapping[str, str] | None = None,
+    db: AsyncSession | None = None,
+    searchable_attribute_names: Sequence[str] | None = None,
 ) -> DetailQueryInferenceResult:
     clean_workflow = normalize_text(workflow)
     debug: Dict[str, Any] = {
@@ -570,22 +626,34 @@ async def infer_detail_query(
             debug=debug,
         )
 
-    allowed_exact_attributes = _allowed_exact_attributes(parser_rules)
-    allowed_soft_attributes = _allowed_soft_attributes(parser_rules)
+    searchable_names = list(searchable_attribute_names or [])
+    if not searchable_names:
+        searchable_names = await _load_searchable_attribute_names(db)
+    allowed_exact_attributes = _allowed_exact_attributes(parser_rules, searchable_names)
+    allowed_soft_attributes = _allowed_soft_attributes(parser_rules, searchable_names)
+    debug["catalog_searchable_attribute_names"] = list(searchable_names)
+    debug["catalog_allowed_exact_attributes"] = list(allowed_exact_attributes)
+    debug["catalog_allowed_soft_attributes"] = list(allowed_soft_attributes)
     model = str(
         getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MODEL", "")
         or getattr(settings, "NLU_MODEL", "gpt-5-mini")
     ).strip()
-    max_tokens = int(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MAX_TOKENS", 220))
+    max_tokens = max(900, int(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MAX_TOKENS", 220)))
     min_confidence = float(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MIN_CONFIDENCE", 0.55))
     system_prompt = (
         "You interpret detail requests for a body jewelry ecommerce assistant. "
         "Return strict JSON with keys: requested_fields, attribute_filters, wants_image, semantic_hints, clarify_focus, confidence. "
         "requested_fields must be an array using only fields from: price, stock, image, attributes, name, sku. "
-        "attribute_filters must only contain supported product attributes. "
+        "attribute_filters must only contain supported product attributes and should preserve the user's meaning without code-side alias rewriting. "
+        "Only use attributes listed in allowed_exact_attributes or allowed_soft_attributes; those are the DB-searchable attributes with product values. "
+        "If a product concept uses an unavailable attribute, put the concept in semantic_hints or clarify_focus instead of attribute_filters. "
+        "For gauge and measurement values, output the final product value directly. "
+        "Examples: 25 gauge -> 25g, 1.5 inches -> 1.5inch, 8 mm -> 8mm. "
+        "Do not rely on hardcoded synonym tables or alias rules. If a value is uncertain, keep it close to the user's wording instead of guessing a canonical form. "
         "semantic_hints must be up to 4 short concepts that should influence search but are not exact filters. "
         "If the request is ambiguous, set clarify_focus to a family key rather than a one-off term. "
         f"Supported ambiguity families: {', '.join(AMBIGUITY_FAMILY_KEYS)}. "
+        "Use body_part when the body area or product anchor is unclear or unsafe to infer. "
         "If the request is unclear, set clarify_focus to detail_request_needs_specific_product. "
         "Do not invent unsupported fields or filters."
     )
@@ -595,6 +663,7 @@ async def infer_detail_query(
         "existing_filters": dict(existing_filters or {}),
         "allowed_exact_attributes": list(allowed_exact_attributes),
         "allowed_soft_attributes": list(allowed_soft_attributes),
+        "searchable_attributes": list(searchable_names),
         "supported_ambiguity_families": list(AMBIGUITY_FAMILY_KEYS),
     }
 
@@ -615,6 +684,8 @@ async def infer_detail_query(
             temperature=0.0,
             max_tokens=max_tokens,
             usage_kind="chat_detail_query_inference",
+            reasoning_effort=_attribute_reasoning_effort(),
+            timeout=_attribute_timeout_seconds(),
         )
         llm_call_count = 1
         debug["llm_detail_query_used"] = True
@@ -624,7 +695,6 @@ async def infer_detail_query(
             confidence = 0.0
         detail_result = _build_detail_inference_from_llm_data(
             llm_data=llm_data,
-            alias_map=alias_map,
             allowed_exact_attributes=allowed_exact_attributes,
             allowed_soft_attributes=allowed_soft_attributes,
             confidence=confidence,
@@ -674,7 +744,7 @@ async def infer_chat_interpretation(
     existing_filters: Mapping[str, str] | None = None,
     db: AsyncSession | None = None,
 ) -> ChatInterpretationResult:
-    del db
+    searchable_attribute_names = await _load_searchable_attribute_names(db)
     understanding = await build_understanding_result(
         user_text=user_text,
         locale=locale,
@@ -710,6 +780,7 @@ async def infer_chat_interpretation(
             alias_map=alias_map,
             parser_rules=parser_rules,
             existing_filters=existing_filters,
+            searchable_attribute_names=searchable_attribute_names,
         )
         if has_product_detail_signal and not (detail.requested_fields or detail.wants_image):
             detail = replace(
@@ -770,7 +841,7 @@ async def infer_attribute_list_target(
         getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MODEL", "")
         or getattr(settings, "NLU_MODEL", "gpt-5-mini")
     ).strip()
-    max_tokens = int(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MAX_TOKENS", 60))
+    max_tokens = max(240, int(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MAX_TOKENS", 60)))
     try:
         llm_data = await llm_service.generate_chat_json(
             messages=[
@@ -779,6 +850,9 @@ async def infer_attribute_list_target(
                     "content": (
                         "Classify the catalog facet-list target for the user's question. "
                         "Return strict JSON with keys target and confidence. "
+                        "A facet-list request asks for available option values, such as what materials, colors, gauges, or jewelry types are available. "
+                        "If the user asks to see, show, find, buy, or browse products, return target as an empty string. "
+                        "If the user describes a product condition or capability rather than asking for option values, return target as an empty string. "
                         "Choose exactly one target from: "
                         f"{', '.join(sorted(ATTRIBUTE_LIST_TARGETS))}. "
                         "If the question is not asking for a list of facet values, return target as an empty string. "
@@ -802,6 +876,8 @@ async def infer_attribute_list_target(
             temperature=0.0,
             max_tokens=max_tokens,
             usage_kind="chat_attribute_list_target",
+            reasoning_effort=_attribute_reasoning_effort(),
+            timeout=_attribute_timeout_seconds(),
         )
         raw_target = _normalize_attribute_list_target((llm_data or {}).get("target"))
         try:
@@ -831,15 +907,14 @@ async def enrich_product_attribute_filters(
     existing_filters: Mapping[str, str] | None,
     alias_map: Mapping[str, Dict[str, str]] | None,
     parser_rules: ParserRuleSet | None,
+    searchable_attribute_names: Sequence[str] | None = None,
 ) -> AttributeExtractionResult:
     clean_workflow = normalize_text(workflow)
-    allowed_exact_attributes = _allowed_exact_attributes(parser_rules)
-    allowed_soft_attributes = _allowed_soft_attributes(parser_rules)
-    existing_exact_filters = {
-        key: value
-        for key, value in dict(existing_filters or {}).items()
-        if normalize_text(key) in HARD_FILTER_KEYS and str(value or "").strip()
-    }
+    searchable_names = list(searchable_attribute_names or [])
+    if not searchable_names:
+        searchable_names = await _load_searchable_attribute_names(db)
+    allowed_exact_attributes = _allowed_exact_attributes(parser_rules, searchable_names)
+    allowed_soft_attributes = _allowed_soft_attributes(parser_rules, searchable_names)
     debug: Dict[str, Any] = {
         "llm_attribute_interpretation_enabled": bool(
             getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_ENABLED", True)
@@ -851,6 +926,9 @@ async def enrich_product_attribute_filters(
         "semantic_hint_keys": [],
         "semantic_hint_clarify_focus": "",
         "semantic_hint_source": "",
+        "catalog_searchable_attribute_names": list(searchable_names),
+        "catalog_allowed_exact_attributes": list(allowed_exact_attributes),
+        "catalog_allowed_soft_attributes": list(allowed_soft_attributes),
     }
 
     if clean_workflow != "catalog":
@@ -878,7 +956,7 @@ async def enrich_product_attribute_filters(
         getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MODEL", "")
         or getattr(settings, "NLU_MODEL", "gpt-5-mini")
     ).strip()
-    max_tokens = int(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MAX_TOKENS", 220))
+    max_tokens = max(900, int(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MAX_TOKENS", 220)))
     min_confidence = float(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MIN_CONFIDENCE", 0.55))
 
     system_prompt = (
@@ -886,8 +964,14 @@ async def enrich_product_attribute_filters(
         "Return strict JSON with keys: exact_filters, soft_filters, semantic_hints, clarify_focus, confidence. "
         "When a concept is ambiguous, clarify_focus must be a family key rather than a one-off term. "
         f"Supported ambiguity families: {', '.join(AMBIGUITY_FAMILY_KEYS)}. "
+        "Use body_part when the body area or product anchor is unclear or unsafe to infer. "
         "`exact_filters` must use only the provided allowed exact attributes for hard constraints. "
         "`soft_filters` must use only the provided allowed soft attributes for style or family cues. "
+        "The allowed attributes are DB-searchable attributes with product values. "
+        "If a concept maps to an unavailable attribute, keep it in semantic_hints or clarify_focus instead of filters. "
+        "Return filter values directly from the user's meaning without code-side alias rewriting. "
+        "For gauge and measurement values, return the final product value directly. "
+        "Examples: 25 gauge -> 25g, 1.5 inches -> 1.5inch, 8 mm -> 8mm. "
         "`semantic_hints` must be an array of up to 4 short concept strings for ambiguous or discovery-style concepts "
         "that should influence semantic search instead of structured filters. "
         "If the query says sterilization or a similar ambiguous condition concept, do not force it into a facet; "
@@ -900,6 +984,7 @@ async def enrich_product_attribute_filters(
         "existing_filters": dict(existing_filters or {}),
         "allowed_exact_attributes": list(allowed_exact_attributes),
         "allowed_soft_attributes": list(allowed_soft_attributes),
+        "searchable_attributes": list(searchable_names),
         "supported_ambiguity_families": list(AMBIGUITY_FAMILY_KEYS),
     }
 
@@ -919,6 +1004,8 @@ async def enrich_product_attribute_filters(
             temperature=0.0,
             max_tokens=max_tokens,
             usage_kind="chat_attribute_interpretation",
+            reasoning_effort=_attribute_reasoning_effort(),
+            timeout=_attribute_timeout_seconds(),
         )
         llm_call_count = 1
         debug["llm_attribute_interpretation_used"] = True
@@ -928,12 +1015,10 @@ async def enrich_product_attribute_filters(
             llm_confidence = 0.0
         llm_exact_filters = _normalize_candidate_filters(
             filters=(llm_data or {}).get("exact_filters"),
-            alias_map=alias_map,
             allowed_attributes=allowed_exact_attributes,
         )
         llm_soft_filters = _normalize_candidate_filters(
             filters=(llm_data or {}).get("soft_filters"),
-            alias_map=alias_map,
             allowed_attributes=allowed_soft_attributes,
         )
         llm_semantic_hints = _normalize_semantic_hints((llm_data or {}).get("semantic_hints"))
@@ -945,23 +1030,8 @@ async def enrich_product_attribute_filters(
     debug["llm_attribute_interpretation_confidence"] = llm_confidence
     trusted_llm_output = llm_confidence >= min_confidence
 
-    validated_exact_filters: Dict[str, str] = {}
-    if trusted_llm_output and llm_exact_filters and hasattr(db, "execute"):
-        proposed_exact_filters = {
-            key: value
-            for key, value in llm_exact_filters.items()
-            if key not in existing_exact_filters
-        }
-        validated_exact_filters = await _validate_attribute_filters(
-            db,
-            filters=proposed_exact_filters,
-            alias_map=alias_map,
-            allowed_attributes=allowed_exact_attributes,
-        )
-
-    soft_filters: Dict[str, str] = {}
-    if trusted_llm_output and llm_soft_filters:
-        soft_filters = dict(llm_soft_filters)
+    validated_exact_filters: Dict[str, str] = dict(llm_exact_filters) if trusted_llm_output else {}
+    soft_filters: Dict[str, str] = dict(llm_soft_filters) if trusted_llm_output else {}
 
     semantic_hints = list(llm_semantic_hints) if trusted_llm_output else []
     clarify_focus = str(llm_clarify_focus or "") if trusted_llm_output else ""

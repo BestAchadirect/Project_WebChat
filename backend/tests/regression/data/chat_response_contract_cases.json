@@ -1227,7 +1227,10 @@
     "runtime_fixture": {
       "mode": "agentic_no_tool",
       "understanding": {
-        "workflow_hypothesis": "clarify",
+        "workflow_hypothesis": "policy_info",
+        "intent": "knowledge_policy",
+        "subintent": "shipping_policy",
+        "response_policy": "answer_from_retrieved_data",
         "intent_confidence": 0.9,
         "reason": "policy_signal_detected",
         "knowledge_query": "tell me about shipping but i am not sure which option applies.",
@@ -1349,10 +1352,17 @@
     "runtime_fixture": {
       "mode": "agentic_error",
       "understanding": {
-        "workflow_hypothesis": "clarify",
+        "workflow_hypothesis": "product_detail",
+        "intent": "product_information",
+        "subintent": "product_detail",
+        "response_policy": "answer_from_retrieved_data",
         "intent_confidence": 0.94,
         "reason": "product_detail_signal_detected",
         "needs_products": true,
+        "product_query": "ABC-1",
+        "sku_tokens": [
+          "ABC-1"
+        ],
         "entity_hints": {
           "has_product_detail_signal": true,
           "has_product_signal": true
