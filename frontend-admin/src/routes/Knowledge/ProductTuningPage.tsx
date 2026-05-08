@@ -5,6 +5,122 @@ import { PaginationControls } from '../../components/common/PaginationControls';
 import { defaultPageSize } from '../../constants/pagination';
 
 type BulkFieldState = Record<string, { enabled: boolean; value: string }>;
+type ReviewPreset = 'all' | 'needs_review' | 'missing_category' | 'missing_core' | 'missing_image' | 'no_master_code' | 'hidden_in_stock' | 'visible_out_of_stock';
+type DetailTab = 'attributes' | 'quality' | 'description';
+type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+type QualityFlagSeverity = 'info' | 'warning' | 'danger';
+
+type QualityFlag = {
+    key: ReviewPreset;
+    label: string;
+    description: string;
+    severity: QualityFlagSeverity;
+};
+
+const CATEGORY_DELIMITER = ';;';
+
+const parseCategoryTokens = (rawValue: unknown): string[] => {
+    const raw = String(rawValue || '');
+    if (!raw.trim()) return [];
+
+    const seen = new Set<string>();
+    const tokens: string[] = [];
+    raw
+        .split(/;;|;|\r?\n/g)
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .forEach((token) => {
+            const key = token.toLowerCase();
+            if (seen.has(key)) return;
+            seen.add(key);
+            tokens.push(token);
+        });
+    return tokens;
+};
+
+const normalizeCategoryValue = (rawValue: unknown): string => (
+    parseCategoryTokens(rawValue).join(CATEGORY_DELIMITER)
+);
+
+const hasText = (value: unknown): boolean => String(value ?? '').trim().length > 0;
+
+const getProductQualityFlags = (product: Product): QualityFlag[] => {
+    const flags: QualityFlag[] = [];
+    if (parseCategoryTokens(product.category).length === 0) {
+        flags.push({
+            key: 'missing_category',
+            label: 'Missing category',
+            description: 'Category is empty, so filtering and chat matching will be weaker.',
+            severity: 'danger',
+        });
+    }
+    if (!hasText(product.material) || !hasText(product.jewelry_type)) {
+        flags.push({
+            key: 'missing_core',
+            label: 'Missing core attributes',
+            description: 'Material and jewelry type should be filled for reliable product matching.',
+            severity: 'warning',
+        });
+    }
+    if (!hasText(product.image_url)) {
+        flags.push({
+            key: 'missing_image',
+            label: 'Missing image',
+            description: 'The product has no image URL for storefront or chat preview display.',
+            severity: 'warning',
+        });
+    }
+    if (!hasText(product.master_code)) {
+        flags.push({
+            key: 'no_master_code',
+            label: 'No master code',
+            description: 'Master code is empty, so related SKUs cannot be grouped cleanly.',
+            severity: 'info',
+        });
+    }
+    if (!product.visibility && product.in_stock) {
+        flags.push({
+            key: 'hidden_in_stock',
+            label: 'Hidden but in stock',
+            description: 'This SKU is available but hidden from active product surfaces.',
+            severity: 'warning',
+        });
+    }
+    if (product.visibility && !product.in_stock) {
+        flags.push({
+            key: 'visible_out_of_stock',
+            label: 'Visible but out of stock',
+            description: 'This SKU is visible but cannot currently be purchased.',
+            severity: 'danger',
+        });
+    }
+    return flags;
+};
+
+const productMatchesReviewPreset = (product: Product, preset: ReviewPreset): boolean => {
+    if (preset === 'all') return true;
+    const flags = getProductQualityFlags(product);
+    if (preset === 'needs_review') return flags.length > 0;
+    return flags.some((flag) => flag.key === preset);
+};
+
+const reviewPresets: Array<{ key: ReviewPreset; label: string }> = [
+    { key: 'all', label: 'All' },
+    { key: 'needs_review', label: 'Needs review' },
+    { key: 'missing_category', label: 'No category' },
+    { key: 'missing_core', label: 'Missing core' },
+    { key: 'missing_image', label: 'No image' },
+    { key: 'no_master_code', label: 'No master code' },
+    { key: 'hidden_in_stock', label: 'Hidden in stock' },
+    { key: 'visible_out_of_stock', label: 'Visible out of stock' },
+];
+
+const saveStateLabel: Record<SaveState, string> = {
+    idle: '',
+    saving: 'Saving...',
+    saved: 'Saved',
+    error: 'Save failed',
+};
 
 export const ProductTuningPage: React.FC = () => {
     const [products, setProducts] = useState<Product[]>([]);
@@ -17,6 +133,12 @@ export const ProductTuningPage: React.FC = () => {
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+    const [reviewPreset, setReviewPreset] = useState<ReviewPreset>('all');
+    const [detailTab, setDetailTab] = useState<DetailTab>('attributes');
+    const [fieldSaveStates, setFieldSaveStates] = useState<Record<string, SaveState>>({});
+    const [attributeDrafts, setAttributeDrafts] = useState<Record<string, string>>({});
+    const [masterVariants, setMasterVariants] = useState<Product[]>([]);
+    const [masterVariantsLoading, setMasterVariantsLoading] = useState(false);
     const [bulkEditOpen, setBulkEditOpen] = useState(false);
     const [bulkEditFields, setBulkEditFields] = useState<BulkFieldState>({});
     const [bulkEditSaving, setBulkEditSaving] = useState(false);
@@ -29,6 +151,7 @@ export const ProductTuningPage: React.FC = () => {
     const selectActionButtonRef = useRef<HTMLButtonElement | null>(null);
     // Column Definitions
     const technicalFields: Array<{ key: keyof Product; label: string; type?: 'text' | 'number' }> = [
+        { key: 'category', label: 'Category' },
         { key: 'material', label: 'Material' },
         { key: 'jewelry_type', label: 'Jewelry Type' },
         { key: 'length', label: 'Length' },
@@ -50,6 +173,7 @@ export const ProductTuningPage: React.FC = () => {
         { key: 'pincher_size', label: 'Pincher Size' },
         { key: 'ring_size', label: 'Ring Size' },
     ];
+    const skuAttributeFields = technicalFields.filter((field) => field.key !== 'category');
 
     const standardColumns = [
         { key: 'image', label: 'Image', width: 'w-16' },
@@ -92,7 +216,6 @@ export const ProductTuningPage: React.FC = () => {
 
     // Filters
     const [filterVisibility, setFilterVisibility] = useState<'all' | 'visible' | 'hidden'>('all');
-    const [filterFeatured, setFilterFeatured] = useState<'all' | 'featured' | 'normal'>('all');
     const [categoryMode, setCategoryMode] = useState<'any' | 'all'>('any');
 
     // Dynamic Filters
@@ -108,16 +231,94 @@ export const ProductTuningPage: React.FC = () => {
     const [facetData, setFacetData] = useState<Record<string, ProductFilterValue[]>>({});
     const [facetLoading, setFacetLoading] = useState(false);
 
+    const displayedProducts = useMemo(
+        () => products.filter((product) => productMatchesReviewPreset(product, reviewPreset)),
+        [products, reviewPreset]
+    );
+    const reviewPresetCounts = useMemo(
+        () => reviewPresets.reduce((counts, preset) => {
+            counts[preset.key] = products.filter((product) => productMatchesReviewPreset(product, preset.key)).length;
+            return counts;
+        }, {} as Record<ReviewPreset, number>),
+        [products]
+    );
+    const categoryOptions = useMemo(
+        () => (facetData.category || [])
+            .map((option) => String(option.value || '').trim())
+            .filter(Boolean),
+        [facetData.category]
+    );
+    const persistedSelectedProduct = useMemo(
+        () => selectedProduct ? products.find((product) => product.id === selectedProduct.id) || null : null,
+        [products, selectedProduct?.id]
+    );
+    const selectedMasterCode = (persistedSelectedProduct?.master_code || selectedProduct?.master_code || '').trim();
+    const masterVariantCount = selectedMasterCode ? Math.max(masterVariants.length, 1) : 1;
+    const masterVariantPreview = useMemo(
+        () => masterVariants.slice(0, 5).map((product) => product.sku).filter(Boolean),
+        [masterVariants]
+    );
+
     useEffect(() => {
         const firstPage = 1;
         setCurrentPage(firstPage);
         void loadProducts(firstPage, pageSize);
         loadFacets();
-    }, [filterVisibility, filterFeatured, categoryMode, activeFilters]);
+    }, [filterVisibility, categoryMode, activeFilters]);
 
     useEffect(() => {
         setPendingFilters(activeFilters);
     }, [activeFilters]);
+
+    useEffect(() => {
+        if (selectedProduct) {
+            setDetailTab('attributes');
+        }
+    }, [selectedProduct?.id]);
+
+    useEffect(() => {
+        if (!selectedProduct) {
+            setAttributeDrafts({});
+            return;
+        }
+        const nextDrafts: Record<string, string> = {};
+        skuAttributeFields.forEach((field) => {
+            const value = selectedProduct[field.key];
+            nextDrafts[field.key as string] = value === null || value === undefined ? '' : String(value);
+        });
+        setAttributeDrafts(nextDrafts);
+    }, [selectedProduct?.id]);
+
+    useEffect(() => {
+        const masterCode = selectedMasterCode;
+        if (!masterCode) {
+            setMasterVariants([]);
+            setMasterVariantsLoading(false);
+            return;
+        }
+
+        let cancelled = false;
+        setMasterVariantsLoading(true);
+        productsApi.listMasterCodeVariants(masterCode, { pageSize: 200 })
+            .then((result) => {
+                if (cancelled) return;
+                setMasterVariants(result.items || []);
+            })
+            .catch((error) => {
+                if (cancelled) return;
+                console.error('Failed to load master code variants:', error);
+                setMasterVariants([]);
+            })
+            .finally(() => {
+                if (!cancelled) {
+                    setMasterVariantsLoading(false);
+                }
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [selectedProduct?.id, selectedMasterCode]);
 
     useEffect(() => {
         if (!showSelectActionMenu) return;
@@ -173,8 +374,6 @@ export const ProductTuningPage: React.FC = () => {
             };
             if (filterVisibility === 'visible') params.visibility = true;
             if (filterVisibility === 'hidden') params.visibility = false;
-            if (filterFeatured === 'featured') params.is_featured = true;
-            if (filterFeatured === 'normal') params.is_featured = false;
             params.category_mode = categoryMode;
 
             // Add dynamic filters to params
@@ -225,8 +424,6 @@ export const ProductTuningPage: React.FC = () => {
             const params: any = {};
             if (filterVisibility === 'visible') params.visibility = true;
             if (filterVisibility === 'hidden') params.visibility = false;
-            if (filterFeatured === 'featured') params.is_featured = true;
-            if (filterFeatured === 'normal') params.is_featured = false;
             params.category_mode = categoryMode;
 
             // Add dynamic filters to params
@@ -257,18 +454,6 @@ export const ProductTuningPage: React.FC = () => {
             }
         } catch (error) {
             console.error('Failed to toggle visibility:', error);
-        }
-    };
-
-    const handleToggleFeatured = async (product: Product) => {
-        try {
-            await productsApi.updateProduct(product.id, { is_featured: !product.is_featured });
-            setProducts(prods => prods.map(p => p.id === product.id ? { ...p, is_featured: !p.is_featured } : p));
-            if (selectedProduct?.id === product.id) {
-                setSelectedProduct({ ...selectedProduct, is_featured: !selectedProduct.is_featured });
-            }
-        } catch (error) {
-            console.error('Failed to toggle featured:', error);
         }
     };
 
@@ -390,7 +575,7 @@ export const ProductTuningPage: React.FC = () => {
     };
 
     const selectAllOnCurrentPage = () => {
-        setSelectedIds(new Set(products.map((p) => p.id)));
+        setSelectedIds(new Set(displayedProducts.map((p) => p.id)));
     };
 
     const deselectAll = () => {
@@ -400,7 +585,7 @@ export const ProductTuningPage: React.FC = () => {
     const deselectAllOnCurrentPage = () => {
         setSelectedIds((prev) => {
             const next = new Set(prev);
-            products.forEach((p) => next.delete(p.id));
+            displayedProducts.forEach((p) => next.delete(p.id));
             return next;
         });
     };
@@ -433,7 +618,6 @@ export const ProductTuningPage: React.FC = () => {
 
     const resetFilters = () => {
         setFilterVisibility('all');
-        setFilterFeatured('all');
         setCategoryMode('any');
         setActiveFilters({});
         setPendingFilters({});
@@ -635,14 +819,53 @@ export const ProductTuningPage: React.FC = () => {
     };
 
     const applyProductUpdate = async (productId: string, updates: Partial<Product>) => {
+        const updateKeys = Object.keys(updates);
+        if (updateKeys.length > 0) {
+            setFieldSaveStates((prev) => {
+                const next = { ...prev };
+                updateKeys.forEach((key) => {
+                    next[`${productId}:${key}`] = 'saving';
+                });
+                return next;
+            });
+        }
         try {
             const updated = await productsApi.updateProduct(productId, updates);
             setProducts(prods => prods.map(p => p.id === productId ? updated : p));
             if (selectedProduct?.id === productId) {
                 setSelectedProduct(updated);
             }
+            if (updateKeys.length > 0) {
+                setFieldSaveStates((prev) => {
+                    const next = { ...prev };
+                    updateKeys.forEach((key) => {
+                        next[`${productId}:${key}`] = 'saved';
+                    });
+                    return next;
+                });
+                window.setTimeout(() => {
+                    setFieldSaveStates((prev) => {
+                        const next = { ...prev };
+                        updateKeys.forEach((key) => {
+                            if (next[`${productId}:${key}`] === 'saved') {
+                                next[`${productId}:${key}`] = 'idle';
+                            }
+                        });
+                        return next;
+                    });
+                }, 1600);
+            }
         } catch (error) {
             console.error('Failed to update product:', error);
+            if (updateKeys.length > 0) {
+                setFieldSaveStates((prev) => {
+                    const next = { ...prev };
+                    updateKeys.forEach((key) => {
+                        next[`${productId}:${key}`] = 'error';
+                    });
+                    return next;
+                });
+            }
         }
     };
 
@@ -663,10 +886,75 @@ export const ProductTuningPage: React.FC = () => {
         await applyProductUpdate(selectedProduct.id, { [key]: nextValue } as Partial<Product>);
     };
 
+    const setFieldSaveStateForProducts = (productIds: string[], key: keyof Product, state: SaveState) => {
+        setFieldSaveStates((prev) => {
+            const next = { ...prev };
+            productIds.forEach((productId) => {
+                next[`${productId}:${String(key)}`] = state;
+            });
+            return next;
+        });
+    };
+
+    const handleCategoryCommit = async (nextCategory: string, scope: 'sku' | 'master' = 'sku') => {
+        if (!selectedProduct) return;
+        const normalized = normalizeCategoryValue(nextCategory);
+        if (scope === 'master') {
+            const variantIds = Array.from(new Set(
+                (masterVariants.length > 0 ? masterVariants : [selectedProduct])
+                    .map((product) => product.id)
+                    .filter(Boolean)
+            ));
+            if (variantIds.length <= 1) {
+                await applyProductUpdate(selectedProduct.id, { category: normalized });
+                return;
+            }
+
+            const confirmed = window.confirm(
+                `Apply this category to ${variantIds.length} SKUs under master code "${selectedMasterCode || selectedProduct.master_code}"?\n\nThis will overwrite the category on every child SKU in this master group.`
+            );
+            if (!confirmed) return;
+
+            setFieldSaveStateForProducts(variantIds, 'category', 'saving');
+            try {
+                await productsApi.bulkUpdate(variantIds, { category: normalized });
+                setProducts((prods) => prods.map((product) => (
+                    variantIds.includes(product.id) ? { ...product, category: normalized } : product
+                )));
+                setMasterVariants((variants) => variants.map((product) => (
+                    variantIds.includes(product.id) ? { ...product, category: normalized } : product
+                )));
+                setSelectedProduct((current) => (
+                    current && variantIds.includes(current.id) ? { ...current, category: normalized } : current
+                ));
+                setFieldSaveStateForProducts(variantIds, 'category', 'saved');
+                window.setTimeout(() => {
+                    setFieldSaveStates((prev) => {
+                        const next = { ...prev };
+                        variantIds.forEach((productId) => {
+                            if (next[`${productId}:category`] === 'saved') {
+                                next[`${productId}:category`] = 'idle';
+                            }
+                        });
+                        return next;
+                    });
+                }, 1600);
+            } catch (error) {
+                console.error('Failed to apply category to master code group:', error);
+                setFieldSaveStateForProducts(variantIds, 'category', 'error');
+            }
+            return;
+        }
+
+        const current = products.find((p) => p.id === selectedProduct.id);
+        if (current && normalizeCategoryValue(current.category) === normalized) return;
+        await applyProductUpdate(selectedProduct.id, { category: normalized });
+    };
+
 
     const buildBulkFieldState = (): BulkFieldState => {
         const initial: BulkFieldState = {};
-        technicalFields.forEach((field) => {
+        skuAttributeFields.forEach((field) => {
             initial[field.key as string] = { enabled: false, value: '' };
         });
         return initial;
@@ -702,9 +990,11 @@ export const ProductTuningPage: React.FC = () => {
         if (selectedIds.size === 0 || bulkEditSaving) return;
 
         const updates: Record<string, string | number | null> = {};
-        technicalFields.forEach((field) => {
+        const enabledFieldLabels: string[] = [];
+        skuAttributeFields.forEach((field) => {
             const state = bulkEditFields[field.key as string];
             if (!state?.enabled) return;
+            enabledFieldLabels.push(field.label);
             if (field.type === 'number') {
                 if (state.value === '') {
                     updates[field.key as string] = null;
@@ -722,6 +1012,11 @@ export const ProductTuningPage: React.FC = () => {
         if (Object.keys(updates).length === 0) {
             return;
         }
+
+        const confirmed = window.confirm(
+            `Bulk update ${selectedIds.size} selected SKUs?\n\nFields: ${enabledFieldLabels.join(', ')}\n\nThis overwrites these SKU-level attributes only. Category is excluded from bulk edit.`
+        );
+        if (!confirmed) return;
 
         setBulkEditSaving(true);
         setBulkEditError(null);
@@ -746,8 +1041,52 @@ export const ProductTuningPage: React.FC = () => {
 
     const bulkHasUpdates = Object.values(bulkEditFields).some((field) => field?.enabled);
 
-    const allSelected = products.length > 0 && selectedIds.size === products.length;
-    const someSelected = selectedIds.size > 0 && selectedIds.size < products.length;
+    const displayedSelectedCount = displayedProducts.filter((product) => selectedIds.has(product.id)).length;
+    const allSelected = displayedProducts.length > 0 && displayedSelectedCount === displayedProducts.length;
+    const someSelected = displayedSelectedCount > 0 && displayedSelectedCount < displayedProducts.length;
+    const selectedQualityFlags = selectedProduct ? getProductQualityFlags(selectedProduct) : [];
+    const selectedPersistedProduct = selectedProduct
+        ? products.find((product) => product.id === selectedProduct.id) || selectedProduct
+        : null;
+    const attributeValueToString = (product: Product | null, key: keyof Product): string => {
+        if (!product) return '';
+        const value = product[key];
+        return value === null || value === undefined ? '' : String(value);
+    };
+    const changedSkuAttributeFields = selectedPersistedProduct
+        ? skuAttributeFields.filter((field) => (
+            (attributeDrafts[field.key as string] ?? '') !== attributeValueToString(selectedPersistedProduct, field.key)
+        ))
+        : [];
+    const hasSkuAttributeChanges = changedSkuAttributeFields.length > 0;
+    const getFieldSaveState = (key: keyof Product): SaveState => {
+        if (!selectedProduct) return 'idle';
+        return fieldSaveStates[`${selectedProduct.id}:${String(key)}`] || 'idle';
+    };
+
+    const resetAttributeDrafts = () => {
+        if (!selectedPersistedProduct) return;
+        const nextDrafts: Record<string, string> = {};
+        skuAttributeFields.forEach((field) => {
+            nextDrafts[field.key as string] = attributeValueToString(selectedPersistedProduct, field.key);
+        });
+        setAttributeDrafts(nextDrafts);
+    };
+
+    const saveSkuAttributes = async () => {
+        if (!selectedProduct || !selectedPersistedProduct || !hasSkuAttributeChanges) return;
+
+        const updates: Partial<Product> = {};
+        changedSkuAttributeFields.forEach((field) => {
+            const rawValue = attributeDrafts[field.key as string] ?? '';
+            const nextValue = field.type === 'number'
+                ? (rawValue === '' ? null : Number(rawValue))
+                : rawValue;
+            (updates as Record<string, string | number | null>)[field.key as string] = nextValue;
+        });
+
+        await applyProductUpdate(selectedProduct.id, updates);
+    };
 
     useEffect(() => {
         if (selectAllRef.current) {
@@ -764,12 +1103,8 @@ export const ProductTuningPage: React.FC = () => {
             {/* Top Filter Bar */}
             <div className="border-b border-gray-200 bg-white">
                 <div className="px-4 py-4 sm:px-6 space-y-4">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                        <div className="min-w-0">
-                            <h1 className="text-xl font-bold text-gray-900 tracking-tight">Product Tuning</h1>
-                            <p className="text-sm text-gray-500">Tune product visibility, attributes, and merchandising quality.</p>
-                        </div>
-                        {selectedIds.size > 0 && (
+                    {selectedIds.size > 0 && (
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-end">
                             <div className="flex flex-wrap items-center gap-2 rounded-xl border border-indigo-100 bg-indigo-50/70 px-3 py-2">
                                 <span className="text-xs font-semibold text-indigo-700">{selectedIds.size} selected</span>
                                 <button
@@ -797,7 +1132,42 @@ export const ProductTuningPage: React.FC = () => {
                                     Delete
                                 </button>
                             </div>
-                        )}
+                        </div>
+                    )}
+                    <div className="rounded-2xl border border-gray-200 bg-gray-50/70 p-3">
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                            <div>
+                                <div className="text-xs font-black uppercase tracking-[0.16em] text-gray-500">Review queue</div>
+                                <div className="text-xs text-gray-500">Use these presets to find records that need cleanup before editing.</div>
+                            </div>
+                            <div className="hidden text-xs font-semibold text-gray-500 sm:block">
+                                Showing {displayedProducts.length} of {products.length}
+                            </div>
+                        </div>
+                        <div className="flex gap-2 overflow-x-auto pb-1">
+                            {reviewPresets.map((preset) => {
+                                const active = reviewPreset === preset.key;
+                                return (
+                                    <button
+                                        key={preset.key}
+                                        type="button"
+                                        onClick={() => {
+                                            setReviewPreset(preset.key);
+                                            setSelectedIds(new Set());
+                                        }}
+                                        className={`flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold transition-all ${active
+                                            ? 'border-gray-900 bg-gray-900 text-white shadow-sm'
+                                            : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:text-gray-900'
+                                            }`}
+                                    >
+                                        <span>{preset.label}</span>
+                                        <span className={`rounded-full px-2 py-0.5 text-[10px] ${active ? 'bg-white/15 text-white' : 'bg-gray-100 text-gray-500'}`}>
+                                            {reviewPresetCounts[preset.key] || 0}
+                                        </span>
+                                    </button>
+                                );
+                            })}
+                        </div>
                     </div>
                     {/* Primary Controls: Search + Global Filters */}
                     <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
@@ -1041,7 +1411,7 @@ export const ProductTuningPage: React.FC = () => {
                                                     <button
                                                         type="button"
                                                         onClick={() => runSelectAction('select_page')}
-                                                        disabled={products.length === 0 || allSelected}
+                                                        disabled={displayedProducts.length === 0 || allSelected}
                                                         className="w-full rounded px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-300"
                                                     >
                                                         Select All on This Page
@@ -1066,7 +1436,9 @@ export const ProductTuningPage: React.FC = () => {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
-                                {products.map((product) => (
+                                {displayedProducts.map((product) => {
+                                    const qualityFlags = getProductQualityFlags(product);
+                                    return (
                                     <tr
                                         key={product.id}
                                         onClick={() => setSelectedProduct(product)}
@@ -1104,14 +1476,6 @@ export const ProductTuningPage: React.FC = () => {
                                                 return (
                                                     <td key={col.key} className="px-4 py-3 text-sm font-mono text-gray-500 uppercase whitespace-normal break-all">
                                                         {product.master_code ? product.master_code : <span className="text-gray-300">—</span>}
-                                                        {product.is_featured && (
-                                                            <div className="mt-1">
-                                                                <span className="inline-flex items-center gap-1 text-[10px] text-yellow-600 bg-yellow-50 px-1.5 py-0.5 rounded border border-yellow-100 font-bold uppercase tracking-tighter">
-                                                                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.957a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.37 2.448a1 1 0 00-.364 1.118l1.287 3.957c.3.921-.755 1.688-1.54 1.118l-3.37-2.448a1 1 0 00-1.175 0l-3.37 2.448c-.784.57-1.838-.197-1.54-1.118l1.287-3.957a1 1 0 00-.364-1.118L2.05 9.384c-.783-.57-.38-1.81.588-1.81h4.162a1 1 0 00.95-.69l1.286-3.957z" /></svg>
-                                                                    Featured
-                                                                </span>
-                                                            </div>
-                                                        )}
                                                     </td>
                                                 );
                                             }
@@ -1168,7 +1532,48 @@ export const ProductTuningPage: React.FC = () => {
                                             if (col.key === 'status') {
                                                 return (
                                                     <td key={col.key} className="px-4 py-3 text-center">
-                                                        <div className={`w-2 h-2 rounded-full mx-auto ${product.visibility ? (product.in_stock ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-yellow-500') : 'bg-gray-300'}`} />
+                                                        <div className="flex items-center justify-center gap-1.5">
+                                                            <div className={`w-2 h-2 rounded-full ${product.visibility ? (product.in_stock ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-yellow-500') : 'bg-gray-300'}`} />
+                                                            {qualityFlags.length > 0 && (
+                                                                <span
+                                                                    className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-100 px-1 text-[10px] font-black text-amber-700"
+                                                                    title={qualityFlags.map((flag) => flag.label).join(', ')}
+                                                                >
+                                                                    {qualityFlags.length}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </td>
+                                                );
+                                            }
+
+                                            if (col.key === 'category') {
+                                                const tokens = parseCategoryTokens(product.category);
+                                                const visibleTokens = tokens.slice(0, 3);
+                                                const hiddenCount = Math.max(tokens.length - visibleTokens.length, 0);
+                                                return (
+                                                    <td key={col.key} className="px-4 py-3">
+                                                        {tokens.length > 0 ? (
+                                                            <div className="space-y-1.5" title={tokens.join(', ')}>
+                                                                <div className="flex flex-wrap gap-1.5">
+                                                                    {visibleTokens.map((token) => (
+                                                                        <span
+                                                                            key={`${product.id}-${token}`}
+                                                                            className="inline-flex items-center rounded-md border border-indigo-100 bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700"
+                                                                        >
+                                                                            {token}
+                                                                        </span>
+                                                                    ))}
+                                                                    {hiddenCount > 0 && (
+                                                                        <span className="inline-flex items-center rounded-md border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] font-semibold text-gray-600">
+                                                                            +{hiddenCount} more
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-gray-300">—</span>
+                                                        )}
                                                     </td>
                                                 );
                                             }
@@ -1182,13 +1587,16 @@ export const ProductTuningPage: React.FC = () => {
                                             );
                                         })}
                                     </tr>
-                                ))}
+                                    );
+                                })}
                             </tbody>
                             </table>
                         </div>
 
                         <div className="md:hidden divide-y divide-gray-100">
-                            {products.map((product) => (
+                            {displayedProducts.map((product) => {
+                                const qualityFlags = getProductQualityFlags(product);
+                                return (
                                 <article
                                     key={product.id}
                                     onClick={() => setSelectedProduct(product)}
@@ -1227,16 +1635,24 @@ export const ProductTuningPage: React.FC = () => {
                                             </p>
                                             <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500">
                                                 <span className="truncate max-w-[60%]">{product.klevu_id || product.object_id || 'No external ID'}</span>
-                                                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full font-semibold ${product.visibility ? (product.in_stock ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700') : 'bg-gray-100 text-gray-600'}`}>
+                                                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full font-semibold ${qualityFlags.length > 0 ? 'bg-amber-100 text-amber-700' : product.visibility ? (product.in_stock ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700') : 'bg-gray-100 text-gray-600'}`}>
                                                     <span className={`w-1.5 h-1.5 rounded-full ${product.visibility ? (product.in_stock ? 'bg-green-500' : 'bg-yellow-500') : 'bg-gray-400'}`}></span>
-                                                    {product.visibility ? (product.in_stock ? 'Visible' : 'Low stock') : 'Hidden'}
+                                                    {qualityFlags.length > 0 ? `${qualityFlags.length} flags` : product.visibility ? (product.in_stock ? 'Visible' : 'Low stock') : 'Hidden'}
                                                 </span>
                                             </div>
                                         </div>
                                     </div>
                                 </article>
-                            ))}
+                                );
+                            })}
                         </div>
+
+                        {!loading && products.length > 0 && displayedProducts.length === 0 && (
+                            <div className="flex flex-col items-center justify-center py-20 text-center">
+                                <div className="mb-3 rounded-full bg-green-50 px-3 py-1 text-xs font-bold text-green-700">No records in this review queue</div>
+                                <p className="text-sm text-gray-500">Choose another review preset or change the active filters.</p>
+                            </div>
+                        )}
 
                         {loading && products.length === 0 && (
                             <div className="flex flex-col items-center justify-center py-24 gap-4 animate-in fade-in zoom-in">
@@ -1262,7 +1678,6 @@ export const ProductTuningPage: React.FC = () => {
                                 </button>
                                 <div>
                                     <h2 className="text-lg font-bold text-gray-900 leading-tight">Product Details</h2>
-                                    <p className="text-xs text-gray-500 uppercase font-bold tracking-widest uppercase">{selectedProduct.sku}</p>
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
@@ -1287,7 +1702,8 @@ export const ProductTuningPage: React.FC = () => {
                                         )}
                                     </div>
                                     <div className="flex-1 min-w-0">
-                                        <h3 className="text-xl font-bold text-gray-900 leading-tight mb-1">{selectedProduct.name}</h3>
+                                        <h3 className="text-xl font-bold text-gray-900 leading-tight mb-1 font-mono uppercase">{selectedProduct.sku}</h3>
+                                        <p className="text-sm text-gray-500 line-clamp-2 break-words">{selectedProduct.name}</p>
                                         <div className="text-2xl font-black text-primary-600">${selectedProduct.price.toFixed(2)}</div>
                                         <div className={`mt-2 inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${selectedProduct.in_stock ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                                             <span className={`w-1.5 h-1.5 rounded-full ${selectedProduct.in_stock ? 'bg-green-600' : 'bg-red-600'}`}></span>
@@ -1297,7 +1713,8 @@ export const ProductTuningPage: React.FC = () => {
                                 </div>
 
                                 {/* Quick Actions */}
-                                <section className="grid grid-cols-2 gap-3">
+                                <section className="space-y-3">
+                                    <div className="grid grid-cols-1 gap-3">
                                     <button
                                         onClick={() => handleToggleVisibility(selectedProduct)}
                                         className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border font-bold text-xs uppercase tracking-wide transition-all ${selectedProduct.visibility ? 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50' : 'bg-yellow-50 border-yellow-200 text-yellow-700'}`}
@@ -1305,73 +1722,190 @@ export const ProductTuningPage: React.FC = () => {
                                         <span className={`w-2 h-2 rounded-full ${selectedProduct.visibility ? 'bg-green-500' : 'bg-yellow-500'}`}></span>
                                         {selectedProduct.visibility ? 'Visible' : 'Hidden'}
                                     </button>
-                                    <button
-                                        onClick={() => handleToggleFeatured(selectedProduct)}
-                                        className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border font-bold text-xs uppercase tracking-wide transition-all ${selectedProduct.is_featured ? 'bg-yellow-50 border-yellow-200 text-yellow-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}
-                                    >
-                                        <svg className="w-4 h-4" fill={selectedProduct.is_featured ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" /></svg>
-                                        {selectedProduct.is_featured ? 'Featured' : 'Feature'}
-                                    </button>
-                                    <button
-                                        onClick={() => handleHardDeleteBySku(selectedProduct)}
-                                        className="col-span-2 flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 font-bold text-xs uppercase tracking-wide transition-all"
-                                    >
-                                        Delete SKU
-                                    </button>
-                                </section>
-
-                                {/* Master Code */}
-                                <section className="space-y-4">
-                                    <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
-                                        <label className="text-sm font-semibold text-gray-700 mb-2 block">Master Code</label>
-                                        <input
-                                            type="text"
-                                            placeholder="Enter master code..."
-                                            value={selectedProduct.master_code || ''}
-                                            onChange={async (e) => {
-                                                const newCode = e.target.value;
-                                                setSelectedProduct({ ...selectedProduct, master_code: newCode });
-                                                try {
-                                                    await productsApi.updateProduct(selectedProduct.id, { master_code: newCode });
-                                                    setProducts(prods => prods.map(p => p.id === selectedProduct.id ? { ...p, master_code: newCode } : p));
-                                                } catch (error) {
-                                                    console.error('Failed to update master code:', error);
-                                                }
-                                            }}
-                                            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-500 font-mono uppercase"
-                                        />
-                                        <p className="text-[10px] text-gray-400 mt-2">Group multiple SKUs under one master collection.</p>
                                     </div>
                                 </section>
 
-                                {/* Attributes Grid */}
-                                <section className="space-y-4">
-                                    <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest pl-1">Technical Attributes</h4>
-                                    <div className="grid grid-cols-2 gap-x-6 gap-y-4">
-                                        {technicalFields.map((field) => (
-                                            <EditableAttribute
-                                                key={field.key}
-                                                label={field.label}
-                                                type={field.type}
-                                                value={selectedProduct[field.key] as string | number | null | undefined}
-                                                onChange={(value) => handleFieldChange(field.key, value, field.type)}
-                                                onBlur={() => handleFieldBlur(field.key)}
-                                            />
+                                <section className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+                                    <div className="grid grid-cols-3 border-b border-gray-200 bg-gray-50/70 p-1">
+                                        {[
+                                            { key: 'attributes', label: 'Attributes' },
+                                            { key: 'quality', label: `Quality ${selectedQualityFlags.length ? `(${selectedQualityFlags.length})` : ''}` },
+                                            { key: 'description', label: 'Description' },
+                                        ].map((tab) => (
+                                            <button
+                                                key={tab.key}
+                                                type="button"
+                                                onClick={() => setDetailTab(tab.key as DetailTab)}
+                                                className={`rounded-xl px-3 py-2 text-xs font-black uppercase tracking-wide transition-all ${detailTab === tab.key
+                                                    ? 'bg-white text-gray-900 shadow-sm'
+                                                    : 'text-gray-500 hover:text-gray-800'
+                                                    }`}
+                                            >
+                                                {tab.label}
+                                            </button>
                                         ))}
                                     </div>
-                                </section>
 
-                                {/* Description */}
-                                <section className="space-y-3">
-                                    <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest pl-1">Description</h4>
-                                    <textarea
-                                        value={selectedProduct.description ?? ''}
-                                        onChange={(e) => handleFieldChange('description', e.target.value)}
-                                        onBlur={() => handleFieldBlur('description')}
-                                        placeholder="Add a description for this product..."
-                                        rows={5}
-                                        className="w-full text-sm text-gray-700 leading-relaxed bg-gray-50 rounded-xl p-4 border border-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                                    />
+                                    {detailTab === 'attributes' && (
+                                        <div className="space-y-5 p-4">
+                                            <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
+                                                <div className="mb-2 flex items-center justify-between">
+                                                    <label className="text-sm font-semibold text-gray-700">Master Code</label>
+                                                    <SaveStateBadge state={getFieldSaveState('master_code')} />
+                                                </div>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Enter master code..."
+                                                    value={selectedProduct.master_code || ''}
+                                                    onChange={(e) => handleFieldChange('master_code', e.target.value)}
+                                                    onBlur={() => handleFieldBlur('master_code')}
+                                                    className="w-full px-3 py-2 text-sm border border-gray-200 bg-white rounded-lg focus:ring-2 focus:ring-primary-500 font-mono uppercase"
+                                                />
+                                                <p className="text-[10px] text-gray-400 mt-2">Group multiple SKUs under one master collection.</p>
+                                            </div>
+
+                                            <section className="space-y-3 rounded-2xl border border-indigo-100 bg-indigo-50/30 p-4">
+                                                <div>
+                                                    <h4 className="text-xs font-black text-indigo-700 uppercase tracking-widest">Group Category</h4>
+                                                    <p className="mt-1 text-xs text-indigo-700/80">Category applies to every SKU under the current master code.</p>
+                                                </div>
+                                                <CategoryAttributeEditor
+                                                    label="Category"
+                                                    value={selectedProduct.category}
+                                                    options={categoryOptions}
+                                                    saveState={getFieldSaveState('category')}
+                                                    masterVariantCount={masterVariantCount}
+                                                    masterVariantsLoading={masterVariantsLoading}
+                                                    masterVariantPreview={masterVariantPreview}
+                                                    onCommit={(value) => handleCategoryCommit(value, 'master')}
+                                                />
+                                            </section>
+
+                                            <section className="space-y-3 rounded-2xl border border-gray-200 bg-white p-4">
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <div>
+                                                        <h4 className="text-xs font-black text-gray-500 uppercase tracking-widest">SKU Attributes</h4>
+                                                        <p className="mt-1 text-xs text-gray-500">These fields update only the selected SKU.</p>
+                                                    </div>
+                                                    {hasSkuAttributeChanges && (
+                                                        <span className="rounded-full border border-amber-100 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-700">
+                                                            {changedSkuAttributeFields.length} unsaved
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <div className="grid grid-cols-2 gap-x-4 gap-y-4">
+                                                    {skuAttributeFields.map((field) => (
+                                                        <EditableAttribute
+                                                            key={field.key}
+                                                            label={field.label}
+                                                            type={field.type}
+                                                            value={attributeDrafts[field.key as string] ?? ''}
+                                                            persistedValue={attributeValueToString(selectedPersistedProduct, field.key)}
+                                                            saveState={getFieldSaveState(field.key)}
+                                                            onChange={(value) => setAttributeDrafts((prev) => ({
+                                                                ...prev,
+                                                                [field.key as string]: value,
+                                                            }))}
+                                                        />
+                                                    ))}
+                                                </div>
+                                                <div className="flex items-center justify-between gap-3 border-t border-gray-100 pt-3">
+                                                    <p className="text-[10px] text-gray-400">Save writes all changed SKU attributes at once.</p>
+                                                    <div className="flex items-center gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={resetAttributeDrafts}
+                                                            disabled={!hasSkuAttributeChanges}
+                                                            className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                                        >
+                                                            Reset
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={saveSkuAttributes}
+                                                            disabled={!hasSkuAttributeChanges}
+                                                            className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                                        >
+                                                            Save SKU attributes
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </section>
+                                        </div>
+                                    )}
+
+                                    {detailTab === 'quality' && (
+                                        <div className="space-y-4 p-4">
+                                            <div className="grid grid-cols-3 gap-2">
+                                                <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                                                    <div className="text-[10px] font-black uppercase tracking-widest text-gray-400">Categories</div>
+                                                    <div className="mt-1 text-xl font-black text-gray-900">{parseCategoryTokens(selectedProduct.category).length}</div>
+                                                </div>
+                                                <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                                                    <div className="text-[10px] font-black uppercase tracking-widest text-gray-400">Visible</div>
+                                                    <div className="mt-1 text-sm font-black text-gray-900">{selectedProduct.visibility ? 'Yes' : 'No'}</div>
+                                                </div>
+                                                <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                                                    <div className="text-[10px] font-black uppercase tracking-widest text-gray-400">Stock</div>
+                                                    <div className="mt-1 text-sm font-black text-gray-900">{selectedProduct.in_stock ? 'In' : 'Out'}</div>
+                                                </div>
+                                            </div>
+
+                                            <div>
+                                                <h4 className="mb-2 text-xs font-black uppercase tracking-widest text-gray-400">Review Flags</h4>
+                                                {selectedQualityFlags.length > 0 ? (
+                                                    <div className="space-y-2">
+                                                        {selectedQualityFlags.map((flag) => (
+                                                            <div
+                                                                key={flag.key}
+                                                                className={`rounded-xl border p-3 ${flag.severity === 'danger'
+                                                                    ? 'border-red-200 bg-red-50 text-red-800'
+                                                                    : flag.severity === 'warning'
+                                                                        ? 'border-amber-200 bg-amber-50 text-amber-800'
+                                                                        : 'border-blue-200 bg-blue-50 text-blue-800'
+                                                                    }`}
+                                                            >
+                                                                <div className="text-sm font-black">{flag.label}</div>
+                                                                <div className="mt-1 text-xs opacity-80">{flag.description}</div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    <div className="rounded-xl border border-green-100 bg-green-50 p-4 text-sm font-semibold text-green-700">
+                                                        No review flags for this product.
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            <div className="rounded-xl border border-red-100 bg-red-50 p-4">
+                                                <div className="text-sm font-black text-red-800">Danger zone</div>
+                                                <p className="mt-1 text-xs text-red-700">Delete only when this SKU should be removed from the tuning catalog.</p>
+                                                <button
+                                                    onClick={() => handleHardDeleteBySku(selectedProduct)}
+                                                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-3 text-xs font-bold uppercase tracking-wide text-red-700 transition-all hover:bg-red-100"
+                                                >
+                                                    Delete SKU
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {detailTab === 'description' && (
+                                        <div className="space-y-3 p-4">
+                                            <div className="flex items-center justify-between">
+                                                <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest">Description</h4>
+                                                <SaveStateBadge state={getFieldSaveState('description')} />
+                                            </div>
+                                            <textarea
+                                                value={selectedProduct.description ?? ''}
+                                                onChange={(e) => handleFieldChange('description', e.target.value)}
+                                                onBlur={() => handleFieldBlur('description')}
+                                                placeholder="Add a description for this product..."
+                                                rows={10}
+                                                className="w-full text-sm text-gray-700 leading-relaxed bg-gray-50 rounded-xl p-4 border border-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                            />
+                                        </div>
+                                    )}
                                 </section>
                             </div>
                         </div>
@@ -1525,8 +2059,8 @@ export const ProductTuningPage: React.FC = () => {
                     <div className="w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden">
                         <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
                             <div>
-                                <h3 className="text-lg font-semibold text-gray-900">Bulk Edit Attributes</h3>
-                                <p className="text-xs text-gray-500">Update {selectedIds.size} selected SKUs</p>
+                                <h3 className="text-lg font-semibold text-gray-900">Bulk Edit SKU Attributes</h3>
+                                <p className="text-xs text-gray-500">Update SKU-level attributes for {selectedIds.size} selected SKUs</p>
                             </div>
                             <button
                                 onClick={() => {
@@ -1541,7 +2075,10 @@ export const ProductTuningPage: React.FC = () => {
                             </button>
                         </div>
                         <div className="p-6 max-h-[60vh] overflow-y-auto space-y-4">
-                            {technicalFields.map((field) => {
+                            <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                                Category is excluded here because category updates apply through the master-code group editor.
+                            </div>
+                            {skuAttributeFields.map((field) => {
                                 const state = bulkEditFields[field.key as string] || { enabled: false, value: '' };
                                 return (
                                     <div key={field.key} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
@@ -1568,7 +2105,7 @@ export const ProductTuningPage: React.FC = () => {
                         </div>
                         <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex items-center justify-between">
                             <div className="text-xs text-gray-500">
-                                <p>Only checked fields will be overwritten.</p>
+                                <p>Only checked SKU-level fields will be overwritten. A confirmation appears before saving.</p>
                                 {bulkEditError && <p className="text-red-600 mt-1">{bulkEditError}</p>}
                             </div>
                             <div className="flex gap-2">
@@ -1598,25 +2135,233 @@ export const ProductTuningPage: React.FC = () => {
 };
 
 // Helper Components
+const SaveStateBadge: React.FC<{ state?: SaveState }> = ({ state = 'idle' }) => {
+    if (state === 'idle') return null;
+    const className = state === 'saving'
+        ? 'bg-blue-50 text-blue-700 border-blue-100'
+        : state === 'saved'
+            ? 'bg-green-50 text-green-700 border-green-100'
+            : 'bg-red-50 text-red-700 border-red-100';
+    return (
+        <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${className}`}>
+            {saveStateLabel[state]}
+        </span>
+    );
+};
+
 const EditableAttribute: React.FC<{
     label: string;
-    value?: string | number | null;
+    value: string;
+    persistedValue: string;
     type?: 'text' | 'number';
+    saveState?: SaveState;
     onChange: (value: string) => void;
-    onBlur: () => void;
-}> = ({ label, value, type = 'text', onChange, onBlur }) => (
-    <div className="flex flex-col gap-1 border-b border-gray-50 pb-2">
-        <span className="text-[10px] font-bold text-gray-400 uppercase tracking-tight">{label}</span>
-        <input
-            type={type}
-            value={value === null || value === undefined ? '' : String(value)}
-            onChange={(e) => onChange(e.target.value)}
-            onBlur={onBlur}
-            placeholder="N/A"
-            className="text-sm font-semibold text-gray-700 bg-transparent border border-gray-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-primary-500"
-        />
-    </div>
-);
+}> = ({ label, value, persistedValue, type = 'text', saveState = 'idle', onChange }) => {
+    const hasChanges = value !== persistedValue;
+
+    return (
+        <div className={`flex flex-col gap-1 rounded-lg border p-2 ${hasChanges ? 'border-amber-200 bg-amber-50/50' : 'border-gray-100 bg-white'}`}>
+            <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-tight">{label}</span>
+                <div className="flex items-center gap-1.5">
+                    {hasChanges && (
+                        <span className="rounded-full border border-amber-100 bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold text-amber-700">
+                            Unsaved
+                        </span>
+                    )}
+                    <SaveStateBadge state={saveState} />
+                </div>
+            </div>
+            <input
+                type={type}
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                placeholder="N/A"
+                className="text-sm font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-primary-500"
+            />
+        </div>
+    );
+};
+
+const CategoryAttributeEditor: React.FC<{
+    label: string;
+    value?: string | null;
+    options?: string[];
+    saveState?: SaveState;
+    masterVariantCount?: number;
+    masterVariantsLoading?: boolean;
+    masterVariantPreview?: string[];
+    onCommit: (value: string) => void;
+}> = ({
+    label,
+    value,
+    options = [],
+    saveState = 'idle',
+    masterVariantCount = 1,
+    masterVariantsLoading = false,
+    masterVariantPreview = [],
+    onCommit,
+}) => {
+    const normalizedValue = normalizeCategoryValue(value);
+    const tokens = useMemo(() => parseCategoryTokens(normalizedValue), [normalizedValue]);
+    const [draftTokens, setDraftTokens] = useState<string[]>(tokens);
+    const [newToken, setNewToken] = useState('');
+    const draftValue = normalizeCategoryValue(draftTokens.join(CATEGORY_DELIMITER));
+    const hasChanges = draftValue !== normalizedValue;
+    const normalizedDraftKeys = useMemo(
+        () => new Set(draftTokens.map((token) => token.toLowerCase())),
+        [draftTokens]
+    );
+    const suggestions = useMemo(() => {
+        const query = newToken.trim().toLowerCase();
+        if (!query) return [];
+        return options
+            .filter((option) => {
+                const key = option.toLowerCase();
+                return key.includes(query) && !normalizedDraftKeys.has(key);
+            })
+            .slice(0, 6);
+    }, [newToken, normalizedDraftKeys, options]);
+
+    useEffect(() => {
+        setDraftTokens(tokens);
+        setNewToken('');
+    }, [normalizedValue]);
+
+    const commitTokens = (nextTokens: string[]) => {
+        onCommit(nextTokens.join(CATEGORY_DELIMITER));
+    };
+
+    const removeToken = (index: number) => {
+        setDraftTokens((current) => current.filter((_, tokenIndex) => tokenIndex !== index));
+    };
+
+    const addToken = (rawCandidate = newToken) => {
+        const candidate = rawCandidate.trim();
+        if (!candidate) return;
+        const nextTokens = parseCategoryTokens([...draftTokens, candidate].join(CATEGORY_DELIMITER));
+        setDraftTokens(nextTokens);
+        setNewToken('');
+    };
+
+    return (
+        <div className="flex flex-col gap-2 rounded-xl border border-indigo-100 bg-indigo-50/30 p-3">
+            <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-tight">{label}</span>
+                <div className="flex items-center gap-2">
+                    <SaveStateBadge state={saveState} />
+                    {hasChanges && (
+                        <span className="rounded-full border border-amber-100 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+                            Unsaved
+                        </span>
+                    )}
+                    <span className="text-[10px] font-semibold text-indigo-600">{draftTokens.length} value{draftTokens.length === 1 ? '' : 's'}</span>
+                </div>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5 min-h-[28px]">
+                {draftTokens.length > 0 ? (
+                    draftTokens.map((token, index) => (
+                        <button
+                            key={`${token}-${index}`}
+                            type="button"
+                            onClick={() => removeToken(index)}
+                            className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-white px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
+                            title="Click to remove"
+                        >
+                            <span className="max-w-[240px] truncate">{token}</span>
+                            <span className="text-indigo-400">x</span>
+                        </button>
+                    ))
+                ) : (
+                    <span className="text-xs text-gray-400">No category values yet</span>
+                )}
+            </div>
+
+            <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                    <input
+                        type="text"
+                        value={newToken}
+                        onChange={(event) => setNewToken(event.target.value)}
+                        onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                                event.preventDefault();
+                                addToken();
+                            }
+                        }}
+                        placeholder="Search or add category"
+                        className="flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    />
+                    <button
+                        type="button"
+                        onClick={() => addToken()}
+                        disabled={!newToken.trim()}
+                        className="rounded-lg bg-primary-600 px-3 py-2 text-xs font-semibold text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        Add
+                    </button>
+                </div>
+                {suggestions.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                        {suggestions.map((suggestion) => (
+                            <button
+                                key={suggestion}
+                                type="button"
+                                onClick={() => addToken(suggestion)}
+                                className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-gray-600 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
+                            >
+                                {suggestion}
+                            </button>
+                        ))}
+                    </div>
+                )}
+                <div className="space-y-3 border-t border-indigo-100 pt-3">
+                    <div className="rounded-lg border border-gray-100 bg-white px-3 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Master group impact</span>
+                            <span className="text-[10px] font-semibold text-gray-500">
+                                {masterVariantsLoading ? 'Loading SKUs...' : `${masterVariantCount} SKU${masterVariantCount === 1 ? '' : 's'}`}
+                            </span>
+                        </div>
+                        {masterVariantPreview.length > 0 && (
+                            <p className="mt-1 truncate text-[10px] text-gray-400" title={masterVariantPreview.join(', ')}>
+                                {masterVariantPreview.join(', ')}
+                                {masterVariantCount > masterVariantPreview.length ? `, +${masterVariantCount - masterVariantPreview.length} more` : ''}
+                            </p>
+                        )}
+                    </div>
+
+                    <div className="grid gap-2">
+                        <button
+                            type="button"
+                            onClick={() => commitTokens(draftTokens)}
+                            disabled={!hasChanges || saveState === 'saving' || masterVariantsLoading}
+                            className="flex w-full items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-3 text-left transition-all hover:border-indigo-300 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <span className="shrink-0 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white">Update category</span>
+                        </button>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2">
+                        <p className="text-[10px] text-gray-400">Category changes stay staged until you update the master group.</p>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setDraftTokens(tokens);
+                                setNewToken('');
+                            }}
+                            disabled={!hasChanges}
+                            className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            Reset
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 const FilterDropdown: React.FC<{
     label: string,
@@ -1782,3 +2527,4 @@ const FilterDropdown: React.FC<{
         </>
     );
 };
+

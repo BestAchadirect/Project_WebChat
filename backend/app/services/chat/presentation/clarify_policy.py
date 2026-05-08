@@ -630,6 +630,8 @@ async def build_clarify_policy(
         )
         current_focus = str(knowledge_context["focus"] or "general")
         current_question = str(knowledge_context["question"] or "Which policy detail do you need?")
+        if str(clarify_question or "").strip():
+            current_question = str(clarify_question or "").strip()
         current_follow_ups = list(knowledge_context["follow_ups"] or [])
         if current_focus in {"contact", "location"}:
             message = await _contextual_message(
@@ -674,6 +676,8 @@ async def build_clarify_policy(
         )
         current_focus = str(knowledge_context["focus"] or "general")
         current_question = str(knowledge_context["question"] or "Which policy detail do you need?")
+        if str(clarify_question or "").strip():
+            current_question = str(clarify_question or "").strip()
         current_follow_ups = list(knowledge_context["follow_ups"] or [])
         if current_focus in {"contact", "location"}:
             fallback = "I couldn't retrieve enough contact information right now. Tell me whether you need our sales email, phone number, or showroom address."

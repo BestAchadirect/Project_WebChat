@@ -1,0 +1,109 @@
+{
+  "summary": {
+    "cases": 2,
+    "turns": 2,
+    "workflows": {
+      "catalog": 2
+    },
+    "issues": {},
+    "issue_turn_count": 0,
+    "by_group": {
+      "catalog_basic": {
+        "turns": 1,
+        "workflows": {
+          "catalog": 1
+        },
+        "issues": {}
+      },
+      "mixed": {
+        "turns": 1,
+        "workflows": {
+          "catalog": 1
+        },
+        "issues": {}
+      }
+    }
+  },
+  "results": [
+    {
+      "case_id": "catalog_basic_black_opal_labret",
+      "group": "catalog_basic",
+      "turn_index": 1,
+      "message": "Do you guys have any black opal labrets?",
+      "locale": "en-US",
+      "conversation_id": 1284,
+      "expected_workflow": "catalog",
+      "expected_workflows": [
+        "catalog"
+      ],
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User asked if the store has 'black opal labrets' \u2014 this is a product availability/search request but lacks details like material, gauge, or size, so a clarifying question is needed before querying product database.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards"
+      ],
+      "assistant_text": "I found products that match your request in Labrets / Opal Body Jewelry in Black color. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 8,
+        "product_display_count": 8,
+        "product_has_more": false,
+        "latency_ms": 171.39
+      },
+      "runner_latency_ms": 19474.5,
+      "issues": []
+    },
+    {
+      "case_id": "mixed_product_return",
+      "group": "mixed",
+      "turn_index": 1,
+      "message": "Show gold rings and tell me your return policy",
+      "locale": "en-US",
+      "conversation_id": 1285,
+      "expected_workflow": "catalog",
+      "expected_workflows": [
+        "catalog"
+      ],
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User asked for product listings (gold rings) and the store's return policy \u2014 this requires both product retrieval and knowledge-base policy lookup. Need clarifying preferences to narrow product search and clarify which return policy applies.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "knowledge_answer",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Ring with Gold material. These options are polished and easy to style. If you mean buying gold rings from us, returns and refunds follow our standard 30-day Money Back Guarantee and Refund Policy:\n\n**Returns & Authorization**\n- Contact us within 30 days of delivery to obtain a Return Authorization Number (RMA). Returns without an RMA cannot be processed.\n\n**When refunds are allowed**\n- Full refund: If you\u2019re dissatisfied with overall quality and we approve the return after inspection. \n- Partial refund: For damaged or defective items (we may request photos or require return for higher\u2011value items). Store credit or replacements can be offered with your approval.\n\n**How refunds are issued**\n- Refunds are issued to the original payment method and in the original currency, using the exchange rate from the original payment date if applicable. Once approved, refunds may take up to 24 hours to be issued.\n\n**Shipping, taxes, and fees**\n- Import duties, taxes, and brokerage fees are not refunded. Return shipping is typically the customer\u2019s responsibility unless the item is confirmed defective. If you refuse delivery, original shipping, return shipping, and any associated taxes will be deducted from your refund.\n\nIf you\u2019re asking about a specific gold ring order, please share whether the item is damaged, unopened, or you\u2019re just unsatisfied so we can give the exact next steps.",
+      "source_titles": [
+        "Do you have a Money Back Guarantee?",
+        "Refund Policy",
+        "Refund Policy"
+      ],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 52,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 14818.1
+      },
+      "runner_latency_ms": 28908.94,
+      "issues": []
+    }
+  ]
+}

@@ -54,6 +54,7 @@ ATTRIBUTE_FIELDS = {
     "ring_size",
     "size_in_pack",
     "quantity_in_bulk",
+    "category",
 }
 ALLOWED_BULK_UPDATE_FIELDS = set(ATTRIBUTE_FIELDS)
 
@@ -403,7 +404,6 @@ def _apply_base_filters(
     *,
     search: Optional[str],
     visibility: Optional[bool],
-    is_featured: Optional[bool],
     master_code: Optional[str],
     min_price: Optional[float],
     max_price: Optional[float],
@@ -420,9 +420,6 @@ def _apply_base_filters(
 
     if visibility is not None:
         query = query.where(Product.visibility == visibility)
-
-    if is_featured is not None:
-        query = query.where(Product.is_featured == is_featured)
 
     if master_code:
         query = query.where(Product.master_code == master_code)
@@ -459,8 +456,6 @@ def _build_product_schema(product: Product, attrs: dict) -> ProductSchema:
         stock_status=product.stock_status,
         stock_qty=product.stock_qty,
         visibility=product.visibility,
-        is_featured=product.is_featured,
-        priority=product.priority,
         master_code=product.master_code,
         body_part=merged_attrs.get("body_part"),
         feature=merged_attrs.get("feature"),
@@ -480,6 +475,7 @@ def _build_product_schema(product: Product, attrs: dict) -> ProductSchema:
         pincher_size=merged_attrs.get("pincher_size"),
         ring_size=merged_attrs.get("ring_size"),
         quantity_in_bulk=merged_attrs.get("quantity_in_bulk"),
+        category=merged_attrs.get("category"),
         opal_color=merged_attrs.get("opal_color"),
         threading=merged_attrs.get("threading"),
         outer_diameter=merged_attrs.get("outer_diameter"),
@@ -675,7 +671,6 @@ async def list_products(
     category: Optional[List[str]] = Query(None),
     category_mode: Literal["any", "all"] = Query("any"),
     visibility: Optional[bool] = None,
-    is_featured: Optional[bool] = None,
     material: Optional[List[str]] = Query(None),
     jewelry_type: Optional[List[str]] = Query(None),
     color: Optional[List[str]] = Query(None),
@@ -717,7 +712,6 @@ async def list_products(
         query,
         search=search,
         visibility=visibility,
-        is_featured=is_featured,
         master_code=master_code,
         min_price=min_price,
         max_price=max_price,
@@ -726,7 +720,6 @@ async def list_products(
         count_query,
         search=search,
         visibility=visibility,
-        is_featured=is_featured,
         master_code=master_code,
         min_price=min_price,
         max_price=max_price,
@@ -807,7 +800,6 @@ async def list_product_filters(
     category: Optional[List[str]] = Query(None),
     category_mode: Literal["any", "all"] = Query("any"),
     visibility: Optional[bool] = None,
-    is_featured: Optional[bool] = None,
     material: Optional[List[str]] = Query(None),
     jewelry_type: Optional[List[str]] = Query(None),
     color: Optional[List[str]] = Query(None),
@@ -838,7 +830,6 @@ async def list_product_filters(
         base_query,
         search=search,
         visibility=visibility,
-        is_featured=is_featured,
         master_code=master_code,
         min_price=min_price,
         max_price=max_price,
@@ -920,7 +911,6 @@ async def list_product_filters(
             scoped_query,
             search=search,
             visibility=visibility,
-            is_featured=is_featured,
             master_code=master_code,
             min_price=min_price,
             max_price=max_price,
@@ -1127,6 +1117,14 @@ async def update_product(
             attribute_updates=attr_updates,
             drop_empty=True,
         )
+        if "category" in attr_updates:
+            await category_taxonomy_service.sync_product_categories(
+                db,
+                product_id=product.id,
+                raw_category=attr_updates.get("category"),
+                source="manual",
+                clear_when_empty=True,
+            )
 
     search_changed = False
     if base_updates or attr_updates:
@@ -1232,6 +1230,14 @@ async def bulk_update_products(
                 attribute_updates=attr_updates,
                 drop_empty=True,
             )
+            if "category" in attr_updates:
+                await category_taxonomy_service.sync_product_categories(
+                    db,
+                    product_id=product.id,
+                    raw_category=attr_updates.get("category"),
+                    source="manual",
+                    clear_when_empty=True,
+                )
         if base_updates or attr_updates:
             if product_attribute_sync_service.recompute_product_search_fields(product=product):
                 embed_ids.append(product.id)

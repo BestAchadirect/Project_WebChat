@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from app.services.chat.text_normalization import normalize_user_text
 from app.services.chat.parsing.attribute_keys import canonicalize_filter_key
@@ -24,6 +24,40 @@ def _collapse_whitespace(value: Any) -> str:
 
 def _normalize_color_like_value(value: Any) -> str:
     return re.sub(r"^(?:in|with)\s+", "", normalize_text(value)).strip()
+
+
+def _normalize_multivalue_tokens(value: Any) -> List[str]:
+    tokens: List[str] = []
+
+    def _collect(raw: Any) -> None:
+        if raw is None:
+            return
+        if isinstance(raw, (list, tuple, set)):
+            for nested in raw:
+                _collect(nested)
+            return
+        text = normalize_text(raw)
+        if not text:
+            return
+        if ";;" in text:
+            for token in text.split(";;"):
+                _collect(token)
+            return
+        if ";" in text:
+            for token in text.split(";"):
+                _collect(token)
+            return
+        tokens.append(text)
+
+    _collect(value)
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        deduped.append(token)
+    return deduped
 
 def normalize_text(value: Any) -> str:
     return normalize_user_text(value)
@@ -66,7 +100,7 @@ def normalize_attribute_value(
     if clean_key in _COMPACT_WHITESPACE_KEYS:
         return _collapse_whitespace(text)
     if clean_key == "category":
-        return re.sub(r"\s*;;\s*", ";;", text)
+        return ";;".join(_normalize_multivalue_tokens(value))
     if clean_key == "color" or clean_key.endswith("_color"):
         return _normalize_color_like_value(text)
     return text
@@ -81,9 +115,9 @@ def clean_attribute_filters(
     if not isinstance(raw_filters, dict):
         return {}
     allowed = {
-        normalize_text(item)
+        canonicalize_filter_key(item)
         for item in list(allowed_attribute_filters or [])
-        if normalize_text(item)
+        if canonicalize_filter_key(item)
     }
     out: Dict[str, str] = {}
     for key, value in raw_filters.items():

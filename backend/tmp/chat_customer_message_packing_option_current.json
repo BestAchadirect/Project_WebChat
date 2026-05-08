@@ -1,0 +1,56 @@
+{
+  "summary": {
+    "cases": 1,
+    "turns": 1,
+    "workflows": {
+      "catalog": 1
+    },
+    "issues": {},
+    "issue_turn_count": 0,
+    "by_group": {
+      "catalog_attributes": {
+        "turns": 1,
+        "workflows": {
+          "catalog": 1
+        },
+        "issues": {}
+      }
+    }
+  },
+  "results": [
+    {
+      "case_id": "catalog_attr_packing_option",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show individually packed products",
+      "locale": "en-US",
+      "conversation_id": 1210,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User requested to show 'individually packed products' but did not specify category, definition, or preferences; product database retrieval is needed.",
+      "confidence": 0.88,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you mean single-serve/single-use individually packaged items or products each in their own retail packaging (boxed/unit), and do you have a preferred body jewelry type, price range, or brand?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 3,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 3853.36
+      },
+      "runner_latency_ms": 14557.67,
+      "issues": []
+    }
+  ]
+}

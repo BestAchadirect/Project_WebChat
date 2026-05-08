@@ -210,7 +210,7 @@ class DataImportService:
         # master_code allows grouping multiple SKUs. stock_status can be 'in_stock' or 'out_of_stock'.
         return (
             "sku,master_code,price,stock_status,stock_qty,description,category,image_url,product_url,object_id,"
-            "legacy_sku,visibility,is_featured,priority,search_keywords,attributes_json,"
+            "legacy_sku,visibility,search_keywords,attributes_json,"
             "body_part,feature,jewelry_type,material,"
             "length,size,cz_color,design,crystal_color,color,gauge,size_in_pack,rack,height,"
             "packing_option,pincher_size,ring_size,quantity_in_bulk,opal_color,threading,"
@@ -292,8 +292,6 @@ class DataImportService:
                     stock_status = self._parse_stock_status(row.get("stock_status"))
                     stock_qty = self._parse_int(row.get("stock_qty"))
                     visibility = self._parse_bool(row.get("visibility"))
-                    is_featured = self._parse_bool(row.get("is_featured"))
-                    priority = self._parse_int(row.get("priority"))
 
                     image_url = row.get("image_url")
                     if isinstance(image_url, str):
@@ -358,10 +356,6 @@ class DataImportService:
 
                     if visibility is None and existing_product:
                         visibility = existing_product.visibility
-                    if is_featured is None and existing_product:
-                        is_featured = existing_product.is_featured
-                    if priority is None and existing_product:
-                        priority = existing_product.priority
 
                     effective_attributes = attributes
                     if existing_product:
@@ -413,10 +407,6 @@ class DataImportService:
                             update_fields["product_url"] = product_url
                         if visibility is not None:
                             update_fields["visibility"] = visibility
-                        if is_featured is not None:
-                            update_fields["is_featured"] = is_featured
-                        if priority is not None:
-                            update_fields["priority"] = priority
 
                         changed_fields, old_values, new_values = self._collect_product_changes(
                             product=existing_product,
@@ -467,10 +457,6 @@ class DataImportService:
                         )
                         if visibility is not None:
                             new_product.visibility = visibility
-                        if is_featured is not None:
-                            new_product.is_featured = is_featured
-                        if priority is not None:
-                            new_product.priority = priority
                         db.add(new_product)
                         if attributes:
                             pending_new_eav.append((new_product, attributes))

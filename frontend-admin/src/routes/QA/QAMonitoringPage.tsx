@@ -164,10 +164,6 @@ export const QAMonitoringPage: React.FC = () => {
 
     return (
         <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <h1 className="text-2xl font-bold text-gray-900">QA + Monitoring</h1>
-            </div>
-
             {/* Stats Cards */}
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
                 <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List
 
-from app.schemas.chat import ChatComponent, ChatResponse, ProductCard
+from app.schemas.chat import ChatComponent, ChatResponse, ProductCard, sanitize_assistant_text, sanitize_chat_component
+
+FOLLOW_UP_TEXT_PLACEMENT = "after_quick_replies"
 
 
 def _component_type(component: Any) -> str:
@@ -46,10 +48,24 @@ def assistant_text_from_components(components: Iterable[Any]) -> str:
         for component in normalized:
             if component["type"] != kind:
                 continue
+            if _is_follow_up_text_payload(component["type"], component["data"]):
+                continue
             text = str(component["data"].get(key) or "").strip()
+            text = sanitize_assistant_text(text)
             if text:
                 return text
     return ""
+
+
+def _is_follow_up_text_payload(kind: str, data: Dict[str, Any]) -> bool:
+    return (
+        str(kind or "").strip().lower() == "assistant_message"
+        and str(data.get("placement") or "").strip().lower() == FOLLOW_UP_TEXT_PLACEMENT
+    )
+
+
+def is_follow_up_text_component(component: Any) -> bool:
+    return _is_follow_up_text_payload(_component_type(component), _component_data(component))
 
 
 def _card_from_component_payload(raw: Dict[str, Any]) -> ProductCard | None:
@@ -129,6 +145,7 @@ def follow_up_questions_from_components(components: Iterable[Any]) -> List[str]:
                 text = str(raw.get("label") or raw.get("text") or raw.get("question") or raw.get("message") or "").strip()
             else:
                 text = str(raw or "").strip()
+            text = sanitize_assistant_text(text)
             key = text.lower()
             if not text or key in seen:
                 continue
@@ -152,6 +169,129 @@ def follow_up_questions_from_response(response: ChatResponse) -> List[str]:
     return []
 
 
+def _action_for_label(label: str, actions_by_label: Dict[str, Dict[str, Any]] | None) -> Dict[str, Any]:
+    lookup = {
+        str(raw_label or "").strip().lower(): dict(action or {})
+        for raw_label, action in dict(actions_by_label or {}).items()
+        if str(raw_label or "").strip() and isinstance(action, dict)
+    }
+    return lookup.get(str(label or "").strip().lower(), {})
+
+
+def _is_pagination_follow_up(label: str, action: Dict[str, Any] | None = None) -> bool:
+    action_name = str((action or {}).get("action") or "").strip().lower()
+    if action_name == "catalog_pagination":
+        return True
+    return str(label or "").strip().lower().startswith("show more")
+
+
+def pagination_follow_ups(
+    questions: List[str],
+    *,
+    actions_by_label: Dict[str, Dict[str, Any]] | None = None,
+) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for raw in list(questions or []):
+        label = str(raw or "").strip()
+        if not label:
+            continue
+        action = _action_for_label(label, actions_by_label)
+        if not _is_pagination_follow_up(label, action):
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(label)
+    return out
+
+
+def narrative_follow_ups(
+    questions: List[str],
+    *,
+    actions_by_label: Dict[str, Dict[str, Any]] | None = None,
+) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for raw in list(questions or []):
+        label = str(raw or "").strip()
+        if not label:
+            continue
+        action = _action_for_label(label, actions_by_label)
+        if _is_pagination_follow_up(label, action):
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(label)
+    return out
+
+
+def _follow_up_topic(label: str) -> str:
+    text = str(label or "").strip().strip(".")
+    if not text:
+        return ""
+    lower = text.lower()
+    replacements = (
+        ("show me ", ""),
+        ("show ", ""),
+        ("try ", ""),
+        ("focus on ", ""),
+    )
+    for prefix, replacement in replacements:
+        if lower.startswith(prefix):
+            text = replacement + text[len(prefix):].strip()
+            break
+    if text.lower() == "how can i contact you?":
+        return "contact information"
+    return text.strip().rstrip("?")
+
+
+def follow_up_sentence(questions: List[str], *, limit: int = 3) -> str:
+    topics: List[str] = []
+    seen: set[str] = set()
+    for raw in list(questions or []):
+        topic = _follow_up_topic(str(raw or ""))
+        key = topic.lower()
+        if not topic or key in seen:
+            continue
+        seen.add(key)
+        topics.append(topic)
+        if len(topics) >= max(1, int(limit or 1)):
+            break
+    if not topics:
+        return ""
+    bullets = "\n".join(f"- {topic}" for topic in topics)
+    return sanitize_assistant_text(f"If you want, I can help you:\n{bullets}")
+
+
+def append_follow_up_sentence(assistant_text: str, questions: List[str]) -> str:
+    base = str(assistant_text or "").strip()
+    sentence = follow_up_sentence(questions)
+    if not sentence:
+        return base
+    if not base:
+        return sentence
+    if sentence.lower() in base.lower():
+        return base
+    return f"{base.rstrip()} {sentence}"
+
+
+def follow_up_text_component(questions: List[str]) -> ChatComponent | None:
+    sentence = follow_up_sentence(questions)
+    if not sentence:
+        return None
+    return ChatComponent(
+        type="assistant_message",
+        data={
+            "text": sentence,
+            "placement": FOLLOW_UP_TEXT_PLACEMENT,
+        },
+    )
+
+
 def upsert_quick_replies_component(
     response: ChatResponse,
     questions: List[str],
@@ -159,15 +299,18 @@ def upsert_quick_replies_component(
     actions_by_label: Dict[str, Dict[str, Any]] | None = None,
 ) -> None:
     clean = [str(item or "").strip() for item in list(questions or []) if str(item or "").strip()]
-    action_lookup = {
-        str(label or "").strip().lower(): dict(action or {})
-        for label, action in dict(actions_by_label or {}).items()
-        if str(label or "").strip() and isinstance(action, dict)
-    }
+    clarify_present = any(_component_type(component) == "clarify" for component in list(getattr(response, "components", []) or []))
+    quick_reply_labels = pagination_follow_ups(clean, actions_by_label=actions_by_label)
+    narrative_labels = [] if clarify_present else narrative_follow_ups(clean, actions_by_label=actions_by_label)
     updated: List[ChatComponent] = []
     for component in list(getattr(response, "components", []) or []):
         kind = _component_type(component)
         if kind == "quick_replies":
+            continue
+        if is_follow_up_text_component(component):
+            continue
+        if kind == "assistant_message":
+            updated.append(ChatComponent(type="assistant_message", data=_component_data(component)))
             continue
         if kind == "clarify":
             data = _component_data(component)
@@ -186,33 +329,33 @@ def upsert_quick_replies_component(
                     data=_component_data(component),
                 )
             )
-    if clean:
+    if quick_reply_labels:
         items: List[Any] = []
-        for label in clean:
-            action = action_lookup.get(label.lower())
-            label_key = label.lower()
+        for label in quick_reply_labels:
+            action = _action_for_label(label, actions_by_label)
             if action and str(action.get("action") or "").strip():
                 payload = action.get("payload")
                 item: Dict[str, Any] = {
-                    "label": label,
+                    "label": sanitize_assistant_text(label),
                     "action": str(action.get("action") or "").strip(),
                 }
                 if isinstance(payload, dict) and payload:
                     item["payload"] = dict(payload)
                 items.append(item)
                 continue
-            if label_key.startswith("show more"):
-                items.append(
-                    {
-                        "label": label,
-                        "action": "catalog_pagination",
-                        "payload": {
-                            "kind": "catalog_pagination",
-                            "label": label,
-                        },
-                    }
-                )
-                continue
-            items.append(label)
-        updated.append(ChatComponent(type="quick_replies", data={"items": items}))
-    response.components = updated
+            items.append(
+                {
+                    "label": label,
+                    "action": "catalog_pagination",
+                    "payload": {
+                        "kind": "catalog_pagination",
+                        "label": sanitize_assistant_text(label),
+                    },
+                }
+            )
+        if items:
+            updated.append(ChatComponent(type="quick_replies", data={"items": items}))
+    follow_up_component = follow_up_text_component(narrative_labels)
+    if follow_up_component is not None:
+        updated.append(follow_up_component)
+    response.components = [sanitize_chat_component(component) for component in updated]

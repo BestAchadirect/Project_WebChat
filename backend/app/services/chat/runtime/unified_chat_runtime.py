@@ -17,6 +17,7 @@ from app.services.catalog.attributes_service import eav_service
 from app.services.chat.routing.decision_engine import build_decision_state
 from app.services.chat.routing.understanding import build_understanding_result
 from app.services.chat.runtime.capabilities import build_chat_runtime_capabilities
+from app.services.chat.runtime import conversation_state
 from app.services.chat.runtime.search_plan import build_search_plan
 from app.services.chat.runtime.agentic_adapter import (
     apply_agentic_fallback_debug,
@@ -70,11 +71,29 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
             except Exception as parser_exc:
                 debug_meta["parser_rule_cache_error"] = str(parser_exc)
         sku_tokens = routing_policy.extract_sku_tokens(text)
+        existing_attribute_filters: Dict[str, str] = {}
+        if capabilities.chat_conversation_state_enabled and conversation_id_value:
+            try:
+                loaded_state = await self.get_conversation_state(conversation_id_value)
+                existing_attribute_filters = dict(
+                    conversation_state.load_memory_state(loaded_state).last_attribute_filters or {}
+                )
+                if existing_attribute_filters:
+                    debug_meta["conversation_existing_attribute_filters"] = dict(existing_attribute_filters)
+            except Exception as state_exc:
+                debug_meta["conversation_existing_attribute_filter_error"] = str(state_exc)
         searchable_attribute_names = []
+        searchable_attribute_metadata = []
         if hasattr(self.db, "execute"):
             try:
-                searchable_attribute_names = await eav_service.get_searchable_attribute_names(self.db)
+                searchable_attribute_metadata = await eav_service.get_searchable_attribute_metadata(self.db)
+                searchable_attribute_names = [
+                    str(item.get("name") or "").strip()
+                    for item in searchable_attribute_metadata
+                    if str(item.get("name") or "").strip()
+                ]
                 debug_meta["catalog_searchable_attribute_names"] = list(searchable_attribute_names)
+                debug_meta["catalog_searchable_attribute_metadata"] = list(searchable_attribute_metadata)
             except Exception as attr_exc:
                 debug_meta["catalog_searchable_attribute_error"] = str(attr_exc)
         understanding = await build_understanding_result(
@@ -99,14 +118,23 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
         entity_hints = dict(understanding.entity_hints or {})
         has_product_signal = bool(entity_hints.get("has_product_signal"))
         has_product_detail_signal = bool(entity_hints.get("has_product_detail_signal"))
+        should_extract_product_detail = bool(
+            has_product_signal
+            or understanding.needs_products
+            or str(understanding.intent or "").strip().lower() == "product_information"
+            or str(understanding.workflow_hypothesis or "").strip().lower() in {"catalog", "mixed"}
+        )
 
-        if has_product_signal:
+        if should_extract_product_detail:
             detail_inference = await infer_detail_query(
                 user_text=text,
                 workflow="catalog",
                 alias_map=alias_map,
                 parser_rules=parser_rules,
+                existing_filters=existing_attribute_filters,
+                db=self.db,
                 searchable_attribute_names=searchable_attribute_names,
+                searchable_attribute_metadata=searchable_attribute_metadata,
             )
             detail = DetailQueryParser.build_from_inference(
                 inference=detail_inference,

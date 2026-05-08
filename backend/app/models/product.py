@@ -36,8 +36,6 @@ class Product(Base):
     
     # Control fields
     visibility = Column(Boolean, default=True)
-    is_featured = Column(Boolean, default=False)
-    priority = Column(Integer, default=0)
     master_code = Column(String, index=True, nullable=False)
 
     # Backward-compatible alias: many parts of the codebase still reference `product.name`.

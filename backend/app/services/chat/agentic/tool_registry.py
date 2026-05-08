@@ -594,6 +594,7 @@ def agent_system_prompt(reply_language: str) -> str:
     return (
         "You are a read-only e-commerce assistant with tool access.\n"
         f"Respond in {reply_language}.\n"
+        "Never use em dashes or en dashes; use commas, periods, parentheses, or ASCII hyphens instead.\n"
         "Use tools when you need concrete product, inventory, or knowledge data.\n"
         "Never invent SKU details or stock status.\n"
         "If data is missing, state that clearly and ask a focused follow-up question.\n"

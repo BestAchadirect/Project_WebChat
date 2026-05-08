@@ -83,8 +83,6 @@ class KlevuUpsertMixin:
                 klevu_id=payload.get("klevu_id"),
                 object_id=target_object_id,
                 visibility=True if payload.get("visibility") is None else bool(payload.get("visibility")),
-                is_featured=False if payload.get("is_featured") is None else bool(payload.get("is_featured")),
-                priority=int(payload.get("priority") or 0),
                 attributes={},
                 legacy_sku=list(payload.get("legacy_sku") or []),
                 last_stock_sync_at=self._now_utc(),
@@ -132,14 +130,6 @@ class KlevuUpsertMixin:
             target_visibility = (
                 bool(payload["visibility"]) if payload.get("visibility") is not None else bool(product.visibility)
             )
-            target_is_featured = (
-                bool(payload["is_featured"])
-                if payload.get("is_featured") is not None
-                else bool(product.is_featured)
-            )
-            target_priority = (
-                int(payload["priority"]) if payload.get("priority") is not None else int(product.priority or 0)
-            )
 
             legacy_tokens = list(product.legacy_sku or [])
             if previous_sku and previous_sku != payload["sku"] and previous_sku not in legacy_tokens:
@@ -173,8 +163,6 @@ class KlevuUpsertMixin:
                     product.object_id != target_object_id,
                     product.klevu_id != target_klevu_id,
                     bool(product.visibility) != target_visibility,
-                    bool(product.is_featured) != target_is_featured,
-                    int(product.priority or 0) != target_priority,
                     list(product.legacy_sku or []) != legacy_tokens,
                     attributes_changed,
                 )
@@ -195,8 +183,6 @@ class KlevuUpsertMixin:
             product.object_id = target_object_id
             product.klevu_id = target_klevu_id
             product.visibility = target_visibility
-            product.is_featured = target_is_featured
-            product.priority = target_priority
             product.legacy_sku = legacy_tokens
             product.last_stock_sync_at = self._now_utc()
 

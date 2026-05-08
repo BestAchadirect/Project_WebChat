@@ -27,6 +27,9 @@ class DetailQuery:
     is_detail_request: bool
     semantic_hints: List[str] = field(default_factory=list)
     clarify_focus: str = ""
+    parse_failed: bool = False
+    parse_error: str = ""
+    extraction_debug: Dict[str, Any] = field(default_factory=dict)
 
 
 class DetailQueryParser:
@@ -66,6 +69,9 @@ class DetailQueryParser:
         clarify_focus: str,
         confidence: float,
         allowed_attribute_filters: Sequence[str] | None = None,
+        parse_failed: bool = False,
+        parse_error: str = "",
+        extraction_debug: Dict[str, Any] | None = None,
     ) -> DetailQuery:
         filtered_fields: List[str] = []
         for raw in list(requested_fields or []):
@@ -90,6 +96,9 @@ class DetailQueryParser:
             is_detail_request=is_detail_request,
             semantic_hints=list(semantic_hints or []),
             clarify_focus=str(clarify_focus or ""),
+            parse_failed=bool(parse_failed),
+            parse_error=str(parse_error or ""),
+            extraction_debug=dict(extraction_debug or {}),
         )
 
     @classmethod
@@ -112,6 +121,18 @@ class DetailQueryParser:
                 if allowed_filters
                 else sorted(searchable)
             )
+        extraction_debug = dict(getattr(inference, "debug", {}) or {})
+        parse_error = str(extraction_debug.get("llm_detail_query_error") or "").strip()
+        fallback_source = str(extraction_debug.get("llm_detail_query_fallback_source") or "").strip()
+        parse_failed = bool(
+            parse_error
+            and not fallback_source
+            and not list(getattr(inference, "requested_fields", []) or [])
+            and not dict(getattr(inference, "attribute_filters", {}) or {})
+            and not bool(getattr(inference, "wants_image", False))
+            and not list(getattr(inference, "semantic_hints", []) or [])
+            and not str(getattr(inference, "clarify_focus", "") or "").strip()
+        )
         return cls._finalize_parsed_detail(
             requested_fields=list(inference.requested_fields or []),
             attribute_filters=dict(inference.attribute_filters or {}),
@@ -120,6 +141,9 @@ class DetailQueryParser:
             clarify_focus=str(inference.clarify_focus or ""),
             confidence=float(inference.confidence or 0.0),
             allowed_attribute_filters=allowed_filters,
+            parse_failed=parse_failed,
+            parse_error=parse_error,
+            extraction_debug=extraction_debug,
         )
 
     @classmethod
@@ -132,6 +156,7 @@ class DetailQueryParser:
         parser_rules: Optional[ParserRuleSet] = None,
         db: Any | None = None,
         searchable_attribute_names: Optional[Sequence[str]] = None,
+        searchable_attribute_metadata: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> DetailQuery:
         inference = await infer_detail_query(
             user_text=user_text,
@@ -141,6 +166,7 @@ class DetailQueryParser:
             existing_filters=(nlu_data or {}).get("attribute_filters"),
             db=db,
             searchable_attribute_names=searchable_attribute_names,
+            searchable_attribute_metadata=searchable_attribute_metadata,
         )
         return cls.build_from_inference(
             inference=inference,

@@ -175,14 +175,7 @@ export const AnalyticsPage: React.FC = () => {
 
     return (
         <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="text-3xl font-bold text-gray-900">Analytics</h1>
-                    <p className="mt-2 text-gray-600">
-                        Monitor your chatbot performance and user interactions
-                    </p>
-                </div>
-
+            <div className="flex items-center justify-end">
                 {/* Period Selector */}
                 <div className="flex gap-2 bg-white rounded-lg shadow-sm p-1">
                     {(['today', 'week', 'month', 'all'] as const).map((p) => (

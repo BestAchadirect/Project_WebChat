@@ -181,9 +181,12 @@ def _entity_hints_from_llm_payload(
                 for tag in payload_knowledge_tags
                 if str(tag or "").strip()
             ]
-        has_product = bool(intent_norm == "product_information" and (needs_products or product_query or has_sku))
+        has_product = bool(
+            intent_norm in {"product_information", "knowledge_policy"}
+            and (needs_products or product_query or has_sku)
+        )
         has_knowledge = bool(intent_norm == "knowledge_policy" and (needs_knowledge or knowledge_query))
-        has_mixed = bool(intent_norm == "product_information" and needs_products and needs_knowledge)
+        has_mixed = bool(needs_products and needs_knowledge)
         return {
             "knowledge_tags": effective_knowledge_tags,
             "has_sku": bool(has_sku),
@@ -326,7 +329,7 @@ async def _llm_understanding(
         data = await llm_service.generate_chat_json(
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
             ],
             model=model,
             temperature=0.0,

@@ -208,8 +208,7 @@ export const DocumentControlPage: React.FC = () => {
         <div className="space-y-6">
             {/* Header */}
             <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="text-2xl font-bold text-gray-900">Document Control</h1>
+                <div className="min-w-0">
                     <p className="text-sm text-gray-500">{totalArticles} Articles • {totalChunks} Chunks</p>
                 </div>
                 <button

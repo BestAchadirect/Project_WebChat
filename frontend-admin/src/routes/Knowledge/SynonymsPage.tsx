@@ -66,7 +66,6 @@ export const SynonymsPage: React.FC = () => {
     const [search, setSearch] = useState('');
     const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
     const [density, setDensity] = useState<Density>('comfortable');
-    const [refreshTime, setRefreshTime] = useState<Date>(new Date());
     const [isRefreshing, setIsRefreshing] = useState(false);
 
     // Modal state
@@ -84,7 +83,6 @@ export const SynonymsPage: React.FC = () => {
         try {
             const data = await aliasesApi.listAliases();
             setAliasGroups(data.filter((group) => !isInternalAttribute(group.attribute)));
-            setRefreshTime(new Date());
         } catch (error) {
             console.error('Failed to load alias groups:', error);
         } finally {
@@ -222,11 +220,7 @@ export const SynonymsPage: React.FC = () => {
 
     return (
         <div className="flex flex-col h-[calc(100vh-120px)] bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-            <div className="flex items-start justify-between px-6 pt-6 pb-4 border-b border-gray-100 gap-4">
-                <div className="min-w-0">
-                    <h1 className="text-xl font-semibold text-gray-900 truncate">Synonym Rules</h1>
-                    <p className="text-sm text-gray-500 truncate">Normalize related terms so search stays consistent.</p>
-                </div>
+            <div className="flex items-center justify-end px-6 pt-4 pb-4 border-b border-gray-100 gap-4">
                 <div className="flex items-center gap-2 shrink-0">
                     <Button variant="ghost" size="sm" onClick={loadAliasGroups}>
                         {isRefreshing ? 'Refreshing…' : 'Refresh'}

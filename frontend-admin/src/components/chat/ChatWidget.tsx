@@ -232,8 +232,7 @@ const customStyles = `
 const BannerCarousel: React.FC<{
     banners: BannerItem[];
     primaryColor: string;
-    onBannerClick: () => void;
-}> = ({ banners, primaryColor, onBannerClick }) => {
+}> = ({ banners, primaryColor }) => {
     const [currentSlide, setCurrentSlide] = useState(0);
     const [touchStart, setTouchStart] = useState(0);
     const [touchEnd, setTouchEnd] = useState(0);
@@ -284,9 +283,7 @@ const BannerCarousel: React.FC<{
     const handleBannerSelect = (banner: BannerItem) => {
         if (banner.link_url) {
             window.open(banner.link_url, '_blank', 'noopener,noreferrer');
-            return;
         }
-        onBannerClick();
     };
 
     return (
@@ -306,7 +303,8 @@ const BannerCarousel: React.FC<{
                             <button
                                 type="button"
                                 onClick={() => handleBannerSelect(banner)}
-                                className="w-full text-left transition-all active:scale-[0.99]"
+                                disabled={!banner.link_url}
+                                className={`w-full text-left transition-all ${banner.link_url ? 'active:scale-[0.99] cursor-pointer' : 'cursor-default'}`}
                             >
                                 <div className="w-full aspect-[3/1]">
                                     <img
@@ -361,7 +359,6 @@ const ProductCarousel: React.FC<{
     onProductClick,
 }) => {
     if (!items || items.length === 0) return null;
-    const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
     const toBaseImageUrl = (value?: string | null): string => {
         const raw = (typeof value === 'string' ? value : '').trim();
@@ -423,13 +420,43 @@ const ProductCarousel: React.FC<{
         if (typeof value === 'boolean') return value ? 'Yes' : 'No';
         if (Array.isArray(value)) return value.join(', ');
         if (typeof value === 'object' && value !== null) return JSON.stringify(value);
-        return String(value);
+        const text = String(value);
+        if (text.includes(';;')) {
+            return text
+                .split(';;')
+                .map((part) => part.trim())
+                .filter(Boolean)
+                .join(', ');
+        }
+        return text;
     };
 
     const getVisibleAttributes = (attributes?: Record<string, any>) => {
         if (!attributes) return [];
-        const blockedKeys = new Set(['master_code']);
+        const blockedKeys = new Set(['master_code', 'source_id', 'source_raw_sku']);
         return Object.entries(attributes).filter(([key, value]) => !blockedKeys.has(key) && !isHiddenAttributeValue(value));
+    };
+
+    const getDefaultAttributes = (attributes?: Record<string, any>) => {
+        const visible = getVisibleAttributes(attributes);
+        const byKey = new Map(visible.map(([key, value]) => [key, value]));
+        const priority = ['jewelry_type', 'material', 'category', 'gauge', 'color'];
+        const selected: Array<[string, any]> = [];
+        const seen = new Set<string>();
+
+        for (const key of priority) {
+            if (!byKey.has(key)) continue;
+            selected.push([key, byKey.get(key)]);
+            seen.add(key);
+        }
+
+        for (const [key, value] of visible) {
+            if (seen.has(key)) continue;
+            selected.push([key, value]);
+            if (selected.length >= 4) break;
+        }
+
+        return selected.slice(0, 4);
     };
 
     const getMasterCode = (p: ProductCard): string => {
@@ -440,14 +467,6 @@ const ProductCarousel: React.FC<{
         const fromName = asString(p.name || '').trim();
         if (fromName) return fromName;
         return asString(p.sku || '').trim();
-    };
-
-    const toggleExpanded = (masterCode: string) => {
-        const key = masterCode.toLowerCase();
-        setExpandedGroups((prev) => ({
-            ...prev,
-            [key]: !prev[key],
-        }));
     };
 
     const groupedProducts = (() => {
@@ -470,9 +489,7 @@ const ProductCarousel: React.FC<{
             <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-custom">
                 {groupedProducts.map((group, groupIndex) => {
                     const { masterCode } = group;
-                    const isExpanded = !!expandedGroups[masterCode.toLowerCase()];
                     const groupItems = group.items;
-                    const totalVariants = groupItems.length;
                     const rep =
                         groupItems.find((item) => !!item.product_url && !!item.image_url)
                         || groupItems.find((item) => !!item.product_url)
@@ -485,9 +502,8 @@ const ProductCarousel: React.FC<{
                         .map((item) => Number(item.price))
                         .filter((value) => Number.isFinite(value));
                     const minPrice = prices.length ? Math.min(...prices) : null;
-                    const maxPrice = prices.length ? Math.max(...prices) : null;
-                    const inStockCount = groupItems.filter((item) => !isOutOfStock(item.stock_status)).length;
-                    const repAttrs = getVisibleAttributes(rep.attributes).slice(0, 3);
+                    const available = groupItems.some((item) => !isOutOfStock(item.stock_status));
+                    const repAttrs = getDefaultAttributes(rep.attributes);
 
                     return (
                         <div
@@ -514,9 +530,6 @@ const ProductCarousel: React.FC<{
                                 <h4 className="text-base font-bold text-gray-900 uppercase leading-tight mb-1" title={masterCode}>
                                     {masterCode}
                                 </h4>
-                                <div className="text-xs text-gray-500 font-semibold uppercase tracking-wider mb-2">
-                                    {totalVariants} variant{totalVariants > 1 ? 's' : ''}
-                                </div>
                                 {rep.description && (
                                     <div
                                         className="text-sm text-gray-600 leading-snug mb-3 whitespace-pre-wrap break-words"
@@ -527,44 +540,41 @@ const ProductCarousel: React.FC<{
                                 )}
                                 <div className="grid grid-cols-2 gap-2 text-xs">
                                     <div className="rounded-md bg-gray-50 border border-gray-100 px-2 py-1.5">
-                                        <div className="text-[10px] uppercase font-black text-gray-400">Price Range</div>
+                                        <div className="text-[10px] uppercase font-black text-gray-400">Price</div>
                                         <div className="font-bold text-gray-700">
-                                            {minPrice !== null && maxPrice !== null
-                                                ? (minPrice === maxPrice
-                                                    ? formatPrice({ ...rep, price: minPrice })
-                                                    : `${formatPrice({ ...rep, price: minPrice })} - ${formatPrice({ ...rep, price: maxPrice })}`)
+                                            {minPrice !== null
+                                                ? formatPrice({ ...rep, price: minPrice })
                                                 : "Unavailable"}
                                         </div>
                                     </div>
                                     <div className="rounded-md bg-gray-50 border border-gray-100 px-2 py-1.5">
-                                        <div className="text-[10px] uppercase font-black text-gray-400">In Stock</div>
-                                        <div className="font-bold text-gray-700">{inStockCount}/{groupItems.length}</div>
+                                        <div className="text-[10px] uppercase font-black text-gray-400">Stock</div>
+                                        <div className="font-bold text-gray-700">{available ? 'Available' : 'Out of stock'}</div>
                                     </div>
                                 </div>
-                                {isExpanded && repAttrs.length > 0 && (
-                                    <div className="mt-3 flex flex-wrap gap-1.5">
-                                        {repAttrs.map(([attrKey, value]) => (
-                                            <span key={`${masterCode}-${attrKey}`} className="text-[10px] uppercase font-bold tracking-wide bg-gray-100 text-gray-600 px-2 py-1 rounded-md">
-                                                {formatAttributeLabel(attrKey)}: {formatAttributeValue(value)}
-                                            </span>
-                                        ))}
+                                {repAttrs.length > 0 && (
+                                    <div className="mt-3 rounded-lg border border-gray-100 bg-gray-50/70 divide-y divide-gray-100 overflow-hidden">
+                                        {repAttrs.map(([attrKey, value]) => {
+                                            const formattedValue = formatAttributeValue(value);
+                                            return (
+                                                <div key={`${masterCode}-${attrKey}`} className="px-2.5 py-2">
+                                                    <div className="text-[10px] uppercase font-black tracking-wide text-gray-400 mb-0.5">
+                                                        {formatAttributeLabel(attrKey)}
+                                                    </div>
+                                                    <div
+                                                        className="text-xs font-semibold leading-snug text-gray-700 normal-case"
+                                                        title={formattedValue}
+                                                    >
+                                                        {formattedValue}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
                                     </div>
                                 )}
                             </div>
 
                             <div className="px-3 pb-3 space-y-2">
-                                <button
-                                    type="button"
-                                    onClick={() => toggleExpanded(masterCode)}
-                                    className="block w-full text-center py-2 rounded-lg text-sm font-bold border transition-all active:scale-95"
-                                    style={{
-                                        borderColor: primaryColor,
-                                        color: primaryColor,
-                                        backgroundColor: isExpanded ? `${primaryColor}10` : 'transparent',
-                                    }}
-                                >
-                                    {isExpanded ? 'Hide details' : 'View more details'}
-                                </button>
                                 {productUrl ? (
                                     <a
                                         href={productUrl}
@@ -766,7 +776,18 @@ const ChatComponentsRenderer: React.FC<{
                 }
 
                 if (type === 'assistant_message') {
-                    return null;
+                    const placement = asString(data.placement).trim().toLowerCase();
+                    if (placement !== 'after_quick_replies') return null;
+                    const text = asString(data.text).trim();
+                    if (!text) return null;
+                    return (
+                        <div
+                            key={`${type}-${index}`}
+                            className="max-w-[85%] rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 text-sm font-medium leading-relaxed text-gray-700"
+                        >
+                            <AssistantMarkdown text={text} className="whitespace-pre-wrap" />
+                        </div>
+                    );
                 }
 
                 if (type === 'product_cards') {
@@ -993,6 +1014,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     })();
 
     const [isOpen, setIsOpen] = useState(false);
+    const [isExpanded, setIsExpanded] = useState(false);
     const [activeTab, setActiveTab] = useState<'home' | 'chat' | 'report'>('home');
     const [messages, setMessages] = useState<Message[]>([]);
     const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -1083,10 +1105,29 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     }, [selectedImages]);
     const [showScrollToLatest, setShowScrollToLatest] = useState(false);
     const hasHydratedRef = useRef(false);
+    const startAtLatestRef = useRef(false);
 
     // Auto-scroll to bottom
     const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
         messagesEndRef.current?.scrollIntoView({ behavior });
+    };
+
+    const jumpToLatestMessage = (behavior: ScrollBehavior = 'auto') => {
+        const scroll = () => {
+            const container = chatScrollRef.current;
+            if (container) {
+                container.scrollTop = container.scrollHeight;
+            }
+            messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+            isAtBottomRef.current = true;
+            setShowScrollToLatest(false);
+        };
+
+        requestAnimationFrame(() => {
+            scroll();
+            requestAnimationFrame(scroll);
+            window.setTimeout(scroll, 50);
+        });
     };
 
     const updateScrollState = () => {
@@ -1140,6 +1181,8 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                 content: msg.content,
                 components: Array.isArray(msg.components) ? msg.components : [],
             }));
+            startAtLatestRef.current = true;
+            isAtBottomRef.current = true;
             setMessages((prev) => {
                 if (prev.length > 0) {
                     return prev;
@@ -1153,6 +1196,11 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
     useEffect(() => {
         if (!isOpen || activeTab !== 'chat') return;
+        if (startAtLatestRef.current) {
+            startAtLatestRef.current = false;
+            jumpToLatestMessage('auto');
+            return;
+        }
         if (isAtBottomRef.current) {
             requestAnimationFrame(() => scrollToBottom());
         } else {
@@ -1162,10 +1210,8 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
 
     useEffect(() => {
         if (activeTab !== 'chat') return;
-        requestAnimationFrame(() => {
-            scrollToBottom('auto');
-            updateScrollState();
-        });
+        startAtLatestRef.current = true;
+        jumpToLatestMessage('auto');
     }, [activeTab, isOpen]);
 
     useEffect(() => {
@@ -1466,9 +1512,15 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     };
 
     // Determine container classes
+    const visibilityClasses = isOpen
+        ? 'translate-y-0 opacity-100 pointer-events-auto'
+        : isInline
+            ? 'translate-y-5 opacity-0 pointer-events-none'
+            : 'translate-y-full md:translate-y-5 opacity-0 pointer-events-none';
+
     const containerClasses = isInline
-        ? `absolute bottom-6 right-6 z-10 w-[380px] h-[600px] transition-all duration-300 ease-in-out transform ${isOpen ? 'translate-y-0 opacity-100 pointer-events-auto' : 'translate-y-5 opacity-0 pointer-events-none'}`
-        : `fixed inset-0 z-[1000] md:inset-auto md:bottom-[100px] md:right-[30px] md:w-[380px] md:h-[600px] transition-all duration-300 ease-in-out transform ${isOpen ? 'translate-y-0 opacity-100 pointer-events-auto' : 'translate-y-full md:translate-y-5 opacity-0 pointer-events-none'}`;
+        ? `${isExpanded ? 'absolute inset-4 z-10' : 'absolute bottom-6 right-6 z-10 w-[380px] h-[600px]'} transition-all duration-300 ease-in-out transform ${visibilityClasses}`
+        : `fixed inset-0 z-[1000] md:inset-auto md:right-[30px] ${isExpanded ? 'md:bottom-[24px] md:w-[860px] md:max-w-[92vw] md:h-[86vh] md:max-h-[900px]' : 'md:bottom-[100px] md:w-[380px] md:h-[600px]'} transition-all duration-300 ease-in-out transform ${visibilityClasses}`;
 
     return (
         <div style={{ fontFamily: "'Poppins', sans-serif" }}>
@@ -1518,21 +1570,33 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                     <div className="absolute -left-8 -bottom-8 h-24 w-24 rounded-full bg-white/10 blur-2xl"></div>
                     <div className="flex items-center justify-between relative z-10">
                         {activeTab !== 'home' ? (
-                            <button
-                                onClick={() => {
-                                    if (selectedTicket) {
-                                        setSelectedTicket(null);
-                                    } else {
-                                        setActiveTab('home');
-                                    }
-                                }}
-                                className="flex items-center gap-2 text-white/90 hover:text-white transition-colors bg-white/15 px-3 py-1.5 rounded-lg text-sm font-semibold"
-                            >
-                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
-                                    <path d="M12.9995 17.7115L5.28809 10L12.9995 2.28857L14.1198 3.40878L7.52829 10L14.1198 16.5913L12.9995 17.7115Z" />
-                                </svg>
-                                <span>Go back</span>
-                            </button>
+                            <div className="flex min-w-0 items-center gap-3">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (selectedTicket) {
+                                            setSelectedTicket(null);
+                                        } else {
+                                            setActiveTab('home');
+                                        }
+                                    }}
+                                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/15 text-white/90 transition-colors hover:bg-white/25 hover:text-white"
+                                    aria-label={selectedTicket ? 'Back to reports' : 'Back to home'}
+                                    title={selectedTicket ? 'Back to reports' : 'Back to home'}
+                                >
+                                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.4} d="M15 19l-7-7 7-7" />
+                                    </svg>
+                                </button>
+                                <div className="min-w-0">
+                                    <div className="text-[10px] font-bold uppercase tracking-widest text-white/60">
+                                        {selectedTicket ? 'Report' : 'Acha Direct'}
+                                    </div>
+                                    <div className="truncate text-sm font-semibold text-white">
+                                        {selectedTicket ? 'Ticket detail' : activeTab === 'chat' ? 'Chat' : 'Reports'}
+                                    </div>
+                                </div>
+                            </div>
                         ) : (
                             <div className="flex items-center">
                                 <div className="w-10 h-10 rounded-lg bg-white/20 flex items-center justify-center overflow-hidden border border-white/10 shadow-inner">
@@ -1555,12 +1619,21 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                             </div>
                         )}
                         <div className="flex items-center gap-2">
-                            <button className="text-white/80 hover:text-white transition-colors p-2 rounded-lg">
-                                <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-                                    <path d="M11.5 4C11.5 4.82843 10.8284 5.5 10 5.5C9.17157 5.5 8.5 4.82843 8.5 4C8.5 3.17157 9.17157 2.5 10 2.5C10.8284 2.5 11.5 3.17157 11.5 4Z" />
-                                    <path d="M11.5 10C11.5 10.8284 10.8284 11.5 10 11.5C9.17157 11.5 8.5 10.8284 8.5 10C8.5 9.17157 8.5 8.5 10 8.5C10.8284 8.5 11.5 9.17157 11.5 10Z" />
-                                    <path d="M10 17.5C10.8284 17.5 11.5 16.8284 11.5 16C11.5 15.1716 10.8284 14.5 10 14.5C9.17157 14.5 8.5 15.1716 8.5 16C8.5 16.8284 9.17157 17.5 10 17.5Z" />
-                                </svg>
+                            <button
+                                type="button"
+                                onClick={() => setIsExpanded((prev) => !prev)}
+                                title={isExpanded ? 'Collapse chat size' : 'Expand chat size'}
+                                className="text-white/80 hover:text-white transition-colors bg-white/15 hover:bg-white/25 p-2 rounded-lg"
+                            >
+                                {isExpanded ? (
+                                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5M8 8l-5-5m13 5l5-5M8 16l-5 5m13-5l5 5" />
+                                    </svg>
+                                ) : (
+                                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5M8 8L3 3m13 5l5-5M8 16l-5 5m13-5l5 5" />
+                                    </svg>
+                                )}
                             </button>
                             <button onClick={() => setIsOpen(false)} className="text-white/80 hover:text-white transition-colors bg-white/15 hover:bg-white/25 p-2 rounded-lg">
                                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1583,7 +1656,6 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
                                 <BannerCarousel
                                     banners={banners}
                                     primaryColor={config.primaryColor}
-                                    onBannerClick={() => setActiveTab('chat')}
                                 />
                             )}
 

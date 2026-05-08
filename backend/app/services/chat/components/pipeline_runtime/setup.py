@@ -146,11 +146,18 @@ class PipelineSetupMixin:
             alias_map = await alias_cache.get_alias_map(self.db)
             parser_rules = await parser_rule_cache.get_parser_rules(self.db)
             searchable_attribute_names: List[str] = []
+            searchable_attribute_metadata: List[Dict[str, Any]] = []
             if hasattr(self.db, "execute"):
                 try:
-                    searchable_attribute_names = await eav_service.get_searchable_attribute_names(self.db)
+                    searchable_attribute_metadata = await eav_service.get_searchable_attribute_metadata(self.db)
+                    searchable_attribute_names = [
+                        str(item.get("name") or "").strip()
+                        for item in searchable_attribute_metadata
+                        if str(item.get("name") or "").strip()
+                    ]
                 except Exception:
                     searchable_attribute_names = []
+                    searchable_attribute_metadata = []
             if detail_override is None:
                 detail = await DetailQueryParser.parse_async(
                     user_text=text,
@@ -159,6 +166,7 @@ class PipelineSetupMixin:
                     parser_rules=parser_rules,
                     db=self.db,
                     searchable_attribute_names=searchable_attribute_names,
+                    searchable_attribute_metadata=searchable_attribute_metadata,
                 )
                 llm_call_count = 1
             else:
@@ -247,6 +255,23 @@ class PipelineSetupMixin:
                     reason="catalog_pagination_continuation",
                     confidence=max(float(route_decision.confidence or 0.0), 0.9),
                 )
+            if (
+                route_decision.workflow == "knowledge"
+                and bool(getattr(decision_state_override, "needs_knowledge", False))
+                and dict(getattr(detail, "attribute_filters", {}) or {})
+                and "product_anchor" in str(getattr(decision_state_override, "missing_slot", "") or "").strip().lower()
+            ):
+                route_decision = replace(
+                    route_decision,
+                    workflow="catalog",
+                    source=ComponentSource.SQL,
+                    needs_products=True,
+                    needs_knowledge=True,
+                    needs_clarification=False,
+                    store_overview_request=False,
+                    reason="mixed_product_knowledge_detail_override",
+                    confidence=max(float(route_decision.confidence or 0.0), 0.8),
+                )
             pending_task_resume: Dict[str, Any] = {}
             pending_task_cleared = False
             pending_task_advanced = False
@@ -328,8 +353,12 @@ class PipelineSetupMixin:
                     "pending_task_type": str((pending_task_resume or pending_task).get("task_type") or ""),
                     "pending_task_missing_slot": str((pending_task_resume or pending_task).get("missing_slot") or ""),
                     "pending_task_original_question": str((pending_task_resume or pending_task).get("original_question") or ""),
+                    "conversation_last_product_ids": list(conversation_memory.last_product_ids or []),
+                    "conversation_last_product_skus": list(conversation_memory.last_product_skus or []),
                     "catalog_product_anchor_present": bool(product_anchor_present),
                     "detail_requested_fields": list(detail.requested_fields or []),
+                    "detail_parse_failed": bool(getattr(detail, "parse_failed", False)),
+                    "detail_parse_error": str(getattr(detail, "parse_error", "") or ""),
                     "intent_confidence": float(getattr(decision_state_override, "intent_confidence", 0.0) or 0.0),
                     "decision_answerability": str(getattr(decision_state_override, "answerability", "none") or "none"),
                     "search_plan": search_plan.to_debug_dict(),
@@ -344,6 +373,18 @@ class PipelineSetupMixin:
                 external_call_counts={},
             )
             execution_state.debug_meta["detail_extraction_mode"] = "llm"
+            detail_debug = dict(getattr(detail, "extraction_debug", {}) or {})
+            for key in (
+                "llm_detail_query_error",
+                "llm_detail_query_fallback_source",
+                "llm_detail_query_fallback_filter",
+                "llm_detail_query_confidence",
+                "llm_detail_query_attribute_keys",
+                "llm_detail_query_semantic_hints",
+                "llm_detail_query_clarify_focus",
+            ):
+                if key in detail_debug:
+                    execution_state.debug_meta[key] = detail_debug.get(key)
             if str(route_decision.knowledge_query or "").strip():
                 execution_state.debug_meta["knowledge_query_from_router"] = str(route_decision.knowledge_query or "").strip()
             if llm_call_count > 0:

@@ -269,7 +269,7 @@ class PipelineCatalogSearchMixin:
                 "semantic_hints": semantic_hints,
                 "catalog_version": str(capabilities.chat_catalog_version),
                 "search_mode": "vector_lexical_hybrid_v1",
-                "presentation": "master_dedupe_v1",
+                "presentation": "master_representative_v1",
                 "fetch_limit": result_fetch_limit,
             },
         )
@@ -613,7 +613,10 @@ class PipelineCatalogSearchMixin:
                     lexical_rescue_used = True
                     debug_meta["lexical_rescue_used"] = True
                     debug_meta["semantic_search_mode"] = "vector_lexical_hybrid"
-                if float(semantic_hint_meta.get("semantic_hint_score", 0.0) or 0.0) <= 0.0:
+                if (
+                    float(semantic_hint_meta.get("semantic_hint_score", 0.0) or 0.0) <= 0.0
+                    and not dict(getattr(detail, "attribute_filters", {}) or {})
+                ):
                     semantic_guardrail_reason = "semantic_hint_clarify"
                     product_ids = []
                     state.catalog.product_ids = []
@@ -632,7 +635,11 @@ class PipelineCatalogSearchMixin:
                     )
 
             if not product_ids and not state.decision.ambiguity_reason:
-                if semantic_hints and not hard_filters:
+                if (
+                    semantic_hints
+                    and not hard_filters
+                    and not dict(getattr(detail, "attribute_filters", {}) or {})
+                ):
                     semantic_guardrail_used = True
                     semantic_guardrail_reason = semantic_guardrail_reason or "semantic_hint_clarify"
                     state.decision.ambiguity_reason = "semantic_concept_unclear"
@@ -640,8 +647,14 @@ class PipelineCatalogSearchMixin:
                     debug_meta["semantic_hint_clarify_used"] = True
                 elif hard_filters:
                     state.decision.ambiguity_reason = "structured_no_match"
+                    retrieval_source = ComponentSource.SQL
+                    semantic_result_source = ComponentSource.SQL
                     if not debug_meta.get("semantic_hard_constraint_rejection_reason"):
                         debug_meta["semantic_hard_constraint_rejection_reason"] = "hard_constraint_no_match"
+                elif dict(getattr(detail, "attribute_filters", {}) or {}):
+                    state.decision.ambiguity_reason = "structured_no_match"
+                    retrieval_source = ComponentSource.SQL
+                    semantic_result_source = ComponentSource.SQL
                 else:
                     state.decision.ambiguity_reason = "structured_no_match"
 

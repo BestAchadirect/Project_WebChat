@@ -38,6 +38,11 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             workflow_norm = normalize_user_text(workflow)
             if not text_norm:
                 return [ComponentType.ERROR]
+            if (
+                str(ambiguity_reason or "").strip() == "structured_no_match"
+                and dict(getattr(detail, "attribute_filters", {}) or {})
+            ):
+                return [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
             if bool(ambiguity_reason):
                 return [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
             if workflow_norm == "knowledge":
@@ -81,6 +86,46 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
         if len(items) == 2:
             return f"{items[0]} and {items[1]}"
         return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+    @staticmethod
+    def _display_filter_key(key: str) -> str:
+        text = str(key or "").strip().replace("_", " ")
+        if text.islower():
+            return " ".join(part.capitalize() for part in text.split(" ") if part)
+        return text
+
+    @staticmethod
+    def _display_filter_value(value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text.islower():
+            return " ".join(part.capitalize() for part in text.split(" ") if part)
+        return text
+
+    @classmethod
+    def _build_structured_no_match_reply(cls, *, attribute_filters: Dict[str, str]) -> str:
+        labels: list[str] = []
+        for key, raw_value in dict(attribute_filters or {}).items():
+            clean_key = cls._display_filter_key(str(key or ""))
+            raw_values = [
+                str(item or "").strip()
+                for item in str(raw_value or "").split(";;")
+                if str(item or "").strip()
+            ]
+            values = [cls._display_filter_value(item) for item in raw_values if item]
+            if not clean_key or not values:
+                continue
+            labels.append(f"{clean_key} {cls._join_display_values(values)}")
+
+        if not labels:
+            return "I couldn't find products matching those details. I can broaden the search if you want."
+
+        details = cls._join_display_values(labels[:5])
+        return (
+            f"I couldn't find products matching all of these details: {details}. "
+            "I can broaden the search by removing one filter, or show the closest matching product group separately."
+        )
 
     async def _handle_attribute_list_workflow(
             self,
@@ -193,6 +238,73 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             debug_meta.update(resolver_meta)
             return products, resolver_meta
 
+    @staticmethod
+    def _looks_like_context_price_followup(*, state: PipelineWorkflowState, detail: Any) -> bool:
+            pending_task = str(getattr(state.decision, "pending_task_type", "") or "").strip().lower()
+            missing_slot = str(getattr(state.decision, "missing_slot", "") or "").strip().lower()
+            if pending_task in {"compare_price", "find_cheaper_products"} and missing_slot == "product_anchor":
+                return True
+            hints = {
+                str(item or "").strip().lower()
+                for item in list(getattr(detail, "semantic_hints", []) or [])
+                if str(item or "").strip()
+            }
+            return bool(hints.intersection({"cheapest", "lower price", "cheaper", "lowest price", "budget"}))
+
+    async def _handle_context_product_followup(
+            self,
+            *,
+            state: PipelineWorkflowState,
+            detail: Any,
+            debug_meta: Dict[str, Any],
+            spans: Dict[str, float],
+        ) -> bool:
+            if dict(getattr(detail, "attribute_filters", {}) or {}):
+                return False
+            if not self._looks_like_context_price_followup(state=state, detail=detail):
+                return False
+            product_ids = [
+                str(item or "").strip()
+                for item in list(debug_meta.get("conversation_last_product_ids") or [])
+                if str(item or "").strip()
+            ]
+            if not product_ids:
+                return False
+
+            component_types = [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
+            products, _resolver_meta = await self._resolve_products_with_metrics(
+                product_ids=product_ids,
+                component_types=component_types,
+                spans=spans,
+                debug_meta=debug_meta,
+            )
+            products = [product for product in list(products or []) if product is not None]
+            if not products:
+                return False
+
+            def _price(product: Any) -> float:
+                try:
+                    return float(getattr(product, "price", 0.0) or 0.0)
+                except Exception:
+                    return 0.0
+
+            sorted_products = sorted(products, key=_price)
+            cheapest = sorted_products[0]
+            title = str(getattr(cheapest, "title", "") or getattr(cheapest, "sku", "") or "that option").strip()
+            price = _price(cheapest)
+            currency = str(getattr(cheapest, "currency", "") or "USD").strip() or "USD"
+            state.presentation.selected_components = component_types
+            state.presentation.canonical_products = [cheapest]
+            state.catalog.product_ids = [self._card_identifier(cheapest)]
+            state.catalog.query_product_ids = [self._card_identifier(product) for product in sorted_products if self._card_identifier(product)]
+            state.retrieval.result_count = len(sorted_products)
+            state.retrieval.source = ComponentSource.SQL
+            debug_meta["context_product_followup_used"] = True
+            debug_meta["context_product_followup_type"] = "price_compare"
+            debug_meta["detail_reply_text"] = f"The cheapest option from the current results is {title} at {price:.2f} {currency}."
+            debug_meta["detail_carousel_msg"] = "I included the cheapest matching product below."
+            return True
+
     @classmethod
     def _apply_catalog_grounding(
             cls,
@@ -262,11 +374,21 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                     else "grounding_needs_clarification"
                 )
                 state.decision.ambiguity_reason = reason
-                state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
                 state.presentation.canonical_products = []
                 state.catalog.product_ids = []
+                state.catalog.query_product_ids = []
+                state.catalog.pagination_has_more = False
                 state.retrieval.result_count = 0
-                state.retrieval.source = ComponentSource.ERROR
+                if decision.safe_customer_action == "no_match" and dict(plan.required_filters or {}):
+                    state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
+                    state.knowledge.answer = cls._build_structured_no_match_reply(
+                        attribute_filters=dict(plan.required_filters or {}),
+                    )
+                    state.retrieval.source = ComponentSource.SQL
+                    debug_meta["catalog_no_match_answer"] = state.knowledge.answer
+                else:
+                    state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                    state.retrieval.source = ComponentSource.ERROR
                 debug_meta["grounding_blocked_response"] = True
 
     @staticmethod
@@ -412,6 +534,14 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             if state.decision.ambiguity_reason or state.catalog.handled_attribute_list:
                 return
 
+            if await self._handle_context_product_followup(
+                state=state,
+                detail=detail,
+                debug_meta=debug_meta,
+                spans=spans,
+            ):
+                return
+
             if store_overview_request:
                 product_ids = list(state.catalog.product_ids or [])
                 if not product_ids:
@@ -457,6 +587,14 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             if state.catalog.semantic_search_done:
                 debug_meta["semantic_first_used"] = True
 
+            if str(state.decision.ambiguity_reason or "").strip() == "structured_no_match":
+                state.knowledge.answer = self._build_structured_no_match_reply(
+                    attribute_filters=dict(getattr(detail, "attribute_filters", {}) or {}),
+                )
+                state.catalog.query_product_ids = []
+                state.catalog.pagination_has_more = False
+                debug_meta["catalog_no_match_answer"] = state.knowledge.answer
+
             state.presentation.selected_components = self._select_catalog_components(
                 text=text,
                 workflow=workflow,
@@ -486,6 +624,38 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                 debug_meta=debug_meta,
             )
 
+            if (
+                state.catalog.query_cache_key
+                and not bool(getattr(detail, "is_detail_request", False))
+                and list(state.catalog.query_product_ids or [])
+            ):
+                unique_products, total_unique_products = product_presentation.dedupe_products_by_master_code(
+                    state.presentation.canonical_products,
+                    limit=max(len(state.presentation.canonical_products), 1),
+                )
+                if unique_products:
+                    unique_product_ids = [self._card_identifier(card) for card in unique_products]
+                    state.catalog.query_product_ids = list(unique_product_ids)
+                    state.presentation.canonical_products = list(unique_products)
+                    state.catalog.product_ids = list(unique_product_ids)
+                    state.retrieval.result_count = max(
+                        int(state.retrieval.result_count or 0),
+                        int(total_unique_products or 0),
+                    )
+                    state.catalog.pagination_has_more = bool(total_unique_products > display_limit)
+                    debug_meta["catalog_query_product_ids"] = list(unique_product_ids)
+                    debug_meta["product_unique_master_count"] = int(total_unique_products)
+                    debug_meta["catalog_pagination_has_more"] = bool(state.catalog.pagination_has_more)
+                    await self._component_cache.set_json(
+                        state.catalog.query_cache_key,
+                        {
+                            "product_ids": [str(item) for item in unique_product_ids],
+                            "source": str(state.retrieval.source.value),
+                            "result_count": int(total_unique_products or len(unique_product_ids)),
+                            "presentation": "master_representative_v1",
+                        },
+                        ttl_seconds=300,
+                    )
             self._finalize_catalog_products(
                 state=state,
                 detail=detail,

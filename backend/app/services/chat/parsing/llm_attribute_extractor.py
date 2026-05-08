@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field, replace
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Mapping, Sequence
 
 from sqlalchemy import func, or_, select
@@ -10,11 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.prompts.ambiguity import AMBIGUITY_FAMILY_KEYS, normalize_focus_key
+from app.models.product import Product
 from app.models.product_attribute import AttributeDefinition, FacetValueAlias, ProductAttributeValue
 from app.services.catalog.attributes_service import eav_service
 from app.services.ai.llm_service import llm_service
 from app.services.chat.parsing.attribute_keys import canonicalize_filter_key
-from app.services.chat.parsing.attribute_normalization import normalize_text
+from app.services.chat.parsing.attribute_normalization import normalize_attribute_value, normalize_text
 from app.services.chat.parsing.parser_rule_types import ParserRuleSet, empty_rule_set
 from app.services.chat.parsing.search_policy import HARD_FILTER_KEYS
 import app.services.chat.routing.routing_policy as routing_policy
@@ -58,6 +61,68 @@ DEFAULT_SOFT_ATTRIBUTE_KEYS = frozenset(
 logger = logging.getLogger(__name__)
 
 INTERNAL_ATTRIBUTE_KEYS = frozenset({"source_id", "source_raw_sku"})
+VALUE_CANDIDATE_STOPWORDS = frozenset(
+    {
+        "and",
+        "any",
+        "are",
+        "as",
+        "available",
+        "be",
+        "by",
+        "can",
+        "catalog",
+        "color",
+        "colors",
+        "diameter",
+        "do",
+        "does",
+        "find",
+        "for",
+        "from",
+        "gauge",
+        "get",
+        "have",
+        "height",
+        "i",
+        "in",
+        "is",
+        "jewelry",
+        "length",
+        "looking",
+        "made",
+        "me",
+        "mean",
+        "my",
+        "need",
+        "of",
+        "option",
+        "options",
+        "or",
+        "policy",
+        "please",
+        "product",
+        "products",
+        "refund",
+        "refunds",
+        "return",
+        "returns",
+        "see",
+        "show",
+        "size",
+        "style",
+        "tell",
+        "the",
+        "to",
+        "type",
+        "types",
+        "want",
+        "what",
+        "with",
+        "you",
+        "your",
+    }
+)
 
 
 def _attribute_reasoning_effort() -> str:
@@ -66,9 +131,16 @@ def _attribute_reasoning_effort() -> str:
 
 def _attribute_timeout_seconds() -> float:
     try:
-        return max(8.0, float(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_TIMEOUT_SECONDS", 20.0) or 20.0))
+        return max(8.0, float(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_TIMEOUT_SECONDS", 30.0) or 30.0))
     except Exception:
-        return 20.0
+        return 30.0
+
+
+def _detail_query_max_tokens() -> int:
+    try:
+        return max(1200, int(getattr(settings, "CHAT_DETAIL_QUERY_MAX_TOKENS", 1200) or 1200))
+    except Exception:
+        return 1200
 
 
 def _understanding_hint_bool(understanding: Any, key: str) -> bool:
@@ -147,6 +219,409 @@ async def _load_searchable_attribute_names(db: AsyncSession | None) -> List[str]
         return []
 
 
+async def _load_searchable_attribute_metadata(db: AsyncSession | None) -> List[Dict[str, Any]]:
+    if db is None or not hasattr(db, "execute"):
+        return []
+    try:
+        return await eav_service.get_searchable_attribute_metadata(db)
+    except Exception as exc:
+        logger.warning("searchable attribute metadata unavailable: %s", exc)
+        return []
+
+
+def _normalize_attribute_metadata(values: Sequence[Mapping[str, Any]] | None) -> List[Dict[str, Any]]:
+    metadata: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in list(values or []):
+        item = dict(raw or {})
+        name = canonicalize_filter_key(item.get("name"))
+        if not name or name in INTERNAL_ATTRIBUTE_KEYS or name in seen:
+            continue
+        seen.add(name)
+        metadata.append(
+            {
+                "name": name,
+                "display_name": str(item.get("display_name") or name.replace("_", " ").title()),
+                "data_type": str(item.get("data_type") or "string"),
+                "is_multivalue": bool(item.get("is_multivalue")) or name == "category",
+            }
+        )
+    return metadata
+
+
+def _attribute_names_from_metadata(values: Sequence[Mapping[str, Any]] | None) -> List[str]:
+    return [str(item.get("name") or "").strip() for item in _normalize_attribute_metadata(values)]
+
+
+async def _resolve_searchable_attribute_context(
+    *,
+    db: AsyncSession | None,
+    searchable_attribute_names: Sequence[str] | None = None,
+    searchable_attribute_metadata: Sequence[Mapping[str, Any]] | None = None,
+) -> tuple[List[str], List[Dict[str, Any]]]:
+    metadata = _normalize_attribute_metadata(searchable_attribute_metadata)
+    names = list(searchable_attribute_names or [])
+    if metadata and not names:
+        names = _attribute_names_from_metadata(metadata)
+    if not metadata and db is not None and hasattr(db, "execute"):
+        metadata = await _load_searchable_attribute_metadata(db)
+        if not names and metadata:
+            names = _attribute_names_from_metadata(metadata)
+    if not names:
+        names = await _load_searchable_attribute_names(db)
+    if not metadata:
+        metadata = [
+            {
+                "name": canonicalize_filter_key(name),
+                "display_name": canonicalize_filter_key(name).replace("_", " ").title(),
+                "data_type": "string",
+                "is_multivalue": canonicalize_filter_key(name) == "category",
+            }
+            for name in names
+            if canonicalize_filter_key(name)
+        ]
+    return list(names), _normalize_attribute_metadata(metadata)
+
+
+def _query_value_candidate_tokens(user_text: str) -> List[str]:
+    text = normalize_text(user_text)
+    if not text:
+        return []
+    tokens: List[str] = []
+    seen: set[str] = set()
+    for raw in re.findall(r"[a-z0-9]+", text):
+        token = raw.strip()
+        if len(token) < 2 or token in VALUE_CANDIDATE_STOPWORDS or token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+        if len(tokens) >= 12:
+            break
+    return tokens
+
+
+def _query_value_candidate_lookup_terms(tokens: Sequence[str]) -> List[str]:
+    """Build generic lookup terms for DB value retrieval without deciding the attribute."""
+    lookup_terms: List[str] = []
+    seen: set[str] = set()
+    for raw in list(tokens or []):
+        token = normalize_text(raw)
+        if not token or token in VALUE_CANDIDATE_STOPWORDS:
+            continue
+        candidates = [token]
+        if len(token) >= 7:
+            candidates.append(token[:6])
+        if len(token) >= 4 and token.endswith("s"):
+            candidates.append(token[:-1])
+        for candidate in candidates:
+            if len(candidate) < 3 or candidate in seen:
+                continue
+            seen.add(candidate)
+            lookup_terms.append(candidate)
+    return lookup_terms
+
+
+def _matched_attribute_lookup_terms(*, value_norm: str, tokens: Sequence[str]) -> List[str]:
+    clean_value = normalize_text(value_norm)
+    if not clean_value:
+        return []
+    matches: List[str] = []
+    seen: set[str] = set()
+    for term in _query_value_candidate_lookup_terms(tokens):
+        if term and term in clean_value and term not in seen:
+            seen.add(term)
+            matches.append(term)
+    return matches
+
+
+def _score_attribute_value_candidate(*, value_norm: str, tokens: Sequence[str], count: int) -> float:
+    clean_value = normalize_text(value_norm)
+    if not clean_value or not tokens:
+        return 0.0
+    matched = [token for token in tokens if token and token in clean_value]
+    lookup_matched = _matched_attribute_lookup_terms(value_norm=clean_value, tokens=tokens)
+    if not matched and not lookup_matched:
+        return 0.0
+    lookup_terms = set(_query_value_candidate_lookup_terms(tokens))
+    exact_weight = float(len(matched))
+    lookup_weight = 0.6 * float(len([term for term in lookup_matched if term not in matched]))
+    coverage = min(1.0, (exact_weight + lookup_weight) / max(1.0, float(len(tokens))))
+    ordered_query = " ".join(tokens)
+    exact_value_bonus = 7.0 if clean_value in lookup_terms else 0.0
+    phrase_bonus = 4.0 if ordered_query and ordered_query in clean_value else 0.0
+    count_bonus = min(3.0, max(0.0, float(count or 0) / 10000.0))
+    return round((coverage * 10.0) + exact_value_bonus + phrase_bonus + count_bonus, 4)
+
+
+def _score_approximate_attribute_value_candidate(
+    *,
+    value_norm: str,
+    tokens: Sequence[str],
+    count: int,
+) -> tuple[float, List[str]]:
+    clean_value = normalize_text(value_norm)
+    if not clean_value or not tokens:
+        return 0.0, []
+    value_tokens = [
+        token
+        for token in re.findall(r"[a-z0-9]+", clean_value)
+        if len(token) >= 4 and token not in VALUE_CANDIDATE_STOPWORDS
+    ]
+    if not value_tokens:
+        return 0.0, []
+    best_score = 0.0
+    matched_terms: List[str] = []
+    for token in list(tokens or []):
+        if len(token) < 5:
+            continue
+        token_best = max(SequenceMatcher(None, token, value_token).ratio() for value_token in value_tokens)
+        if token_best > best_score:
+            best_score = token_best
+        if token_best >= 0.84:
+            matched_terms.append(token)
+    if best_score < 0.84 or not matched_terms:
+        return 0.0, []
+    count_bonus = min(2.0, max(0.0, float(count or 0) / 10000.0))
+    return round((best_score * 8.0) + count_bonus, 4), list(dict.fromkeys(matched_terms))
+
+
+async def _load_attribute_value_candidates(
+    *,
+    db: AsyncSession | None,
+    user_text: str,
+    allowed_attributes: Sequence[str],
+    total_limit: int = 30,
+    per_attribute_limit: int = 6,
+) -> List[Dict[str, Any]]:
+    """Load DB-backed facet values that overlap the user's product wording."""
+    if db is None or not hasattr(db, "execute"):
+        return []
+    tokens = _query_value_candidate_tokens(user_text)
+    allowed = _canonical_attribute_names(allowed_attributes)
+    if not tokens or not allowed:
+        return []
+
+    value_expr = func.lower(func.coalesce(ProductAttributeValue.value_norm, ProductAttributeValue.value, ""))
+    lookup_terms = _query_value_candidate_lookup_terms(tokens)
+    conditions = [value_expr.like(f"%{token}%") for token in lookup_terms]
+    if not conditions:
+        return []
+
+    rows: List[Any] = []
+    try:
+        stmt = (
+            select(
+                AttributeDefinition.name,
+                ProductAttributeValue.value,
+                ProductAttributeValue.value_norm,
+                func.count(Product.id).label("product_count"),
+            )
+            .join(ProductAttributeValue, ProductAttributeValue.attribute_id == AttributeDefinition.id)
+            .join(Product, Product.id == ProductAttributeValue.product_id)
+            .where(AttributeDefinition.is_enabled.is_(True))
+            .where(func.lower(AttributeDefinition.name).in_(sorted(allowed)))
+            .where(Product.is_active.is_(True))
+            .where(or_(*conditions))
+            .group_by(
+                AttributeDefinition.name,
+                ProductAttributeValue.value,
+                ProductAttributeValue.value_norm,
+            )
+            .limit(max(total_limit * 8, 80))
+        )
+        rows = (await db.execute(stmt)).all()
+    except Exception as exc:
+        logger.warning("catalog attribute value candidate lookup failed: %s", exc)
+        rows = []
+
+    candidates: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    per_attribute_counts: Dict[str, int] = {}
+    for raw_attribute, raw_value, raw_value_norm, raw_count in rows:
+        attribute = canonicalize_filter_key(raw_attribute)
+        value = str(raw_value or "").strip()
+        value_norm = normalize_text(raw_value_norm or raw_value)
+        if not attribute or not value or not value_norm:
+            continue
+        score = _score_attribute_value_candidate(
+            value_norm=value_norm,
+            tokens=tokens,
+            count=int(raw_count or 0),
+        )
+        if score <= 0:
+            continue
+        key = (attribute, value_norm)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(
+            {
+                "attribute": attribute,
+                "value": value,
+                "value_norm": value_norm,
+                "matched_terms": _matched_attribute_lookup_terms(value_norm=value_norm, tokens=tokens),
+                "product_count": int(raw_count or 0),
+                "score": score,
+            }
+        )
+
+    if len(candidates) < max(3, min(total_limit, 10)):
+        try:
+            broad_stmt = (
+                select(
+                    AttributeDefinition.name,
+                    ProductAttributeValue.value,
+                    ProductAttributeValue.value_norm,
+                    func.count(Product.id).label("product_count"),
+                )
+                .join(ProductAttributeValue, ProductAttributeValue.attribute_id == AttributeDefinition.id)
+                .join(Product, Product.id == ProductAttributeValue.product_id)
+                .where(AttributeDefinition.is_enabled.is_(True))
+                .where(func.lower(AttributeDefinition.name).in_(sorted(allowed)))
+                .where(Product.is_active.is_(True))
+                .where(ProductAttributeValue.value_norm.isnot(None))
+                .where(ProductAttributeValue.value_norm != "")
+                .group_by(
+                    AttributeDefinition.name,
+                    ProductAttributeValue.value,
+                    ProductAttributeValue.value_norm,
+                )
+            )
+            broad_rows = (await db.execute(broad_stmt)).all()
+        except Exception as exc:
+            logger.warning("catalog approximate attribute value lookup failed: %s", exc)
+            broad_rows = []
+
+        for raw_attribute, raw_value, raw_value_norm, raw_count in broad_rows:
+            attribute = canonicalize_filter_key(raw_attribute)
+            value = str(raw_value or "").strip()
+            value_norm = normalize_text(raw_value_norm or raw_value)
+            if not attribute or not value or not value_norm:
+                continue
+            key = (attribute, value_norm)
+            if key in seen:
+                continue
+            score, matched_terms = _score_approximate_attribute_value_candidate(
+                value_norm=value_norm,
+                tokens=tokens,
+                count=int(raw_count or 0),
+            )
+            if score <= 0:
+                continue
+            seen.add(key)
+            candidates.append(
+                {
+                    "attribute": attribute,
+                    "value": value,
+                    "value_norm": value_norm,
+                    "matched_terms": matched_terms,
+                    "product_count": int(raw_count or 0),
+                    "score": score,
+                    "match_type": "approximate",
+                }
+            )
+
+    candidates.sort(
+        key=lambda item: (
+            -float(item.get("score") or 0.0),
+            -int(item.get("product_count") or 0),
+            str(item.get("attribute") or ""),
+            str(item.get("value") or ""),
+        )
+    )
+    limited: List[Dict[str, Any]] = []
+    for candidate in candidates:
+        attribute = str(candidate.get("attribute") or "")
+        count = per_attribute_counts.get(attribute, 0)
+        if count >= max(1, per_attribute_limit):
+            continue
+        per_attribute_counts[attribute] = count + 1
+        limited.append(candidate)
+        if len(limited) >= max(1, total_limit):
+            break
+    return limited
+
+
+async def _load_attribute_value_options(
+    *,
+    db: AsyncSession | None,
+    allowed_attributes: Sequence[str],
+    max_values_per_attribute: int = 30,
+    total_limit: int = 120,
+) -> List[Dict[str, Any]]:
+    """Load compact DB-backed option lists for low-cardinality searchable attributes."""
+    if db is None or not hasattr(db, "execute"):
+        return []
+    allowed = _canonical_attribute_names(allowed_attributes)
+    if not allowed:
+        return []
+
+    try:
+        stmt = (
+            select(
+                AttributeDefinition.name,
+                ProductAttributeValue.value,
+                ProductAttributeValue.value_norm,
+                func.count(Product.id).label("product_count"),
+            )
+            .join(ProductAttributeValue, ProductAttributeValue.attribute_id == AttributeDefinition.id)
+            .join(Product, Product.id == ProductAttributeValue.product_id)
+            .where(AttributeDefinition.is_enabled.is_(True))
+            .where(func.lower(AttributeDefinition.name).in_(sorted(allowed)))
+            .where(Product.is_active.is_(True))
+            .where(ProductAttributeValue.value_norm.isnot(None))
+            .where(ProductAttributeValue.value_norm != "")
+            .group_by(
+                AttributeDefinition.name,
+                ProductAttributeValue.value,
+                ProductAttributeValue.value_norm,
+            )
+        )
+        rows = (await db.execute(stmt)).all()
+    except Exception as exc:
+        logger.warning("catalog attribute value option lookup failed: %s", exc)
+        return []
+
+    grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for raw_attribute, raw_value, raw_value_norm, raw_count in rows:
+        attribute = canonicalize_filter_key(raw_attribute)
+        value = str(raw_value or "").strip()
+        value_norm = normalize_text(raw_value_norm or raw_value)
+        if not attribute or not value or not value_norm:
+            continue
+        values = grouped.setdefault(attribute, {})
+        existing = values.get(value_norm)
+        count = int(raw_count or 0)
+        if existing is None or count > int(existing.get("product_count") or 0):
+            values[value_norm] = {
+                "value": value,
+                "value_norm": value_norm,
+                "product_count": count,
+            }
+
+    options: List[Dict[str, Any]] = []
+    for attribute in sorted(grouped):
+        values = list(grouped[attribute].values())
+        if not values or len(values) > max(1, int(max_values_per_attribute)):
+            continue
+        values.sort(
+            key=lambda item: (
+                -int(item.get("product_count") or 0),
+                str(item.get("value_norm") or ""),
+            )
+        )
+        options.append(
+            {
+                "attribute": attribute,
+                "value_count": len(values),
+                "values": values[: max(1, int(max_values_per_attribute))],
+            }
+        )
+        if sum(len(item.get("values") or []) for item in options) >= max(1, int(total_limit)):
+            break
+    return options
+
+
 def _allowed_exact_attributes(
     rule_set: ParserRuleSet | None,
     searchable_attribute_names: Sequence[str] | None = None,
@@ -155,10 +630,10 @@ def _allowed_exact_attributes(
     declared = _canonical_attribute_names(active_rules.allowed_attribute_filters)
     searchable = _canonical_attribute_names(searchable_attribute_names)
     if searchable:
-        declared = declared.intersection(searchable) if declared else searchable
+        return sorted(_canonical_attribute_names(HARD_FILTER_KEYS).intersection(searchable))
     if declared:
         return sorted(declared.intersection(HARD_FILTER_KEYS))
-    return sorted(_canonical_attribute_names(HARD_FILTER_KEYS).intersection(searchable) if searchable else HARD_FILTER_KEYS)
+    return sorted(HARD_FILTER_KEYS)
 
 
 def _allowed_soft_attributes(
@@ -169,16 +644,16 @@ def _allowed_soft_attributes(
     declared = _canonical_attribute_names(active_rules.allowed_attribute_filters)
     searchable = _canonical_attribute_names(searchable_attribute_names)
     if searchable:
-        declared = declared.intersection(searchable) if declared else searchable
+        return sorted(searchable.difference(HARD_FILTER_KEYS))
     if declared:
         return sorted(declared.difference(HARD_FILTER_KEYS))
     defaults = _canonical_attribute_names(DEFAULT_SOFT_ATTRIBUTE_KEYS)
-    return sorted(defaults.intersection(searchable) if searchable else defaults)
+    return sorted(defaults)
 
 
 def _normalize_candidate_filters(
     *,
-    filters: Mapping[str, str] | None,
+    filters: Mapping[str, Any] | None,
     allowed_attributes: Sequence[str],
 ) -> Dict[str, str]:
     allowed = {str(item or "").strip().lower() for item in list(allowed_attributes or []) if str(item or "").strip()}
@@ -187,10 +662,168 @@ def _normalize_candidate_filters(
         key = canonicalize_filter_key(raw_key)
         if not key or (allowed and key not in allowed):
             continue
-        value = normalize_text(raw_value)
+        value = normalize_attribute_value(key=key, value=raw_value)
         if value:
             clean[key] = value
     return clean
+
+
+def _split_normalized_filter_values(value: Any) -> List[str]:
+    tokens: List[str] = []
+    for raw in str(value or "").split(";;"):
+        token = normalize_text(raw)
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def _candidate_values_share_lookup_term(*, value_norm: str, candidate_norm: str) -> bool:
+    value_terms = {
+        term
+        for term in _query_value_candidate_lookup_terms(_query_value_candidate_tokens(value_norm))
+        if len(term) >= 6
+    }
+    candidate_terms = {
+        term
+        for term in _query_value_candidate_lookup_terms(_query_value_candidate_tokens(candidate_norm))
+        if len(term) >= 6
+    }
+    return bool(value_terms and candidate_terms and value_terms.intersection(candidate_terms))
+
+
+def _align_candidate_filter_values(
+    *,
+    filters: Mapping[str, str],
+    attribute_value_candidates: Sequence[Mapping[str, Any]] | None,
+) -> Dict[str, str]:
+    if not filters or not attribute_value_candidates:
+        return dict(filters or {})
+
+    candidates_by_attribute: Dict[str, List[Dict[str, Any]]] = {}
+    for raw in list(attribute_value_candidates or []):
+        item = dict(raw or {})
+        attribute = canonicalize_filter_key(item.get("attribute"))
+        value_norm = normalize_text(item.get("value_norm") or item.get("value"))
+        if not attribute or not value_norm:
+            continue
+        item["attribute"] = attribute
+        item["value_norm"] = value_norm
+        candidates_by_attribute.setdefault(attribute, []).append(item)
+
+    aligned: Dict[str, str] = {}
+    for key, value in dict(filters or {}).items():
+        attribute = canonicalize_filter_key(key)
+        candidates = candidates_by_attribute.get(attribute) or []
+        if not attribute or not candidates:
+            aligned[attribute or key] = value
+            continue
+
+        selected: List[Dict[str, Any]] = []
+        for value_norm in _split_normalized_filter_values(value):
+            matches = [
+                candidate
+                for candidate in candidates
+                if value_norm == str(candidate.get("value_norm") or "")
+                or value_norm in str(candidate.get("value_norm") or "")
+                or str(candidate.get("value_norm") or "") in value_norm
+                or _candidate_values_share_lookup_term(
+                    value_norm=value_norm,
+                    candidate_norm=str(candidate.get("value_norm") or ""),
+                )
+            ]
+            if not matches:
+                selected.append(
+                    {
+                        "value_norm": value_norm,
+                        "score": 0.0,
+                        "product_count": 0,
+                        "candidate_backed": False,
+                    }
+                )
+                continue
+            matches.sort(
+                key=lambda item: (
+                    -float(item.get("score") or 0.0),
+                    -int(item.get("product_count") or 0),
+                    str(item.get("value_norm") or ""),
+                )
+            )
+            selected.append({**matches[0], "candidate_backed": True})
+
+        collapsed: List[Dict[str, Any]] = []
+        for item in sorted(
+            selected,
+            key=lambda candidate: (
+                -float(candidate.get("score") or 0.0),
+                -int(candidate.get("product_count") or 0),
+                str(candidate.get("value_norm") or ""),
+            ),
+        ):
+            item_norm = str(item.get("value_norm") or "")
+            if not item_norm:
+                continue
+            if any(
+                bool(item.get("candidate_backed"))
+                and bool(existing.get("candidate_backed"))
+                and (
+                    item_norm in str(existing.get("value_norm") or "")
+                    or str(existing.get("value_norm") or "") in item_norm
+                )
+                for existing in collapsed
+            ):
+                continue
+            collapsed.append(item)
+
+        values = [str(item.get("value_norm") or "").strip() for item in collapsed if str(item.get("value_norm") or "").strip()]
+        if not values:
+            continue
+        aligned[attribute] = ";;".join(dict.fromkeys(values)) if attribute == "category" else values[0]
+    return aligned
+
+
+def _fallback_detail_from_attribute_candidates(
+    *,
+    attribute_value_candidates: Sequence[Mapping[str, Any]] | None,
+    debug: Dict[str, Any],
+    min_score: float = 6.0,
+    confidence: float = 0.8,
+) -> DetailQueryInferenceResult | None:
+    candidates = [dict(item or {}) for item in list(attribute_value_candidates or [])]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda item: (
+            -float(item.get("score") or 0.0),
+            -int(item.get("product_count") or 0),
+            str(item.get("attribute") or ""),
+            str(item.get("value_norm") or item.get("value") or ""),
+        )
+    )
+    top = candidates[0]
+    attribute = canonicalize_filter_key(top.get("attribute"))
+    value_norm = normalize_text(top.get("value_norm") or top.get("value"))
+    score = float(top.get("score") or 0.0)
+    matched_terms = [str(item or "").strip() for item in list(top.get("matched_terms") or []) if str(item or "").strip()]
+    if not attribute or not value_norm or score < float(min_score) or not matched_terms:
+        return None
+
+    debug["llm_detail_query_fallback_source"] = "attribute_value_candidate"
+    debug["llm_detail_query_fallback_filter"] = {
+        "attribute": attribute,
+        "value": value_norm,
+        "score": score,
+        "product_count": int(top.get("product_count") or 0),
+    }
+    return DetailQueryInferenceResult(
+        requested_fields=[],
+        attribute_filters={attribute: value_norm},
+        wants_image=False,
+        semantic_hints=[],
+        clarify_focus="",
+        confidence=confidence,
+        llm_call_count=0,
+        debug=debug,
+    )
 
 
 async def _value_exists_for_attribute(
@@ -546,6 +1179,7 @@ def _build_detail_inference_from_llm_data(
     llm_data: Mapping[str, Any] | None,
     allowed_exact_attributes: Sequence[str],
     allowed_soft_attributes: Sequence[str],
+    attribute_value_candidates: Sequence[Mapping[str, Any]] | None = None,
     confidence: float,
     min_confidence: float,
     debug: Dict[str, Any],
@@ -554,6 +1188,10 @@ def _build_detail_inference_from_llm_data(
     attribute_filters = _normalize_candidate_filters(
         filters=(llm_data or {}).get("attribute_filters"),
         allowed_attributes=list(allowed_exact_attributes) + list(allowed_soft_attributes),
+    )
+    attribute_filters = _align_candidate_filter_values(
+        filters=attribute_filters,
+        attribute_value_candidates=attribute_value_candidates,
     )
     semantic_hints = _normalize_semantic_hints((llm_data or {}).get("semantic_hints"))
     clarify_focus = normalize_focus_key((llm_data or {}).get("clarify_focus"))
@@ -594,6 +1232,7 @@ async def infer_detail_query(
     existing_filters: Mapping[str, str] | None = None,
     db: AsyncSession | None = None,
     searchable_attribute_names: Sequence[str] | None = None,
+    searchable_attribute_metadata: Sequence[Mapping[str, Any]] | None = None,
 ) -> DetailQueryInferenceResult:
     clean_workflow = normalize_text(workflow)
     debug: Dict[str, Any] = {
@@ -626,19 +1265,55 @@ async def infer_detail_query(
             debug=debug,
         )
 
-    searchable_names = list(searchable_attribute_names or [])
-    if not searchable_names:
-        searchable_names = await _load_searchable_attribute_names(db)
+    searchable_names, searchable_metadata = await _resolve_searchable_attribute_context(
+        db=db,
+        searchable_attribute_names=searchable_attribute_names,
+        searchable_attribute_metadata=searchable_attribute_metadata,
+    )
     allowed_exact_attributes = _allowed_exact_attributes(parser_rules, searchable_names)
     allowed_soft_attributes = _allowed_soft_attributes(parser_rules, searchable_names)
+    attribute_value_candidates = await _load_attribute_value_candidates(
+        db=db,
+        user_text=user_text,
+        allowed_attributes=list(allowed_exact_attributes) + list(allowed_soft_attributes),
+    )
+    attribute_value_options = await _load_attribute_value_options(
+        db=db,
+        allowed_attributes=list(allowed_exact_attributes) + list(allowed_soft_attributes),
+    )
     debug["catalog_searchable_attribute_names"] = list(searchable_names)
+    debug["catalog_searchable_attribute_metadata"] = list(searchable_metadata)
     debug["catalog_allowed_exact_attributes"] = list(allowed_exact_attributes)
     debug["catalog_allowed_soft_attributes"] = list(allowed_soft_attributes)
+    debug["catalog_attribute_value_candidate_count"] = len(attribute_value_candidates)
+    debug["catalog_attribute_value_candidates"] = [
+        {
+            "attribute": str(item.get("attribute") or ""),
+            "value": str(item.get("value") or ""),
+            "product_count": int(item.get("product_count") or 0),
+        }
+        for item in attribute_value_candidates[:10]
+    ]
+    debug["catalog_attribute_value_options"] = [
+        {
+            "attribute": str(item.get("attribute") or ""),
+            "value_count": int(item.get("value_count") or 0),
+            "values": [
+                {
+                    "value": str(value.get("value") or ""),
+                    "product_count": int(value.get("product_count") or 0),
+                }
+                for value in list(item.get("values") or [])[:8]
+                if isinstance(value, Mapping)
+            ],
+        }
+        for item in attribute_value_options[:12]
+    ]
     model = str(
         getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MODEL", "")
         or getattr(settings, "NLU_MODEL", "gpt-5-mini")
     ).strip()
-    max_tokens = max(900, int(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MAX_TOKENS", 220)))
+    max_tokens = _detail_query_max_tokens()
     min_confidence = float(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MIN_CONFIDENCE", 0.55))
     system_prompt = (
         "You interpret detail requests for a body jewelry ecommerce assistant. "
@@ -646,10 +1321,31 @@ async def infer_detail_query(
         "requested_fields must be an array using only fields from: price, stock, image, attributes, name, sku. "
         "attribute_filters must only contain supported product attributes and should preserve the user's meaning without code-side alias rewriting. "
         "Only use attributes listed in allowed_exact_attributes or allowed_soft_attributes; those are the DB-searchable attributes with product values. "
-        "If a product concept uses an unavailable attribute, put the concept in semantic_hints or clarify_focus instead of attribute_filters. "
+        "Use attribute_metadata to understand field behavior. "
+        "For attributes marked is_multivalue, each value is an independent tag membership, not one combined classification string. "
+        "When multiple tag memberships are needed for a multivalue attribute, return an array of individual tag values for that attribute. "
+        "existing_filters are previous product-search filters from the same conversation. "
+        "Use existing_filters only when the current query is clearly a follow-up, refinement, or pronoun reference to previous results. "
+        "When using them, combine compatible existing filters with the current new filters; do not carry them into an unrelated new search. "
+        "Use attribute_value_candidates as DB-backed product vocabulary. "
+        "When the user's product wording matches or semantically normalizes to a candidate, copy that candidate's attribute and value exactly instead of splitting the phrase into smaller guessed filters. "
+        "Use attribute_value_options as available DB values for low-cardinality attributes when candidates are sparse or the wording is indirect. "
+        "If the user's wording clearly means one of those available options, copy that option's value exactly. "
+        "Do not choose an option if none of the available values supports the user's meaning. "
+        "For mixed product plus policy questions, extract only the product-shopping part into filters and semantic_hints; do not use policy/support words as catalog clarify_focus. "
+        "Prefer the simplest DB candidate that represents the customer's product type. "
+        "Avoid long category candidates with extra material, color, collection, or marketing qualifiers when the message asks for a broad type; use separate material or color filters for those words. "
+        "If a value exists under both material and category, use the material attribute for material words such as gold, steel, titanium, acrylic, or silicone. "
+        "Normalize customer wording to DB-backed values when the meaning is clear, including different word forms such as noun, adjective, singular, plural, or common ecommerce phrasing. "
+        "Do not paraphrase, singularize, pluralize, or lowercase candidate values. "
+        "Do not return singular/plural alternatives for the same concept; choose the strongest matching candidate value once. "
+        "Example: if candidates contain category=Belly Bananas, do not output category=belly and design=banana. "
+        "Generic browse requests such as find/show/buy products should leave requested_fields empty and wants_image false; "
+        "only set requested_fields or wants_image when the user explicitly asks for a specific detail like price, stock, SKU, measurements, attributes, details, or pictures. "
+        "If a product concept cannot be supported by any searchable attribute or DB-backed candidate value, put the concept in semantic_hints or clarify_focus instead of attribute_filters. "
         "For gauge and measurement values, output the final product value directly. "
         "Examples: 25 gauge -> 25g, 1.5 inches -> 1.5inch, 8 mm -> 8mm. "
-        "Do not rely on hardcoded synonym tables or alias rules. If a value is uncertain, keep it close to the user's wording instead of guessing a canonical form. "
+        "Do not rely on hardcoded synonym tables or alias rules. If a value is uncertain and no candidate supports it, keep it close to the user's wording instead of guessing a canonical form. "
         "semantic_hints must be up to 4 short concepts that should influence search but are not exact filters. "
         "If the request is ambiguous, set clarify_focus to a family key rather than a one-off term. "
         f"Supported ambiguity families: {', '.join(AMBIGUITY_FAMILY_KEYS)}. "
@@ -664,6 +1360,9 @@ async def infer_detail_query(
         "allowed_exact_attributes": list(allowed_exact_attributes),
         "allowed_soft_attributes": list(allowed_soft_attributes),
         "searchable_attributes": list(searchable_names),
+        "attribute_metadata": list(searchable_metadata),
+        "attribute_value_candidates": list(attribute_value_candidates),
+        "attribute_value_options": list(attribute_value_options),
         "supported_ambiguity_families": list(AMBIGUITY_FAMILY_KEYS),
     }
 
@@ -697,6 +1396,7 @@ async def infer_detail_query(
             llm_data=llm_data,
             allowed_exact_attributes=allowed_exact_attributes,
             allowed_soft_attributes=allowed_soft_attributes,
+            attribute_value_candidates=attribute_value_candidates,
             confidence=confidence,
             min_confidence=min_confidence,
             debug=debug,
@@ -709,6 +1409,13 @@ async def infer_detail_query(
     except Exception as exc:
         debug["llm_detail_query_error"] = str(exc)
         logger.warning("llm detail query inference failed: %s", exc)
+        fallback_result = _fallback_detail_from_attribute_candidates(
+            attribute_value_candidates=attribute_value_candidates,
+            debug=debug,
+            confidence=max(min_confidence, 0.8),
+        )
+        if fallback_result is not None:
+            return fallback_result
         return DetailQueryInferenceResult(
             requested_fields=[],
             attribute_filters={},
@@ -744,7 +1451,7 @@ async def infer_chat_interpretation(
     existing_filters: Mapping[str, str] | None = None,
     db: AsyncSession | None = None,
 ) -> ChatInterpretationResult:
-    searchable_attribute_names = await _load_searchable_attribute_names(db)
+    searchable_attribute_names, searchable_attribute_metadata = await _resolve_searchable_attribute_context(db=db)
     understanding = await build_understanding_result(
         user_text=user_text,
         locale=locale,
@@ -781,6 +1488,7 @@ async def infer_chat_interpretation(
             parser_rules=parser_rules,
             existing_filters=existing_filters,
             searchable_attribute_names=searchable_attribute_names,
+            searchable_attribute_metadata=searchable_attribute_metadata,
         )
         if has_product_detail_signal and not (detail.requested_fields or detail.wants_image):
             detail = replace(
@@ -908,13 +1616,25 @@ async def enrich_product_attribute_filters(
     alias_map: Mapping[str, Dict[str, str]] | None,
     parser_rules: ParserRuleSet | None,
     searchable_attribute_names: Sequence[str] | None = None,
+    searchable_attribute_metadata: Sequence[Mapping[str, Any]] | None = None,
 ) -> AttributeExtractionResult:
     clean_workflow = normalize_text(workflow)
-    searchable_names = list(searchable_attribute_names or [])
-    if not searchable_names:
-        searchable_names = await _load_searchable_attribute_names(db)
+    searchable_names, searchable_metadata = await _resolve_searchable_attribute_context(
+        db=db,
+        searchable_attribute_names=searchable_attribute_names,
+        searchable_attribute_metadata=searchable_attribute_metadata,
+    )
     allowed_exact_attributes = _allowed_exact_attributes(parser_rules, searchable_names)
     allowed_soft_attributes = _allowed_soft_attributes(parser_rules, searchable_names)
+    attribute_value_candidates = await _load_attribute_value_candidates(
+        db=db,
+        user_text=user_text,
+        allowed_attributes=list(allowed_exact_attributes) + list(allowed_soft_attributes),
+    )
+    attribute_value_options = await _load_attribute_value_options(
+        db=db,
+        allowed_attributes=list(allowed_exact_attributes) + list(allowed_soft_attributes),
+    )
     debug: Dict[str, Any] = {
         "llm_attribute_interpretation_enabled": bool(
             getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_ENABLED", True)
@@ -927,8 +1647,33 @@ async def enrich_product_attribute_filters(
         "semantic_hint_clarify_focus": "",
         "semantic_hint_source": "",
         "catalog_searchable_attribute_names": list(searchable_names),
+        "catalog_searchable_attribute_metadata": list(searchable_metadata),
         "catalog_allowed_exact_attributes": list(allowed_exact_attributes),
         "catalog_allowed_soft_attributes": list(allowed_soft_attributes),
+        "catalog_attribute_value_candidate_count": len(attribute_value_candidates),
+        "catalog_attribute_value_candidates": [
+            {
+                "attribute": str(item.get("attribute") or ""),
+                "value": str(item.get("value") or ""),
+                "product_count": int(item.get("product_count") or 0),
+            }
+            for item in attribute_value_candidates[:10]
+        ],
+        "catalog_attribute_value_options": [
+            {
+                "attribute": str(item.get("attribute") or ""),
+                "value_count": int(item.get("value_count") or 0),
+                "values": [
+                    {
+                        "value": str(value.get("value") or ""),
+                        "product_count": int(value.get("product_count") or 0),
+                    }
+                    for value in list(item.get("values") or [])[:8]
+                    if isinstance(value, Mapping)
+                ],
+            }
+            for item in attribute_value_options[:12]
+        ],
     }
 
     if clean_workflow != "catalog":
@@ -968,14 +1713,25 @@ async def enrich_product_attribute_filters(
         "`exact_filters` must use only the provided allowed exact attributes for hard constraints. "
         "`soft_filters` must use only the provided allowed soft attributes for style or family cues. "
         "The allowed attributes are DB-searchable attributes with product values. "
-        "If a concept maps to an unavailable attribute, keep it in semantic_hints or clarify_focus instead of filters. "
+        "Use attribute_metadata to understand field behavior. "
+        "For attributes marked is_multivalue, each value is an independent tag membership, not one combined classification string. "
+        "When multiple tag memberships are needed for a multivalue attribute, return an array of individual tag values for that attribute. "
+        "Use attribute_value_candidates as DB-backed product vocabulary. "
+        "When the user's product wording matches or semantically normalizes to a candidate, copy that candidate's attribute and value exactly. "
+        "Use attribute_value_options as available DB values for low-cardinality attributes when candidates are sparse or the wording is indirect. "
+        "If the user's wording clearly means one of those available options, copy that option's value exactly. "
+        "Do not choose an option if none of the available values supports the user's meaning. "
+        "For mixed product plus policy questions, extract only the product-shopping part into filters and semantic_hints; do not use policy/support words as catalog clarify_focus. "
+        "Prefer the simplest DB candidate that represents the customer's product type. "
+        "Avoid long category candidates with extra material, color, collection, or marketing qualifiers when the message asks for a broad type; use separate material or color filters for those words. "
+        "If a value exists under both material and category, use the material attribute for material words such as gold, steel, titanium, acrylic, or silicone. "
+        "Normalize customer wording to DB-backed values when the meaning is clear, including different word forms such as noun, adjective, singular, plural, or common ecommerce phrasing. "
+        "If a concept cannot be supported by any searchable attribute or DB-backed candidate value, keep it in semantic_hints or clarify_focus instead of filters. "
         "Return filter values directly from the user's meaning without code-side alias rewriting. "
         "For gauge and measurement values, return the final product value directly. "
         "Examples: 25 gauge -> 25g, 1.5 inches -> 1.5inch, 8 mm -> 8mm. "
         "`semantic_hints` must be an array of up to 4 short concept strings for ambiguous or discovery-style concepts "
         "that should influence semantic search instead of structured filters. "
-        "If the query says sterilization or a similar ambiguous condition concept, do not force it into a facet; "
-        "return it as a semantic hint and set clarify_focus to `condition`. "
         "Do not invent unsupported exact filters."
     )
     user_payload = {
@@ -985,6 +1741,9 @@ async def enrich_product_attribute_filters(
         "allowed_exact_attributes": list(allowed_exact_attributes),
         "allowed_soft_attributes": list(allowed_soft_attributes),
         "searchable_attributes": list(searchable_names),
+        "attribute_metadata": list(searchable_metadata),
+        "attribute_value_candidates": list(attribute_value_candidates),
+        "attribute_value_options": list(attribute_value_options),
         "supported_ambiguity_families": list(AMBIGUITY_FAMILY_KEYS),
     }
 
@@ -1017,9 +1776,17 @@ async def enrich_product_attribute_filters(
             filters=(llm_data or {}).get("exact_filters"),
             allowed_attributes=allowed_exact_attributes,
         )
+        llm_exact_filters = _align_candidate_filter_values(
+            filters=llm_exact_filters,
+            attribute_value_candidates=attribute_value_candidates,
+        )
         llm_soft_filters = _normalize_candidate_filters(
             filters=(llm_data or {}).get("soft_filters"),
             allowed_attributes=allowed_soft_attributes,
+        )
+        llm_soft_filters = _align_candidate_filter_values(
+            filters=llm_soft_filters,
+            attribute_value_candidates=attribute_value_candidates,
         )
         llm_semantic_hints = _normalize_semantic_hints((llm_data or {}).get("semantic_hints"))
         llm_clarify_focus = normalize_focus_key((llm_data or {}).get("clarify_focus"))

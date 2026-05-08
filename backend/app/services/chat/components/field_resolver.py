@@ -156,7 +156,7 @@ class FieldDependencyResolver:
                 canonical = by_id[product_id]
                 if value is None:
                     continue
-                if bool(row.is_multivalue):
+                if bool(getattr(row, "is_multivalue", False)) or name == "category":
                     bucket_key = (product_id, name)
                     dedupe_key = str(row.value_norm or value).strip().lower()
                     if not dedupe_key:

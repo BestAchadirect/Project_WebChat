@@ -9,7 +9,7 @@ from sqlalchemy import func, select, update
 from app.core.logging import get_logger
 from app.models.chat import Conversation, Message, MessageRole
 from app.models.qa_log import QALog, QAStatus
-from app.schemas.chat import ChatComponent, ChatResponse, ProductCard
+from app.schemas.chat import ChatComponent, ChatResponse, ProductCard, sanitize_assistant_text, sanitize_chat_component
 import app.services.chat.presentation.component_contract as component_contract
 import app.services.chat.observability.qa_metrics as qa_metrics
 
@@ -77,6 +77,7 @@ async def finalize_response(
     channel: Optional[str] = None,
     conversation_state: Optional[Dict[str, Any]] = None,
 ) -> ChatResponse:
+    response.components = [sanitize_chat_component(component) for component in list(response.components or [])]
     chat_metrics = qa_metrics.build_chat_qa_metrics(
         user_text=user_text,
         response=response,
@@ -94,7 +95,7 @@ async def finalize_response(
         token_usage=token_usage,
         chat_metrics=chat_metrics,
     )
-    assistant_text = component_contract.assistant_text_from_response(response)
+    assistant_text = sanitize_assistant_text(component_contract.assistant_text_from_response(response))
     response_products = component_contract.product_cards_from_response(response)
 
     qa_log = QALog(

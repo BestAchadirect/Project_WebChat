@@ -67,7 +67,17 @@ def _semantic_text(card: Any) -> str:
 
 def _matches_required_filters(card: Any, required_filters: Dict[str, str]) -> bool:
     for key, expected in dict(required_filters or {}).items():
-        if not ProductDetailResolver._match_filter(card, key=key, expected=expected):
+        expected_values = [
+            str(item or "").strip()
+            for item in str(expected or "").replace(";", ";;").split(";;")
+            if str(item or "").strip()
+        ]
+        if not expected_values:
+            continue
+        if not all(
+            ProductDetailResolver._match_filter(card, key=key, expected=item)
+            for item in expected_values
+        ):
             return False
     return True
 
@@ -283,4 +293,3 @@ def evaluate_knowledge_grounding(
             "min_relevance": float(min_relevance or 0.0),
         },
     )
-

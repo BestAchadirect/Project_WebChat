@@ -1,0 +1,2232 @@
+{
+  "summary": {
+    "cases": 57,
+    "turns": 61,
+    "workflows": {
+      "catalog": 42,
+      "knowledge": 11,
+      "general_talking": 6,
+      "off_topic": 2
+    },
+    "issues": {
+      "catalog_without_products": 2,
+      "workflow_mismatch:catalog->knowledge": 1
+    },
+    "issue_turn_count": 3,
+    "by_group": {
+      "ambiguous_catalog": {
+        "turns": 4,
+        "workflows": {
+          "catalog": 4
+        },
+        "issues": {}
+      },
+      "catalog_attributes": {
+        "turns": 17,
+        "workflows": {
+          "catalog": 17
+        },
+        "issues": {
+          "catalog_without_products": 2
+        }
+      },
+      "catalog_basic": {
+        "turns": 5,
+        "workflows": {
+          "catalog": 5
+        },
+        "issues": {}
+      },
+      "catalog_detail": {
+        "turns": 4,
+        "workflows": {
+          "catalog": 4
+        },
+        "issues": {}
+      },
+      "frustrated": {
+        "turns": 2,
+        "workflows": {
+          "general_talking": 2
+        },
+        "issues": {}
+      },
+      "general_talking": {
+        "turns": 4,
+        "workflows": {
+          "general_talking": 4
+        },
+        "issues": {}
+      },
+      "knowledge": {
+        "turns": 8,
+        "workflows": {
+          "knowledge": 8
+        },
+        "issues": {}
+      },
+      "mixed": {
+        "turns": 3,
+        "workflows": {
+          "catalog": 3
+        },
+        "issues": {}
+      },
+      "multi_turn": {
+        "turns": 7,
+        "workflows": {
+          "catalog": 5,
+          "knowledge": 2
+        },
+        "issues": {
+          "workflow_mismatch:catalog->knowledge": 1
+        }
+      },
+      "multilingual": {
+        "turns": 2,
+        "workflows": {
+          "catalog": 1,
+          "knowledge": 1
+        },
+        "issues": {}
+      },
+      "off_topic": {
+        "turns": 2,
+        "workflows": {
+          "off_topic": 2
+        },
+        "issues": {}
+      },
+      "typos": {
+        "turns": 3,
+        "workflows": {
+          "catalog": 3
+        },
+        "issues": {}
+      }
+    }
+  },
+  "results": [
+    {
+      "case_id": "catalog_basic_belly_banana",
+      "group": "catalog_basic",
+      "turn_index": 1,
+      "message": "Find me belly banana",
+      "locale": "en-US",
+      "conversation_id": 1145,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User issued a short product search phrase without a clear product anchor or category; need clarification to return relevant product results.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Belly Bananas. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 275.24
+      },
+      "runner_latency_ms": 10121.68,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_basic_show_belly_bananas",
+      "group": "catalog_basic",
+      "turn_index": 1,
+      "message": "Show Belly Bananas",
+      "locale": "en-US",
+      "conversation_id": 1146,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User issued a short product search query without enough detail to locate a specific product or category; product database retrieval is needed but product anchor is missing.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Belly Bananas. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 243.63
+      },
+      "runner_latency_ms": 8497.55,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_basic_titanium_labret",
+      "group": "catalog_basic",
+      "turn_index": 1,
+      "message": "Show me titanium labrets",
+      "locale": "en-US",
+      "conversation_id": 1147,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested product discovery without specifying variants or filters; product database retrieval is needed to show items.",
+      "confidence": 0.9,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Labrets with Titanium G23 material. These options are lightweight and skin-friendly.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 129,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 532.65
+      },
+      "runner_latency_ms": 8092.41,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_basic_black_opal_labret",
+      "group": "catalog_basic",
+      "turn_index": 1,
+      "message": "Do you guys have any black opal labrets?",
+      "locale": "en-US",
+      "conversation_id": 1148,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User is asking about product availability/stock for black opal labrets; product database lookup is needed. Need clarification on metal/size to narrow results.",
+      "confidence": 0.91,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Labrets. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 250.56
+      },
+      "runner_latency_ms": 10313.02,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_basic_steel_barbell",
+      "group": "catalog_basic",
+      "turn_index": 1,
+      "message": "I need surgical steel barbells",
+      "locale": "en-US",
+      "conversation_id": 1149,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested product search but did not specify size/style/other anchors needed to return focused product results.",
+      "confidence": 0.93,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Surgical Steel for Circular Barbells. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 265.87
+      },
+      "runner_latency_ms": 8852.48,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_category",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show Belly Bananas for belly piercing",
+      "locale": "en-US",
+      "conversation_id": 1150,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User asked to show 'Belly Bananas' (a product type) but didn't specify material, size, or preferences needed to filter product results.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "I couldn't find products matching all of these details: Category Belly Piercing and Belly Bananas. I can broaden the search by removing one filter, or show the closest matching product group separately.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 597.56
+      },
+      "runner_latency_ms": 10513.98,
+      "issues": [
+        "catalog_without_products"
+      ]
+    },
+    {
+      "case_id": "catalog_attr_material",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show Titanium G23 jewelry",
+      "locale": "en-US",
+      "conversation_id": 1151,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested product display without specifying type/filters; product database retrieval is needed.",
+      "confidence": 0.94,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request with Titanium G23 material. These options are lightweight and skin-friendly.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 281.91
+      },
+      "runner_latency_ms": 10252.6,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_jewelry_type",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Find circular barbells",
+      "locale": "en-US",
+      "conversation_id": 1152,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User asked to find circular barbells but provided no product filters (material, size, style), so a focused clarifying question is needed before querying product data.",
+      "confidence": 0.95,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Circular Barbells for Circular Barbells. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 528.17
+      },
+      "runner_latency_ms": 9345.82,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_gauge",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Find 14g body jewelry",
+      "locale": "en-US",
+      "conversation_id": 1153,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User provided a short product query without type, material, or other preferences; product database retrieval is needed to give relevant results.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in 14g. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 388.72
+      },
+      "runner_latency_ms": 9469.17,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_length",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show barbells with 10mm length",
+      "locale": "en-US",
+      "conversation_id": 1154,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested product search but did not specify which measurement (diameter vs total length) or other filters; product retrieval is needed.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Barbells with 10mm length. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "vector",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 340,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 10006.47
+      },
+      "runner_latency_ms": 21721.31,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_color",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show black PVD jewelry",
+      "locale": "en-US",
+      "conversation_id": 1155,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested to show products but did not specify category or style; product retrieval is needed.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request with Pvd Plated Surgical Steel material. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 173.7
+      },
+      "runner_latency_ms": 9524.42,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_size_in_pack",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show packs with 20 pieces sizes 2g to 00g",
+      "locale": "en-US",
+      "conversation_id": 1156,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested product results but did not specify exact product family (body jewelry) or preferences; need clarification to run a focused product search.",
+      "confidence": 0.93,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request with pack size 20 Pieces - Sizes 2g - 00g. These options are a strong everyday choice.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 885.98
+      },
+      "runner_latency_ms": 9578.69,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_crystal_color",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show clear crystal products",
+      "locale": "en-US",
+      "conversation_id": 1157,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested a product search but did not specify product type, brand, or other filters needed to return useful product results.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request with Clear crystal color. These options are a strong everyday choice.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 178,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 42.83
+      },
+      "runner_latency_ms": 7382.64,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_quantity_in_bulk",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show bulk packs with 100 pcs",
+      "locale": "en-US",
+      "conversation_id": 1158,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User asked to 'Show bulk packs with 100 pcs' without specifying product category, brand, or other filters\u2014product retrieval is required but a product anchor is missing.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Sold In Bulks with bulk quantity 100 Pieces. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 158,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 40.15
+      },
+      "runner_latency_ms": 8514.09,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_cz_color",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show AB CZ color jewelry",
+      "locale": "en-US",
+      "conversation_id": 1159,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User query requests product discovery but lacks product anchor and preferences needed to narrow results.",
+      "confidence": 0.86,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request with Ab CZ color. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 73.22
+      },
+      "runner_latency_ms": 8050.11,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_size",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show medium size jewelry",
+      "locale": "en-US",
+      "conversation_id": 1160,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "Request is a broad product discovery query without a specific product category or anchor; needs product retrieval and a clarifying question to narrow results.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in size Medium. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "vector",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 340,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 2359.84
+      },
+      "runner_latency_ms": 13519.26,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_outer_diameter",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show rings with 8 mm outer diameter",
+      "locale": "en-US",
+      "conversation_id": 1161,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User provided a product query but did not specify product category explicitly (jewelry vs mechanical) or other filters; need clarification to perform accurate product retrieval.",
+      "confidence": 0.94,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Ear Ring/ear Stud with 8mm outer diameter. These options are a strong everyday choice.",
+      "source_titles": [],
+      "meta": {
+        "source": "vector",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 340,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 2774.85
+      },
+      "runner_latency_ms": 12261.16,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_packing_option",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show individually packed products",
+      "locale": "en-US",
+      "conversation_id": 1162,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "The user requested product browsing but did not specify category, filters, or a specific product anchor\u2014need clarification to run a focused product search.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "I couldn't find products matching all of these details: Packing Option Individually Packed. I can broaden the search by removing one filter, or show the closest matching product group separately.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 476.59
+      },
+      "runner_latency_ms": 9386.23,
+      "issues": [
+        "catalog_without_products"
+      ]
+    },
+    {
+      "case_id": "catalog_attr_pincher_size",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show small pincher size products",
+      "locale": "en-US",
+      "conversation_id": 1163,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested product results but did not specify a product category or anchor; product database retrieval is needed to show items.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in pincher size Small. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "vector",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 340,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 2290.09
+      },
+      "runner_latency_ms": 10851.94,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_height",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show 12mm height products",
+      "locale": "en-US",
+      "conversation_id": 1164,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested product results filtered by height but didn't specify exact vs. maximum or product category, so a clarifying question is needed before querying product data.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request with 12mm height. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "vector",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 339,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 2026.06
+      },
+      "runner_latency_ms": 10361.25,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_design",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show heart design jewelry",
+      "locale": "en-US",
+      "conversation_id": 1165,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User query is a product search request without a specific product type, so product retrieval is needed and a clarifying question will narrow results.",
+      "confidence": 0.95,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Hearts. These options are a strong everyday choice.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 198.33
+      },
+      "runner_latency_ms": 10992.22,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_threading",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show internally threaded jewelry",
+      "locale": "en-US",
+      "conversation_id": 1166,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested to 'Show internally threaded jewelry' without specifying product type, material, size, or other filters needed to return relevant product results.",
+      "confidence": 0.9,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Internally Threaded. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 199.65
+      },
+      "runner_latency_ms": 9977.3,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_detail_price_sku",
+      "group": "catalog_detail",
+      "turn_index": 1,
+      "message": "How much is BBT5C?",
+      "locale": "en-US",
+      "conversation_id": 1167,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User asked for the price of a specific SKU; product database lookup is required. Need clarification about pricing context (tax/shipping/quantity/account) before returning a precise price.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you want the current unit price for SKU BBT5C, or the total price including tax/shipping or for a specific quantity or customer account?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 3,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 3979.4
+      },
+      "runner_latency_ms": 13326.82,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_detail_stock_sku",
+      "group": "catalog_detail",
+      "turn_index": 1,
+      "message": "Is BBT5C in stock?",
+      "locale": "en-US",
+      "conversation_id": 1168,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User asked about stock for specific SKU but did not specify store/location or confirm product source; product database lookup required.",
+      "confidence": 0.86,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you mean SKU BBT5C from our store, and if so please confirm which store/location (or say \u2018anywhere\u2019) and whether you want the exact quantity or just an in-stock check?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 3,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 8287.54
+      },
+      "runner_latency_ms": 16137.49,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_detail_picture_sku",
+      "group": "catalog_detail",
+      "turn_index": 1,
+      "message": "Can I see a picture of BBT5C?",
+      "locale": "en-US",
+      "conversation_id": 1169,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User requested to see a picture of 'BBT5C' but did not provide brand or confirm that 'BBT5C' is a SKU/model in the catalog; product database lookup is required.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you mean the product with SKU/model code \u201cBBT5C,\u201d or can you confirm the brand or provide any other identifier (full SKU or product name) so I can find the correct image?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 3,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 3315.77
+      },
+      "runner_latency_ms": 13102.77,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_detail_attributes_sku",
+      "group": "catalog_detail",
+      "turn_index": 1,
+      "message": "What are the details for BBT5C?",
+      "locale": "en-US",
+      "conversation_id": 1170,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User asked for details about a product identified as 'BBT5C' but did not specify which type of details are wanted (specs, price, stock, images, reviews). Product database retrieval is needed to provide accurate information.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you mean the body jewelry product with SKU/model code \u201cBBT5C,\u201d and which detail would you like\u2014full specifications, pricing & availability, images, or user reviews?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 3,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 2686.68
+      },
+      "runner_latency_ms": 12763.16,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_ambiguous_sterilization_product",
+      "group": "ambiguous_catalog",
+      "turn_index": 1,
+      "message": "Do you have any sterilization product?",
+      "locale": "en-US",
+      "conversation_id": 1171,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": false,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User asked generally about sterilization products but did not specify type, brand, or intended use; product lookup is needed.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Sterilized. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 215,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 172.24
+      },
+      "runner_latency_ms": 8363.69,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_ambiguous_opal",
+      "group": "ambiguous_catalog",
+      "turn_index": 1,
+      "message": "Can I see sterilization with opal?",
+      "locale": "en-US",
+      "conversation_id": 1172,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": false,
+      "expected_allow_no_products": true,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested to 'see sterilization with opal' but did not specify which product or whether they mean a product named Opal or the material/technology. Needs a product anchor to retrieve product data.",
+      "confidence": 0.93,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "I couldn't find products matching all of these details: Category Opal Body Jewelry and Sterilized. I can broaden the search by removing one filter, or show the closest matching product group separately.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 575.04
+      },
+      "runner_latency_ms": 8416.37,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_ambiguous_nice",
+      "group": "ambiguous_catalog",
+      "turn_index": 1,
+      "message": "Show me something nice",
+      "locale": "en-US",
+      "conversation_id": 1173,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "The user requested a broad product discovery without specifying category, so a product search is needed and a clarifying question should narrow the request.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Are you looking for a specific type of body jewelry (e.g., earrings, nose studs, belly rings), a price range, or a particular material or style?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 3,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 2700.35
+      },
+      "runner_latency_ms": 11196.29,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_ambiguous_cheap",
+      "group": "ambiguous_catalog",
+      "turn_index": 1,
+      "message": "Do you have cheaper ones?",
+      "locale": "en-US",
+      "conversation_id": 1174,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User asked for cheaper ones but gave no product anchor/SKU; this requires product database retrieval to return alternatives.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Which product are you asking about, or would you like cheaper options across the items you're currently viewing?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 3,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 2719.8
+      },
+      "runner_latency_ms": 11915.99,
+      "issues": []
+    },
+    {
+      "case_id": "knowledge_contact",
+      "group": "knowledge",
+      "turn_index": 1,
+      "message": "How can I contact you?",
+      "locale": "en-US",
+      "conversation_id": 1175,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": false,
+      "reason": "User asked for contact methods \u2014 this is a company/support question requiring knowledge-policy classification. No specific store data provided, so assistant should provide allowed-capabilities answer or ask for which contact type the user wants.",
+      "confidence": 0.93,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "Contact Acha: sales@achadirect.com | +66 (0)2-629-5858\n\n**Customer support & response time**\n- Email: sales@achadirect.com. They aim to reply within 1\u201348 hours, often the same day.\n\n**Phone / Showroom**\n- Phone: +66 (0)2-629-5858\n- Showroom address: Acha Co., Ltd., 247-249 Tanao Road, Bavornives, Pranakorn, Bangkok 10200, Thailand\n\n**Support / Showroom hours (Bangkok time, GMT+7)**\n- Monday\u2013Saturday: 8:00 am\u20135:00 pm\n- Sunday: Closed\n\n**Live chat / contact form / social media**\n- The provided context does not confirm live chat, an online contact form, or social media contacts.",
+      "source_titles": [
+        "How can I contact Acha?"
+      ],
+      "meta": {
+        "source": "knowledge",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 1,
+        "product_display_count": 0,
+        "product_has_more": true,
+        "latency_ms": 8089.55
+      },
+      "runner_latency_ms": 10767.99,
+      "issues": []
+    },
+    {
+      "case_id": "knowledge_return_policy",
+      "group": "knowledge",
+      "turn_index": 1,
+      "message": "What is your return policy?",
+      "locale": "en-US",
+      "conversation_id": 1176,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": false,
+      "reason": "User explicitly asked for a store policy (returns), which requires knowledge-base retrieval about company policy.",
+      "confidence": 0.94,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "**Return window & how to initiate**\n\n- You can request a refund within 30 days of delivery. Contact customer service within that 30-day window to obtain a Return Authorization Number (RMA). Returns submitted without an RMA cannot be processed.\n\n**How returns/refunds are processed**\n\n- Refunds are issued to the original payment method in the same currency. Once approved, they may take up to 24 hours to be issued.\n- Refund amounts use the exchange rate from the original payment date when applicable.\n\n**When refunds are allowed / conditions**\n\n- Partial refund (30-day Money Back Guarantee) is available for items that arrive damaged or faulty; photos or return of higher-value items may be requested. Store credit or replacements can be arranged if you agree.\n- Full refund is available for overall quality concerns after you contact us within 30 days, receive return instructions, and we inspect the returned products.\n\n**Return shipping & who pays**\n\n- Return shipping is typically the customer\u2019s responsibility unless the item is confirmed defective. For refused deliveries, original shipping, return shipping, and any associated taxes will be deducted from the refund.\n\n**Restocking fees / exchanges / refund methods**\n\n- The provided context does not confirm any restocking fee policy.\n- Exchanges are not detailed; replacements can be arranged with your approval when applicable.\n- Refunds are returned to the original payment channel and currency.\n\n**Exceptions & final sale / warranty**\n\n- Import taxes, duties, and brokerage fees are not refunded and remain the customer\u2019s responsibility.\n- The context does not specify which items, if any, are final sale or any warranty coverage beyond the 30-day quality/defect guarantee.",
+      "source_titles": [
+        "Refund Policy",
+        "Do you have a Money Back Guarantee?",
+        "Refund Policy"
+      ],
+      "meta": {
+        "source": "knowledge",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 3,
+        "product_display_count": 0,
+        "product_has_more": true,
+        "latency_ms": 9958.12
+      },
+      "runner_latency_ms": 12360.19,
+      "issues": []
+    },
+    {
+      "case_id": "knowledge_shipping_policy",
+      "group": "knowledge",
+      "turn_index": 1,
+      "message": "What is your shipping policy?",
+      "locale": "en-US",
+      "conversation_id": 1177,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": true,
+      "reason": "User asked about 'your shipping policy' which is a company/store knowledge-base question; need to know which store or whether they mean this service to retrieve the correct policy.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you want details about shipping cost, delivery time, or which countries/regions we ship to?",
+      "source_titles": [],
+      "meta": {
+        "source": "knowledge",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 7894.35
+      },
+      "runner_latency_ms": 10844.8,
+      "issues": []
+    },
+    {
+      "case_id": "knowledge_samples",
+      "group": "knowledge",
+      "turn_index": 1,
+      "message": "Can I see a sample before buying?",
+      "locale": "en-US",
+      "conversation_id": 1178,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": true,
+      "reason": "User asked generally about seeing a sample before buying; this is a knowledge-base/policy question and may need to know whether it's about a specific product. Knowledge retrieval is required for the sample policy. Since no product was provided, ask whether they mean a specific product.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Which specific policy detail would you like to see\u2014our shipping, refund, or sample/access policy for body jewelry?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 7016.97
+      },
+      "runner_latency_ms": 9991.62,
+      "issues": []
+    },
+    {
+      "case_id": "knowledge_minimum_order",
+      "group": "knowledge",
+      "turn_index": 1,
+      "message": "What is your minimum order?",
+      "locale": "en-US",
+      "conversation_id": 1179,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": true,
+      "reason": "This is a store policy question about minimum order; knowledge-base retrieval is needed and a clarifying detail (type/region) helps provide an accurate policy answer.",
+      "confidence": 0.95,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you mean our minimum order quantity for wholesale, minimum purchase for free shipping, or minimum order for custom pieces?",
+      "source_titles": [
+        "What is your minimum order?"
+      ],
+      "meta": {
+        "source": "knowledge",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 7792.04
+      },
+      "runner_latency_ms": 10078.95,
+      "issues": []
+    },
+    {
+      "case_id": "knowledge_customs",
+      "group": "knowledge",
+      "turn_index": 1,
+      "message": "Who pays import taxes?",
+      "locale": "en-US",
+      "conversation_id": 1180,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": false,
+      "reason": "User asked a policy-like, knowledge-base question about import taxes/responsibility for payment; requires knowledge-base style answer about customs, Incoterms, and common practices.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "**Short answer:** The buyer pays import taxes, customs duties, VAT, and any additional fees once the shipment arrives in their country; the seller\u2019s responsibility ends when the carrier collects the package under CIF Incoterms.\n\n**Why:**\n- All products are sold under CIF (Cost, Insurance, and Freight), so Acha\u2019s responsibility ends when the carrier picks up the package.  \n- After the order leaves Acha\u2019s facilities, import taxes, duties, and any additional fees (and return shipping costs if customs refuses the shipment) are the customer\u2019s responsibility.  \n- If you need an estimate of likely taxes or fees for your country, contact the Sales Team for assistance.\n\n**If you need help:**\n- Ask the Sales Team for tax/duty estimates before ordering.  \n- If you want the seller to handle duties, mention that when ordering so you can confirm whether alternative terms or services are available (context does not confirm alternatives).",
+      "source_titles": [
+        "How much are the import taxes?",
+        "Import Taxes and Other",
+        "What is your Incoterm?"
+      ],
+      "meta": {
+        "source": "knowledge",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 3,
+        "product_display_count": 0,
+        "product_has_more": true,
+        "latency_ms": 8621.55
+      },
+      "runner_latency_ms": 11311.4,
+      "issues": []
+    },
+    {
+      "case_id": "knowledge_payment",
+      "group": "knowledge",
+      "turn_index": 1,
+      "message": "What payment methods do you accept?",
+      "locale": "en-US",
+      "conversation_id": 1181,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": true,
+      "reason": "User asked a store policy question about accepted payment methods, which requires knowledge-base retrieval.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you need a list of accepted payment methods, details for invoicing, or instructions for bank transfers?",
+      "source_titles": [],
+      "meta": {
+        "source": "knowledge",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 7300.27
+      },
+      "runner_latency_ms": 9270.81,
+      "issues": []
+    },
+    {
+      "case_id": "knowledge_marketing_images",
+      "group": "knowledge",
+      "turn_index": 1,
+      "message": "Can I get product images without watermark?",
+      "locale": "en-US",
+      "conversation_id": 1182,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": false,
+      "reason": "User asked about obtaining product images without watermark \u2014 this is a company/store policy/marketing assets question requiring knowledge-base retrieval.",
+      "confidence": 0.88,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "Yes \u2014 high-definition, watermark-free product images are available, but only for products you have purchased. You can download them after payment is received and the order has shipped. This service is intended to help you promote items you bought; if you plan to use the images on your site we recommend adding your own watermark. To request these images or get details about permissions/licensing, contact your sales representative.",
+      "source_titles": [
+        "Can you provide pictures of products without the Acha watermark?"
+      ],
+      "meta": {
+        "source": "knowledge",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 1,
+        "product_display_count": 0,
+        "product_has_more": true,
+        "latency_ms": 8974.14
+      },
+      "runner_latency_ms": 10992.42,
+      "issues": []
+    },
+    {
+      "case_id": "mixed_product_shipping",
+      "group": "mixed",
+      "turn_index": 1,
+      "message": "Do you have titanium labrets and how long does shipping take?",
+      "locale": "en-US",
+      "conversation_id": 1183,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User asked about product availability (needs product lookup) and shipping time (needs policy/fulfillment lookup). Destination and shipping speed are needed to give accurate shipping time.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Labrets with Titanium G23 material. These options are lightweight and skin-friendly.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 129,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 8763.38
+      },
+      "runner_latency_ms": 18541.63,
+      "issues": []
+    },
+    {
+      "case_id": "mixed_product_return",
+      "group": "mixed",
+      "turn_index": 1,
+      "message": "Show gold rings and tell me your return policy",
+      "locale": "en-US",
+      "conversation_id": 1184,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested product discovery (gold rings) and store policy (return policy). Both product retrieval and knowledge-base retrieval are needed. Additional preferences (karat, style, size, price) are missing to focus product results, and clarifying whether they want full or summarized policy will guide the response.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards"
+      ],
+      "assistant_text": "I found products that match your request in New 18k Yellow & White Gold Hinged Segment Rings. These options are polished and easy to style.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 8,
+        "product_display_count": 8,
+        "product_has_more": false,
+        "latency_ms": 12209.1
+      },
+      "runner_latency_ms": 20834.45,
+      "issues": []
+    },
+    {
+      "case_id": "mixed_product_sample",
+      "group": "mixed",
+      "turn_index": 1,
+      "message": "Can I get samples before buying titanium labrets?",
+      "locale": "en-US",
+      "conversation_id": 1185,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User asked whether samples are available before buying a specific product family (titanium labrets). This requires store policy plus product context; both product lookup and knowledge-base retrieval are needed. A clarifying question about sample type or specific SKU is required to proceed.",
+      "confidence": 0.91,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Labrets with Titanium G23 material. These options are lightweight and skin-friendly.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 129,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 6267.97
+      },
+      "runner_latency_ms": 17284.72,
+      "issues": []
+    },
+    {
+      "case_id": "general_what_can_you_do",
+      "group": "general_talking",
+      "turn_index": 1,
+      "message": "What can you do for me?",
+      "locale": "en-US",
+      "conversation_id": 1186,
+      "expected_workflow": "general_talking",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "general_talking",
+      "needs_clarification": false,
+      "reason": "User asked a general question about the assistant's capabilities, not requesting product or company knowledge or a specific action.",
+      "confidence": 0.94,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary"
+      ],
+      "assistant_text": "I can help you find body jewelry by type, filter results by material/color/gauge/size, check stock, price, SKU, images and product details, and show matching product cards when you want to browse items.",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1615.2
+      },
+      "runner_latency_ms": 3835.23,
+      "issues": []
+    },
+    {
+      "case_id": "general_are_you_human",
+      "group": "general_talking",
+      "turn_index": 1,
+      "message": "Are you human?",
+      "locale": "en-US",
+      "conversation_id": 1187,
+      "expected_workflow": "general_talking",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "general_talking",
+      "needs_clarification": false,
+      "reason": "User asked about the assistant's identity; this is a general conversational question that doesn't require product or knowledge-base retrieval.",
+      "confidence": 0.93,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary"
+      ],
+      "assistant_text": "I'm an AI shopping assistant here to help you find and answer questions about body jewelry, stock, pricing, materials, sizes/gauge, and store policies.",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1478.28
+      },
+      "runner_latency_ms": 3699.65,
+      "issues": []
+    },
+    {
+      "case_id": "general_thanks",
+      "group": "general_talking",
+      "turn_index": 1,
+      "message": "Thanks",
+      "locale": "en-US",
+      "conversation_id": 1188,
+      "expected_workflow": "general_talking",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "general_talking",
+      "needs_clarification": false,
+      "reason": "User message is a simple thank-you, no product or knowledge request.",
+      "confidence": 0.95,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary"
+      ],
+      "assistant_text": "You\u2019re welcome\u2014glad I could help; let me know if you need anything else like product recommendations, stock checks, or sizing help.",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1298.02
+      },
+      "runner_latency_ms": 3593.78,
+      "issues": []
+    },
+    {
+      "case_id": "general_really",
+      "group": "general_talking",
+      "turn_index": 1,
+      "message": "Really?",
+      "locale": "en-US",
+      "conversation_id": 1189,
+      "expected_workflow": "general_talking",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "general_talking",
+      "needs_clarification": false,
+      "reason": "User's single-word message expresses surprise or asks for confirmation; no product or knowledge retrieval needed.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary"
+      ],
+      "assistant_text": "Yes \u2014 would you like me to check stock and prices for a specific body jewelry type, material, size/gauge, or color?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1126.05
+      },
+      "runner_latency_ms": 2932.37,
+      "issues": []
+    },
+    {
+      "case_id": "off_topic_code",
+      "group": "off_topic",
+      "turn_index": 1,
+      "message": "Can you write Python code for me?",
+      "locale": "en-US",
+      "conversation_id": 1190,
+      "expected_workflow": "off_topic",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "off_topic",
+      "needs_clarification": false,
+      "reason": "User asked generally for Python code without specifying the task, inputs, or constraints \u2014 this is a request for code (general conversation / coding assistance) and requires a clarifying question to proceed.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary"
+      ],
+      "assistant_text": "I can help write Python code\u2014please tell me the exact task or example you want (e.g., filter jewelry by material and gauge, check stock and price, or generate product cards) and any sample data or APIs you want the code to use.",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1264.76
+      },
+      "runner_latency_ms": 3207.86,
+      "issues": []
+    },
+    {
+      "case_id": "off_topic_weather",
+      "group": "off_topic",
+      "turn_index": 1,
+      "message": "What is the weather today?",
+      "locale": "en-US",
+      "conversation_id": 1191,
+      "expected_workflow": "off_topic",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "off_topic",
+      "needs_clarification": false,
+      "reason": "Weather is not related to product search or company knowledge-base; it's an external real-time information request.",
+      "confidence": 0.93,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary"
+      ],
+      "assistant_text": "Sorry, I can\u2019t help with weather information, but I can assist with body jewelry products, checking stock, prices, materials, sizes/gauges, or store policies if you tell me what you need.",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1402.52
+      },
+      "runner_latency_ms": 3474.74,
+      "issues": []
+    },
+    {
+      "case_id": "frustrated_not_helping",
+      "group": "frustrated",
+      "turn_index": 1,
+      "message": "Doesn't seem like you are helping at all",
+      "locale": "en-US",
+      "conversation_id": 1192,
+      "expected_workflow": "general_talking",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "general_talking",
+      "needs_clarification": false,
+      "reason": "User expressed dissatisfaction without asking for product info or company policy; this is a general conversational complaint seeking improved assistance.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary"
+      ],
+      "assistant_text": "I\u2019m sorry you feel that way\u2014tell me what went wrong and whether you\u2019d like me to find a replacement piece, check stock/pricing, or walk through a return/exchange so I can help right away.",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1352.72
+      },
+      "runner_latency_ms": 3517.98,
+      "issues": []
+    },
+    {
+      "case_id": "frustrated_insult",
+      "group": "frustrated",
+      "turn_index": 1,
+      "message": "This is stupid",
+      "locale": "en-US",
+      "conversation_id": 1193,
+      "expected_workflow": "general_talking",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "general_talking",
+      "needs_clarification": false,
+      "reason": "User is expressing frustration without asking for products or knowledge-base info; it's a general conversational remark.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary"
+      ],
+      "assistant_text": "I\u2019m sorry you\u2019re feeling frustrated \u2014 tell me what\u2019s not working or what you\u2019re trying to find and I\u2019ll help you sort it out.",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1343.17
+      },
+      "runner_latency_ms": 3666.36,
+      "issues": []
+    },
+    {
+      "case_id": "typo_belly_banana",
+      "group": "typos",
+      "turn_index": 1,
+      "message": "belly banan",
+      "locale": "en-US",
+      "conversation_id": 1194,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "Search term is ambiguous or possibly misspelled; product retrieval is needed but the exact product anchor is missing.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Belly Bananas for Belly Bananas. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 477.36
+      },
+      "runner_latency_ms": 10153.83,
+      "issues": []
+    },
+    {
+      "case_id": "typo_titanium_labret",
+      "group": "typos",
+      "turn_index": 1,
+      "message": "labert titanum",
+      "locale": "en-US",
+      "conversation_id": 1195,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "Query appears to be a product search but the product name looks misspelled or ambiguous, so a clarifying question is needed before retrieving product data.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request with Titanium G23 material. These options are lightweight and skin-friendly.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 315.4
+      },
+      "runner_latency_ms": 10576.19,
+      "issues": []
+    },
+    {
+      "case_id": "typo_sterilized",
+      "group": "typos",
+      "turn_index": 1,
+      "message": "Do u have strelized item?",
+      "locale": "en-US",
+      "conversation_id": 1196,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": false,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User asked about 'strelized' (likely 'sterilized') items but did not specify which product or category; product database lookup is needed once clarified.",
+      "confidence": 0.88,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Sterilized. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 215,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 179.75
+      },
+      "runner_latency_ms": 7295.06,
+      "issues": []
+    },
+    {
+      "case_id": "multilingual_thai_product",
+      "group": "multilingual",
+      "turn_index": 1,
+      "message": "\u0e21\u0e35 titanium labret \u0e44\u0e2b\u0e21",
+      "locale": "th-TH",
+      "conversation_id": 1197,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "\u0e1c\u0e39\u0e49\u0e43\u0e0a\u0e49\u0e16\u0e32\u0e21\u0e2a\u0e31\u0e49\u0e19\u0e46 \u0e27\u0e48\u0e32\u0e21\u0e35 'titanium labret' \u0e44\u0e2b\u0e21 \u2014 \u0e15\u0e49\u0e2d\u0e07\u0e01\u0e32\u0e23\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32\u0e17\u0e35\u0e48\u0e15\u0e49\u0e2d\u0e07\u0e04\u0e49\u0e19\u0e2b\u0e32\u0e43\u0e19\u0e10\u0e32\u0e19\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25\u0e41\u0e15\u0e48\u0e44\u0e21\u0e48\u0e21\u0e35\u0e23\u0e32\u0e22\u0e25\u0e30\u0e40\u0e2d\u0e35\u0e22\u0e14\u0e2a\u0e34\u0e19\u0e04\u0e49\u0e32/\u0e04\u0e27\u0e32\u0e21\u0e0a\u0e2d\u0e1a \u0e08\u0e36\u0e07\u0e15\u0e49\u0e2d\u0e07\u0e02\u0e2d\u0e04\u0e33\u0e0a\u0e35\u0e49\u0e41\u0e08\u0e07\u0e01\u0e48\u0e2d\u0e19\u0e04\u0e49\u0e19\u0e2b\u0e32",
+      "confidence": 0.89,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request for Labret with Titanium G23 material. These options are lightweight and skin-friendly.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 146,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 476.47
+      },
+      "runner_latency_ms": 7626.72,
+      "issues": []
+    },
+    {
+      "case_id": "multilingual_thai_contact",
+      "group": "multilingual",
+      "turn_index": 1,
+      "message": "\u0e15\u0e34\u0e14\u0e15\u0e48\u0e2d\u0e23\u0e49\u0e32\u0e19\u0e44\u0e14\u0e49\u0e22\u0e31\u0e07\u0e44\u0e07",
+      "locale": "th-TH",
+      "conversation_id": 1198,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": false,
+      "reason": "User asked in Thai how to contact the store; this is a support/contact question requiring knowledge-base info. Need to know preferred contact channel or whether to fetch store details.",
+      "confidence": 0.9,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "\u0e17\u0e32\u0e07\u0e23\u0e49\u0e32\u0e19 Acha \u2014 \u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25\u0e15\u0e34\u0e14\u0e15\u0e48\u0e2d (\u0e20\u0e32\u0e29\u0e32\u0e44\u0e17\u0e22)\n\n**\u0e42\u0e17\u0e23\u0e28\u0e31\u0e1e\u0e17\u0e4c / \u0e2d\u0e35\u0e40\u0e21\u0e25**\n- \u0e42\u0e17\u0e23: +66 (0)2-629-5858\n- \u0e2d\u0e35\u0e40\u0e21\u0e25: sales@achadirect.com\n\n**\u0e17\u0e35\u0e48\u0e2d\u0e22\u0e39\u0e48\u0e42\u0e0a\u0e27\u0e4c\u0e23\u0e39\u0e21\u0e41\u0e25\u0e30\u0e40\u0e27\u0e25\u0e32\u0e40\u0e1b\u0e34\u0e14**\n- \u0e17\u0e35\u0e48\u0e2d\u0e22\u0e39\u0e48: Acha Co., Ltd., 247-249 \u0e16\u0e19\u0e19\u0e15\u0e30\u0e19\u0e32\u0e27, \u0e1a\u0e27\u0e23\u0e19\u0e34\u0e40\u0e27\u0e28, \u0e1e\u0e23\u0e30\u0e19\u0e04\u0e23, \u0e01\u0e23\u0e38\u0e07\u0e40\u0e17\u0e1e\u0e2f 10200\n- \u0e40\u0e27\u0e25\u0e32\u0e40\u0e1b\u0e34\u0e14 (\u0e40\u0e27\u0e25\u0e32\u0e43\u0e19\u0e01\u0e23\u0e38\u0e07\u0e40\u0e17\u0e1e GMT+7): \u0e08\u0e31\u0e19\u0e17\u0e23\u0e4c\u2013\u0e40\u0e2a\u0e32\u0e23\u0e4c 08:00\u201317:00, \u0e1b\u0e34\u0e14\u0e27\u0e31\u0e19\u0e2d\u0e32\u0e17\u0e34\u0e15\u0e22\u0e4c\n\n**\u0e01\u0e32\u0e23\u0e19\u0e31\u0e14\u0e2b\u0e21\u0e32\u0e22 / \u0e41\u0e0a\u0e15 / \u0e1d\u0e48\u0e32\u0e22\u0e25\u0e39\u0e01\u0e04\u0e49\u0e32**\n- \u0e2a\u0e32\u0e21\u0e32\u0e23\u0e16\u0e15\u0e34\u0e14\u0e15\u0e48\u0e2d\u0e17\u0e32\u0e07\u0e2d\u0e35\u0e40\u0e21\u0e25\u0e2b\u0e23\u0e37\u0e2d\u0e42\u0e17\u0e23\u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e19\u0e31\u0e14\u0e2b\u0e21\u0e32\u0e22\u0e2b\u0e23\u0e37\u0e2d\u0e02\u0e2d\u0e04\u0e27\u0e32\u0e21\u0e0a\u0e48\u0e27\u0e22\u0e40\u0e2b\u0e25\u0e37\u0e2d\n- \u0e17\u0e35\u0e21\u0e2a\u0e19\u0e31\u0e1a\u0e2a\u0e19\u0e38\u0e19\u0e43\u0e0a\u0e49\u0e20\u0e32\u0e29\u0e32\u0e2d\u0e31\u0e07\u0e01\u0e24\u0e29\u0e40\u0e1b\u0e47\u0e19\u0e2b\u0e25\u0e31\u0e01 \u0e41\u0e15\u0e48\u0e2a\u0e32\u0e21\u0e32\u0e23\u0e16\u0e2a\u0e37\u0e48\u0e2d\u0e2a\u0e32\u0e23\u0e44\u0e14\u0e49\u0e40\u0e1b\u0e47\u0e19\u0e20\u0e32\u0e29\u0e32\u0e40\u0e22\u0e2d\u0e23\u0e21\u0e31\u0e19 \u0e2a\u0e40\u0e1b\u0e19 \u0e1d\u0e23\u0e31\u0e48\u0e07\u0e40\u0e28\u0e2a \u0e41\u0e25\u0e30\u0e20\u0e32\u0e29\u0e32\u0e44\u0e17\u0e22 \u0e41\u0e25\u0e30\u0e22\u0e34\u0e19\u0e14\u0e35\u0e23\u0e31\u0e1a\u0e2d\u0e35\u0e40\u0e21\u0e25\u0e40\u0e1b\u0e47\u0e19\u0e20\u0e32\u0e29\u0e32\u0e17\u0e35\u0e48\u0e04\u0e38\u0e13\u0e2a\u0e30\u0e14\u0e27\u0e01\n\n\u0e2b\u0e32\u0e01\u0e15\u0e49\u0e2d\u0e07\u0e01\u0e32\u0e23 \u0e09\u0e31\u0e19\u0e0a\u0e48\u0e27\u0e22\u0e23\u0e48\u0e32\u0e07\u0e02\u0e49\u0e2d\u0e04\u0e27\u0e32\u0e21\u0e2d\u0e35\u0e40\u0e21\u0e25\u0e02\u0e2d\u0e19\u0e31\u0e14\u0e2b\u0e21\u0e32\u0e22\u0e2b\u0e23\u0e37\u0e2d\u0e2a\u0e2d\u0e1a\u0e16\u0e32\u0e21\u0e40\u0e1b\u0e47\u0e19\u0e20\u0e32\u0e29\u0e32\u0e44\u0e17\u0e22\u0e43\u0e2b\u0e49\u0e44\u0e14\u0e49",
+      "source_titles": [
+        "How can I contact Acha?",
+        "English is not my primary language. How else can we communicate?"
+      ],
+      "meta": {
+        "source": "knowledge",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 2,
+        "product_display_count": 0,
+        "product_has_more": true,
+        "latency_ms": 7141.99
+      },
+      "runner_latency_ms": 10037.05,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_sterilization_correction",
+      "group": "multi_turn",
+      "turn_index": 1,
+      "message": "I want to buy sterilization with opal",
+      "locale": "en-US",
+      "conversation_id": 1199,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": false,
+      "expected_allow_no_products": true,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User request is a product purchase/search but the product anchor 'opal' is ambiguous; needs clarification before retrieving products.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "I couldn't find products matching all of these details: Category Opal Body Jewelry and Sterilized. I can broaden the search by removing one filter, or show the closest matching product group separately.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 646.99
+      },
+      "runner_latency_ms": 8777.94,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_sterilization_correction",
+      "group": "multi_turn",
+      "turn_index": 2,
+      "message": "No i mean i want to see product with sterilization with opal color",
+      "locale": "en-US",
+      "conversation_id": 1199,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": true,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested product discovery filtered by sterilization feature and opal color but did not specify product category or other filters needed to perform a product search.",
+      "confidence": 0.86,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "I couldn't find products matching all of these details: Category Opal Body Jewelry and Sterilized. I can broaden the search by removing one filter, or show the closest matching product group separately.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 3224.43
+      },
+      "runner_latency_ms": 9920.47,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_company_then_product",
+      "group": "multi_turn",
+      "turn_index": 1,
+      "message": "Is your company in China or Thailand?",
+      "locale": "en-US",
+      "conversation_id": 1200,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": false,
+      "reason": "User is asking about company location/contact information, which requires knowledge-base/company policy info.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "**Company location / headquarters**\n\n- The company's registered office and main showroom are in Thailand: Acha Co., Ltd., 247\u2013249 Tanao Road, Bavornives, Pranakorn, Bangkok 10200, Thailand. Phone: +66 (0)2-629-5858; email: sales@achadirect.com.\n\n**China presence**\n\n- The available context does not confirm an office, registered address, or headquarters in China.\n\n**References / local contacts**\n\n- Local references in other countries (including potentially China) can be provided on request; the main showroom is in Bangkok.",
+      "source_titles": [
+        "How can I contact Acha?",
+        "Can you supply references in my country?"
+      ],
+      "meta": {
+        "source": "knowledge",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 2,
+        "product_display_count": 0,
+        "product_has_more": true,
+        "latency_ms": 8767.74
+      },
+      "runner_latency_ms": 11241.22,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_company_then_product",
+      "group": "multi_turn",
+      "turn_index": 2,
+      "message": "So is the product from China or made in Thailand?",
+      "locale": "en-US",
+      "conversation_id": 1200,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": true,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": true,
+      "reason": "User asked about product origin but provided no product name/SKU; this is a knowledge-base question requiring the product anchor to look up origin.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you want to know the product\u2019s country of origin for this specific item or our general sourcing policy for all jewelry?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 13184.07
+      },
+      "runner_latency_ms": 16104.23,
+      "issues": [
+        "workflow_mismatch:catalog->knowledge"
+      ]
+    },
+    {
+      "case_id": "conversation_company_then_product",
+      "group": "multi_turn",
+      "turn_index": 3,
+      "message": "Steel product",
+      "locale": "en-US",
+      "conversation_id": 1200,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "The user's query is a broad product search without a specific product anchor; product database retrieval is needed to provide results.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found matching products below. I don't have confirmed manufacturing-origin data in the product records, so I can't say whether these are from China or made in Thailand from the catalog alone.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 569.34
+      },
+      "runner_latency_ms": 7819.86,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_browse_then_detail",
+      "group": "multi_turn",
+      "turn_index": 1,
+      "message": "Show me belly bananas",
+      "locale": "en-US",
+      "conversation_id": 1201,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested to show products but did not provide a clear product anchor or additional filters; needs product retrieval.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Belly Bananas. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 253.8
+      },
+      "runner_latency_ms": 9158.18,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_browse_then_detail",
+      "group": "multi_turn",
+      "turn_index": 2,
+      "message": "Which one is cheapest?",
+      "locale": "en-US",
+      "conversation_id": 1201,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "The user asked for the cheapest item but did not specify which products or confirm the widget context; product database lookup is required to compare prices.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Which body part are you shopping for\u2014ear, nose, eyebrow, lip, navel, or something else?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1208.57
+      },
+      "runner_latency_ms": 8607.19,
+      "issues": []
+    }
+  ]
+}

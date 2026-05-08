@@ -38,13 +38,20 @@ def finalize_contract_components(
             continue
         rebuilt_components.append(component)
 
-    assistant_component = assistant_message_component(str(assistant_text or ""))
+    pagination_follow_ups = component_contract.pagination_follow_ups(list(deduped_follow_ups or []))
+    narrative_follow_ups = component_contract.narrative_follow_ups(list(deduped_follow_ups or []))
+    final_assistant_text = str(assistant_text or "")
+
+    assistant_component = assistant_message_component(final_assistant_text)
     if assistant_component is not None:
         rebuilt_components.insert(0, assistant_component)
 
-    quick_replies = None if clarify_present else quick_replies_component(list(deduped_follow_ups or []))
+    quick_replies = None if clarify_present else quick_replies_component(list(pagination_follow_ups or []))
     if quick_replies is not None:
         rebuilt_components.append(quick_replies)
+    follow_up_component = None if clarify_present else component_contract.follow_up_text_component(list(narrative_follow_ups or []))
+    if follow_up_component is not None:
+        rebuilt_components.append(follow_up_component)
 
     product_carousel = component_contract.product_cards_from_components(rebuilt_components)
     if not product_carousel and list(display_products or []):
@@ -52,6 +59,7 @@ def finalize_contract_components(
 
     return {
         "components": rebuilt_components,
+        "assistant_text": final_assistant_text,
         "product_carousel": product_carousel,
-        "follow_up_questions": list(deduped_follow_ups or []),
+        "follow_up_questions": list(deduped_follow_ups if clarify_present else pagination_follow_ups),
     }

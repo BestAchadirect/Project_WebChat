@@ -140,7 +140,6 @@ export const TicketsPage: React.FC = () => {
         <div className="space-y-6">
             <div className="flex justify-between items-center">
                 <div className="flex items-center gap-3">
-                    <h2 className="text-2xl font-bold text-gray-800">Ticket Management</h2>
                     {unreadCount > 0 && (
                         <span className="inline-flex px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-600 uppercase tracking-wide">
                             {unreadCount} New Update{unreadCount > 1 ? 's' : ''}

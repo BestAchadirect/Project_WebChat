@@ -115,6 +115,7 @@ def _fake_detail_inference(
     semantic_hints: list[str] | None = None,
     clarify_focus: str = "",
     confidence: float = 0.91,
+    debug: dict | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         requested_fields=list(requested_fields or []),
@@ -123,6 +124,7 @@ def _fake_detail_inference(
         semantic_hints=list(semantic_hints or []),
         clarify_focus=clarify_focus,
         confidence=confidence,
+        debug=dict(debug or {}),
     )
 
 
@@ -228,6 +230,32 @@ async def test_detail_query_parser_does_not_force_sterilization_into_finish_with
 
     assert parsed.attribute_filters.get("finish") is None
     assert all(parsed.attribute_filters.get(key) is None for key in ("stone", "color", "opal_color"))
+
+
+@pytest.mark.asyncio
+async def test_detail_query_parser_marks_empty_llm_timeout_as_parse_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_infer_detail_query(**kwargs):
+        return _fake_detail_inference(
+            confidence=0.0,
+            debug={"llm_detail_query_error": "Request timed out."},
+        )
+
+    monkeypatch.setattr(
+        "app.services.chat.parsing.detail_query_parser.infer_detail_query",
+        fake_infer_detail_query,
+    )
+
+    parsed = await DetailQueryParser.parse_async(
+        user_text="Do you have any sterilization product?",
+        nlu_data={"workflow": "catalog"},
+        alias_map={},
+        parser_rules=_db_rules(),
+    )
+
+    assert parsed.parse_failed is True
+    assert parsed.parse_error == "Request timed out."
+    assert parsed.attribute_filters == {}
+    assert parsed.semantic_hints == []
 
 
 @pytest.mark.asyncio

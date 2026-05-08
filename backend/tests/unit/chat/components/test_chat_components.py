@@ -248,6 +248,51 @@ async def test_builder_outputs_shape(builder_cls, expected_type: ComponentType, 
 
 
 @pytest.mark.asyncio
+async def test_product_cards_component_formats_category_as_tag_list() -> None:
+    context = _sample_context()
+    context.canonical_products[0].attributes["category"] = (
+        "1.6mm Thickness;;Belly Bananas;;Belly Piercing;;Bulk;;Ferido Glued;;Sold in bulks;;Surgical Steel"
+    )
+
+    component = await ProductCardsComponent().build(context)
+
+    attrs = component.data["cards"][0]["attributes"]
+    assert attrs["category"] == [
+        "1.6mm Thickness",
+        "Belly Bananas",
+        "Belly Piercing",
+        "Bulk",
+        "Ferido Glued",
+        "Sold in bulks",
+        "Surgical Steel",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_product_cards_component_hides_internal_import_attributes() -> None:
+    context = _sample_context()
+    context.canonical_products[0].attributes["source_raw_sku"] = "SKU;;;;SKU-1"
+    context.canonical_products[0].attributes["source_id"] = "klevu-1"
+
+    component = await ProductCardsComponent().build(context)
+
+    attrs = component.data["cards"][0]["attributes"]
+    assert "source_raw_sku" not in attrs
+    assert "source_id" not in attrs
+
+
+@pytest.mark.asyncio
+async def test_product_detail_component_formats_category_as_tag_list() -> None:
+    context = _sample_context()
+    context.canonical_products[0].attributes["category"] = "Belly Bananas;;Checkers"
+
+    component = await ProductDetailComponent().build(context)
+
+    attrs = component.data["product"]["attributes"]
+    assert attrs["category"] == ["Belly Bananas", "Checkers"]
+
+
+@pytest.mark.asyncio
 async def test_clarify_builder_hides_questions_and_suggestions_from_public_payload() -> None:
     context = _sample_context()
     context.ambiguity_reason = "knowledge_needs_clarification"

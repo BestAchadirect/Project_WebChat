@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 
+CUSTOMER_COPY_STYLE_RULES = (
+    "Never use em dashes or en dashes. Use commas, periods, parentheses, or ASCII hyphens instead.\n"
+)
+
+
 def contextual_clarify_prompt(reply_language: str) -> str:
     return (
         f"You write one short clarification message for a shopping assistant in {reply_language}.\n"
+        f"{CUSTOMER_COPY_STYLE_RULES}"
         "Return ONLY strict JSON with key `message`.\n"
         "Write exactly one sentence.\n"
         "Write the final customer-facing message directly.\n"
@@ -24,6 +30,7 @@ def contextual_clarify_prompt(reply_language: str) -> str:
 def contextual_error_prompt(reply_language: str) -> str:
     return (
         f"You write one short recovery message for a shopping assistant in {reply_language}.\n"
+        f"{CUSTOMER_COPY_STYLE_RULES}"
         "Return ONLY strict JSON with key `message`.\n"
         "Write exactly one sentence.\n"
         "Acknowledge the issue briefly and guide the user on the next step.\n"
@@ -36,6 +43,7 @@ def contextual_error_prompt(reply_language: str) -> str:
 def contextual_product_prompt(reply_language: str) -> str:
     return (
         f"You write one short product match reply for a shopping assistant in {reply_language}.\n"
+        f"{CUSTOMER_COPY_STYLE_RULES}"
         "Return ONLY strict JSON with key `reply`.\n"
         "Write exactly one sentence.\n"
         "Use the payload to acknowledge the match and highlight the most useful product angle.\n"
@@ -48,6 +56,7 @@ def contextual_product_prompt(reply_language: str) -> str:
 def contextual_default_reply_prompt(reply_language: str) -> str:
     return (
         f"You write one short assistant reply for a shopping assistant in {reply_language}.\n"
+        f"{CUSTOMER_COPY_STYLE_RULES}"
         "Return ONLY strict JSON with key `reply`.\n"
         "Write exactly one sentence.\n"
         "Use the payload to answer with the best next step for the current conversation.\n"
@@ -64,6 +73,7 @@ def contextual_default_reply_prompt(reply_language: str) -> str:
 def terminal_off_topic_prompt(reply_language: str) -> str:
     return (
         f"You write one short assistant reply in {reply_language} for an off-topic request.\n"
+        f"{CUSTOMER_COPY_STYLE_RULES}"
         "Return ONLY strict JSON with key `reply`.\n"
         "Keep it to 1 sentence.\n"
         "Politely decline the unrelated request and redirect to in-scope help: body jewelry products, stock, and store policies/info.\n"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
-from app.services.chat.parsing.attribute_normalization import normalize_text
+from app.services.chat.parsing.attribute_normalization import normalize_attribute_value
 from app.services.chat.parsing.attribute_keys import ATTRIBUTE_KEY_ALIASES, canonicalize_filter_key
 
 ALLOWED_PRODUCT_FILTERS = frozenset(
@@ -91,11 +91,7 @@ def normalize_filter_map(
             continue
         if value is None:
             continue
-        if isinstance(value, str):
-            trimmed = value.strip()
-            if not trimmed:
-                continue
-            clean[clean_key] = normalize_text(trimmed)
-        else:
-            clean[clean_key] = value
+        clean_value = normalize_attribute_value(key=clean_key, value=value)
+        if clean_value:
+            clean[clean_key] = clean_value
     return clean

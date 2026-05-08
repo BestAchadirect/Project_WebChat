@@ -159,6 +159,36 @@ async def test_structured_search_uses_eav_filters_for_single_and_multi_filter_ca
 
 
 @pytest.mark.asyncio
+async def test_structured_search_treats_category_as_multi_tag_membership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product = _ProductStub(id=uuid4(), sku="BNCHK-A07000")
+    db = _QueueDB([_FakeResult(rows=[product])])
+    service = CatalogProductSearchService(db=db)
+
+    async def fake_cards_from_products(self, products):
+        return [_card(item) for item in products]
+
+    async def fake_definitions_by_name(*args, **kwargs):
+        return {"category": SimpleNamespace(id=10, is_multivalue=True)}
+
+    monkeypatch.setattr(eav_service, "get_definitions_by_name", fake_definitions_by_name)
+    monkeypatch.setattr(eav_service, "get_product_attributes", lambda *args, **kwargs: {})
+    monkeypatch.setattr(service, "_cards_from_products", fake_cards_from_products.__get__(service))
+
+    result, meta = await service.structured_search(
+        sku_token=None,
+        attribute_filters={"category": ["Belly Bananas", "Checkers"]},
+        limit=5,
+    )
+
+    assert result.product_ids == [product.id]
+    assert result.cards[0].sku == "BNCHK-A07000"
+    assert meta["structured_filter_count"] == 1
+    assert len(db.executed) == 1
+
+
+@pytest.mark.asyncio
 async def test_structured_search_material_lookup_uses_explicit_attributes_without_projection_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -246,3 +276,13 @@ def test_product_search_normalizes_legacy_attribute_keys_to_db_names() -> None:
     assert clean["jewelry_type"] == "labret"
     assert "body_part" not in clean
     assert "diameter" not in clean
+
+
+def test_product_search_normalizes_category_arrays_as_tag_memberships() -> None:
+    clean = CatalogProductSearchService._normalize_filter_map(
+        {
+            "category": ["Belly Bananas", "Checkers", "Belly Bananas"],
+        }
+    )
+
+    assert clean == {"category": "belly bananas;;checkers"}

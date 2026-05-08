@@ -4,13 +4,6 @@ import { MagentoConfigForm } from '../components/magento/MagentoConfigForm';
 export const MagentoSettingsPage: React.FC = () => {
     return (
         <div className="space-y-6">
-            <div>
-                <h1 className="text-3xl font-bold text-gray-900">Magento Settings</h1>
-                <p className="mt-2 text-gray-600">
-                    Configure your Magento store integration
-                </p>
-            </div>
-
             <MagentoConfigForm />
 
             {/* Additional Info */}

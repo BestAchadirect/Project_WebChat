@@ -1,0 +1,213 @@
+{
+  "summary": {
+    "cases": 3,
+    "turns": 5,
+    "workflows": {
+      "catalog": 3,
+      "knowledge": 2
+    },
+    "issues": {
+      "workflow_mismatch:catalog->knowledge": 1
+    },
+    "issue_turn_count": 1,
+    "by_group": {
+      "catalog_attributes": {
+        "turns": 2,
+        "workflows": {
+          "catalog": 2
+        },
+        "issues": {}
+      },
+      "multi_turn": {
+        "turns": 3,
+        "workflows": {
+          "knowledge": 2,
+          "catalog": 1
+        },
+        "issues": {
+          "workflow_mismatch:catalog->knowledge": 1
+        }
+      }
+    }
+  },
+  "results": [
+    {
+      "case_id": "catalog_attr_category",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show Belly Bananas for belly piercing",
+      "locale": "en-US",
+      "conversation_id": 1211,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested to 'Show Belly Bananas for belly piercing' \u2014 a product search that needs product retrieval and could use clarification on preferences to filter results.",
+      "confidence": 0.91,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Belly Piercing / Belly Bananas. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 810.08
+      },
+      "runner_latency_ms": 13668.32,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_attr_packing_option",
+      "group": "catalog_attributes",
+      "turn_index": 1,
+      "message": "Show individually packed products",
+      "locale": "en-US",
+      "conversation_id": 1212,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested a product listing but did not specify category, use-case, or other filters needed to search the catalog.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request with Blister Package packing option. These options are a strong everyday choice.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 15,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 33.59
+      },
+      "runner_latency_ms": 10344.49,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_company_then_product",
+      "group": "multi_turn",
+      "turn_index": 1,
+      "message": "Is your company in China or Thailand?",
+      "locale": "en-US",
+      "conversation_id": 1213,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": false,
+      "reason": "User asked about company location, which requires company knowledge-base information; need to clarify whether they mean headquarters, manufacturing, or office/store location before retrieving precise info.",
+      "confidence": 0.86,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "Acha Co., Ltd. is located in Thailand. Headquarters / main office: Acha Co., Ltd., 247-249 Tanao Road, Bavornives, Pranakorn, Bangkok 10200, Thailand. Phone: +66 (0)2-629-5858; Email: sales@achadirect.com. The main showroom/office is in Bangkok (GMT+7). The available context does not confirm any China headquarters or office locations.",
+      "source_titles": [
+        "How can I contact Acha?",
+        "Can you supply references in my country?"
+      ],
+      "meta": {
+        "source": "knowledge",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 2,
+        "product_display_count": 0,
+        "product_has_more": true,
+        "latency_ms": 8916.82
+      },
+      "runner_latency_ms": 11675.07,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_company_then_product",
+      "group": "multi_turn",
+      "turn_index": 2,
+      "message": "So is the product from China or made in Thailand?",
+      "locale": "en-US",
+      "conversation_id": 1213,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": true,
+      "expected_allow_no_products": false,
+      "workflow": "knowledge",
+      "needs_clarification": true,
+      "reason": "User asked about a product's country of origin but did not specify which product/SKU; this requires a knowledge-base lookup once product is identified.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Which policy detail would you like to know\u2014shipping, refunds, or contact information?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 7817.79
+      },
+      "runner_latency_ms": 11265.75,
+      "issues": [
+        "workflow_mismatch:catalog->knowledge"
+      ]
+    },
+    {
+      "case_id": "conversation_company_then_product",
+      "group": "multi_turn",
+      "turn_index": 3,
+      "message": "Steel product",
+      "locale": "en-US",
+      "conversation_id": 1213,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User submitted a broad product search term without specifying product family, size, grade, or other filters; product retrieval is required.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found matching products below. I don't have confirmed manufacturing-origin data in the product records, so I can't say whether these are from China or made in Thailand from the catalog alone.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 300,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 616.57
+      },
+      "runner_latency_ms": 9646.6,
+      "issues": []
+    }
+  ]
+}

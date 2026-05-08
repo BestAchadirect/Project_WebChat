@@ -27,8 +27,6 @@ class Product(BaseModel):
     
     # Control fields
     visibility: bool = True
-    is_featured: bool = False
-    priority: int = 0
     master_code: Optional[str] = None
 
     # Extended attributes
@@ -50,6 +48,7 @@ class Product(BaseModel):
     pincher_size: Optional[str] = None
     ring_size: Optional[str] = None
     quantity_in_bulk: Optional[str] = None
+    category: Optional[str] = None
     opal_color: Optional[str] = None
     threading: Optional[str] = None
     outer_diameter: Optional[str] = None
@@ -59,8 +58,6 @@ class Product(BaseModel):
 
 class ProductUpdate(BaseModel):
     visibility: Optional[bool] = None
-    is_featured: Optional[bool] = None
-    priority: Optional[int] = None
     master_code: Optional[str] = None
     stock_status: Optional[StockStatus] = None
     stock_qty: Optional[int] = None
@@ -83,6 +80,7 @@ class ProductUpdate(BaseModel):
     pincher_size: Optional[str] = None
     ring_size: Optional[str] = None
     quantity_in_bulk: Optional[str] = None
+    category: Optional[str] = None
     opal_color: Optional[str] = None
     threading: Optional[str] = None
     outer_diameter: Optional[str] = None

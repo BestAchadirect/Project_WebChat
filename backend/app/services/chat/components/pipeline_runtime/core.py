@@ -167,17 +167,19 @@ class ComponentPipeline(
 
             query_summary = text if text else "Please provide a question."
             display_limit = product_presentation.PRODUCT_DISPLAY_LIMIT
-            result_fetch_limit = max(display_limit * 6, 20)
+            result_fetch_limit = max(display_limit * 30, 120)
             detail_semantic_hints = [
                 str(item or "").strip()
                 for item in list(getattr(detail, "semantic_hints", []) or [])
                 if str(item or "").strip()
             ]
             detail_clarify_focus = str(getattr(detail, "clarify_focus", "") or "").strip()
+            detail_parse_failed = bool(getattr(detail, "parse_failed", False))
             attribute_list_target = ""
             attribute_list_target_source = ""
             if (
                 workflow == "catalog"
+                and not detail_parse_failed
                 and not dict(getattr(detail, "attribute_filters", {}) or {})
                 and not ambiguity_blocks_retrieval(detail_clarify_focus)
             ):
@@ -213,7 +215,56 @@ class ComponentPipeline(
                     answerability=str(getattr(decision_state, "answerability", "none") or "none"),
                 ),
             )
-            if not catalog_pagination_requested and ambiguity_blocks_retrieval(getattr(detail, "clarify_focus", "")):
+            context_price_followup_possible = bool(
+                workflow == "catalog"
+                and list(debug_meta.get("conversation_last_product_ids") or [])
+                and str(getattr(decision_state, "missing_slot", "") or "").strip().lower() == "product_anchor"
+                and str(getattr(decision_state, "pending_task_type", "") or "").strip().lower()
+                in {"compare_price", "find_cheaper_products"}
+            )
+            if (
+                workflow == "catalog"
+                and not catalog_pagination_requested
+                and not context_price_followup_possible
+                and not dict(getattr(detail, "attribute_filters", {}) or {})
+                and "product_anchor" in str(getattr(decision_state, "missing_slot", "") or "").strip().lower()
+                and (
+                    str(getattr(decision_state, "response_policy", "") or "").strip().lower() == "ask_clarifying_question"
+                    or str(getattr(decision_state, "pending_task_type", "") or "").strip()
+                    or str(getattr(decision_state, "clarify_question", "") or "").strip()
+                )
+            ):
+                state.decision.ambiguity_reason = "pending_task_missing_slot"
+                state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                state.presentation.canonical_products = []
+                state.catalog.product_ids = []
+                state.catalog.query_product_ids = []
+                state.retrieval.result_count = 0
+                state.retrieval.source = ComponentSource.ERROR
+                debug_meta["catalog_retrieval_blocked_reason"] = "llm_requested_product_anchor_clarification"
+                debug_meta["clarify_reason"] = state.decision.ambiguity_reason
+            if (
+                workflow == "catalog"
+                and not catalog_pagination_requested
+                and detail_parse_failed
+                and not store_overview_request
+            ):
+                state.decision.ambiguity_reason = "semantic_concept_unclear"
+                state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                state.presentation.canonical_products = []
+                state.catalog.product_ids = []
+                state.catalog.query_product_ids = []
+                state.retrieval.result_count = 0
+                state.retrieval.source = ComponentSource.ERROR
+                debug_meta["catalog_retrieval_blocked_reason"] = "detail_extraction_failed"
+                debug_meta["semantic_guardrail_reason"] = "detail_extraction_failed"
+                debug_meta["semantic_hint_clarify_used"] = True
+                debug_meta["clarify_reason"] = state.decision.ambiguity_reason
+            if (
+                not catalog_pagination_requested
+                and not dict(getattr(detail, "attribute_filters", {}) or {})
+                and ambiguity_blocks_retrieval(getattr(detail, "clarify_focus", ""))
+            ):
                 state.decision.ambiguity_reason = (
                     "semantic_concept_unclear"
                 )

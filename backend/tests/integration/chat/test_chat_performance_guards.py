@@ -732,6 +732,75 @@ async def test_component_pipeline_semantic_hint_no_match_returns_clarify(
 
 
 @pytest.mark.asyncio
+async def test_component_pipeline_detail_timeout_blocks_broad_vector_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CatalogStub:
+        async def structured_count(self, **kwargs):
+            raise AssertionError("catalog search should not run when detail parsing timed out")
+
+        async def vector_search(self, **kwargs):
+            raise AssertionError("vector search should not run when detail parsing timed out")
+
+        async def lexical_search(self, **kwargs):
+            raise AssertionError("lexical search should not run when detail parsing timed out")
+
+        async def structured_search(self, **kwargs):
+            raise AssertionError("structured search should not run when detail parsing timed out")
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
+        return DetailQuery(
+            requested_fields=[],
+            attribute_filters={},
+            semantic_hints=[],
+            clarify_focus="",
+            wants_image=False,
+            is_detail_request=False,
+            parse_failed=True,
+            parse_error="Request timed out.",
+            extraction_debug={"llm_detail_query_error": "Request timed out."},
+        )
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("attribute list target inference should not run when detail parsing timed out")
+
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
+        fake_parse,
+    )
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline_runtime.core.infer_attribute_list_target",
+        fail_if_called,
+    )
+
+    result = await pipeline.run(
+        request=ChatRequest(
+            user_id="guest-parse-timeout",
+            message="Do you have any sterilization product?",
+            locale="en-US",
+        ),
+        conversation_id=77,
+        run_id="run-detail-timeout-clarify",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    assert result.response.routing.workflow == "catalog"
+    assert result.response.routing.needs_clarification is True
+    assert result.response.product_carousel == []
+    assert any(component.type.value == "clarify" for component in result.response.components)
+    assert result.debug.get("detail_parse_failed") is True
+    assert result.debug.get("catalog_retrieval_blocked_reason") == "detail_extraction_failed"
+    assert result.debug.get("clarify_reason") == "semantic_concept_unclear"
+
+
+@pytest.mark.asyncio
 async def test_component_pipeline_sterilization_with_opal_returns_clarify(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

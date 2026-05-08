@@ -4,6 +4,79 @@ import { Button } from '../components/common/Button';
 import { ChatWidget } from '../components/chat/ChatWidget';
 import apiClient from '../api/client';
 
+const MAX_FAQ_COUNT = 5;
+const MAX_FAQ_LENGTH = 120;
+const DEFAULT_PRIMARY_COLOR = '#214166';
+
+interface ChatConfigState {
+    title: string;
+    primaryColor: string;
+    welcomeMessage: string;
+    faqSuggestions: string[];
+}
+
+interface Banner {
+    id: number;
+    image_url: string;
+    link_url?: string | null;
+    alt_text?: string | null;
+    is_active: boolean;
+    sort_order: number;
+}
+
+const normalizeConfig = (config: ChatConfigState): ChatConfigState => ({
+    title: config.title.trim(),
+    primaryColor: config.primaryColor.trim(),
+    welcomeMessage: config.welcomeMessage,
+    faqSuggestions: config.faqSuggestions.map((item) => item.trim()).filter(Boolean),
+});
+
+const normalizeBanner = (banner: Banner) => ({
+    id: banner.id,
+    image_url: banner.image_url,
+    link_url: (banner.link_url || '').trim(),
+    alt_text: (banner.alt_text || '').trim(),
+    is_active: Boolean(banner.is_active),
+    sort_order: Number(banner.sort_order) || 0,
+});
+
+const stableStringify = (value: unknown): string => JSON.stringify(value);
+
+const isValidHexColor = (value: string): boolean => /^#[0-9A-Fa-f]{6}$/.test(value.trim());
+
+const isValidOptionalHttpUrl = (value?: string | null): boolean => {
+    const text = (value || '').trim();
+    if (!text) return true;
+    try {
+        const url = new URL(text);
+        return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch {
+        return false;
+    }
+};
+
+const buildEmbedCode = (config: ChatConfigState, apiBaseUrl: string, cssUrl: string, scriptUrl: string): string => {
+    const serializedConfig = JSON.stringify(
+        {
+            title: config.title,
+            primaryColor: config.primaryColor,
+            welcomeMessage: config.welcomeMessage,
+            faqSuggestions: config.faqSuggestions,
+            apiBaseUrl,
+        },
+        null,
+        2,
+    ).replace(/<\/script/gi, '<\\/script');
+
+    return `<!-- GenAI Chat Widget -->
+<link rel="stylesheet" href="${cssUrl}">
+<script>
+window.genaiConfig = ${serializedConfig};
+</script>
+<script src="${scriptUrl}" async></script>
+<!-- End GenAI Chat Widget -->`;
+};
+
 export const ChatSettingsPage: React.FC = () => {
     const { showToast } = useToast();
     const widgetOrigin = (import.meta.env.VITE_WIDGET_ORIGIN || 'http://localhost:8000').replace(/\/+$/, '');
@@ -13,7 +86,7 @@ export const ChatSettingsPage: React.FC = () => {
 
     const [config, setConfig] = useState({
         title: 'Jewelry Assistant',
-        primaryColor: '#214166', // Medium Blue
+        primaryColor: DEFAULT_PRIMARY_COLOR,
         welcomeMessage: 'Welcome to our wholesale body jewelry support! 👋 How can I help you today?',
         faqSuggestions: [
             "What is your minimum order?",
@@ -21,24 +94,18 @@ export const ChatSettingsPage: React.FC = () => {
             "What materials do you use?"
         ]
     });
+    const [savedConfig, setSavedConfig] = useState<ChatConfigState>(() => normalizeConfig(config));
 
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [newFaq, setNewFaq] = useState('');
 
-    interface Banner {
-        id: number;
-        image_url: string;
-        link_url?: string | null;
-        alt_text?: string | null;
-        is_active: boolean;
-        sort_order: number;
-    }
-
     const [banners, setBanners] = useState<Banner[]>([]);
+    const [savedBannersById, setSavedBannersById] = useState<Record<number, ReturnType<typeof normalizeBanner>>>({});
     const [isBannerLoading, setIsBannerLoading] = useState(true);
     const [isBannerUploading, setIsBannerUploading] = useState(false);
     const [bannerSavingId, setBannerSavingId] = useState<number | null>(null);
+    const [isBannerReordering, setIsBannerReordering] = useState(false);
 
     const fetchBanners = async () => {
         try {
@@ -46,7 +113,11 @@ export const ChatSettingsPage: React.FC = () => {
             const response = await apiClient.get<Banner[]>('/banners/', {
                 params: { include_inactive: true }
             });
-            setBanners(response.data || []);
+            const loadedBanners = response.data || [];
+            setBanners(loadedBanners);
+            setSavedBannersById(
+                Object.fromEntries(loadedBanners.map((banner) => [banner.id, normalizeBanner(banner)]))
+            );
         } catch (error) {
             console.error('Failed to fetch banners:', error);
             showToast('Failed to load banners', 'error');
@@ -61,12 +132,14 @@ export const ChatSettingsPage: React.FC = () => {
                 setIsLoading(true);
                 const response = await apiClient.get('/settings/chat/');
                 if (response.data) {
-                    setConfig({
+                    const loadedConfig = normalizeConfig({
                         title: response.data.title || 'Jewelry Assistant',
                         primaryColor: response.data.primary_color || '#214166',
                         welcomeMessage: response.data.welcome_message || '',
                         faqSuggestions: response.data.faq_suggestions || []
                     });
+                    setConfig(loadedConfig);
+                    setSavedConfig(loadedConfig);
                 }
             } catch (error) {
                 console.error('Failed to fetch chat settings:', error);
@@ -80,17 +153,95 @@ export const ChatSettingsPage: React.FC = () => {
         fetchBanners();
     }, []);
 
+    const sortedBanners = useMemo(() => {
+        return [...banners].sort((a, b) => {
+            const orderDiff = (a.sort_order || 0) - (b.sort_order || 0);
+            if (orderDiff !== 0) return orderDiff;
+            return a.id - b.id;
+        });
+    }, [banners]);
+
+    const configValidationErrors = useMemo(() => {
+        const errors: string[] = [];
+        const normalized = normalizeConfig(config);
+        if (!normalized.title) {
+            errors.push('Widget title is required.');
+        }
+        if (!isValidHexColor(normalized.primaryColor)) {
+            errors.push('Primary color must be a valid hex color, for example #214166.');
+        }
+        const seenFaqs = new Set<string>();
+        normalized.faqSuggestions.forEach((faq) => {
+            if (faq.length > MAX_FAQ_LENGTH) {
+                errors.push(`FAQ suggestions must be ${MAX_FAQ_LENGTH} characters or fewer.`);
+            }
+            const key = faq.toLowerCase();
+            if (seenFaqs.has(key)) {
+                errors.push('FAQ suggestions must be unique.');
+            }
+            seenFaqs.add(key);
+        });
+        return Array.from(new Set(errors));
+    }, [config]);
+
+    const normalizedConfig = useMemo(() => normalizeConfig(config), [config]);
+    const hasConfigChanges = stableStringify(normalizedConfig) !== stableStringify(savedConfig);
+    const hasInvalidConfig = configValidationErrors.length > 0;
+
+    const bannerHasChanges = (banner: Banner): boolean => {
+        const saved = savedBannersById[banner.id];
+        if (!saved) return true;
+        return stableStringify(normalizeBanner(banner)) !== stableStringify(saved);
+    };
+
+    const dirtyBannerCount = banners.filter(bannerHasChanges).length;
+    const hasUnsavedChanges = hasConfigChanges || dirtyBannerCount > 0;
+    const embedCode = useMemo(
+        () => buildEmbedCode(normalizedConfig, widgetApiBaseUrl, widgetCssUrl, widgetScriptUrl),
+        [normalizedConfig, widgetApiBaseUrl, widgetCssUrl, widgetScriptUrl],
+    );
+
+    const newFaqError = useMemo(() => {
+        const value = newFaq.trim();
+        if (!value) return '';
+        if (config.faqSuggestions.length >= MAX_FAQ_COUNT) return `Max ${MAX_FAQ_COUNT} suggestions allowed.`;
+        if (value.length > MAX_FAQ_LENGTH) return `Use ${MAX_FAQ_LENGTH} characters or fewer.`;
+        if (config.faqSuggestions.some((faq) => faq.trim().toLowerCase() === value.toLowerCase())) {
+            return 'This suggestion already exists.';
+        }
+        return '';
+    }, [newFaq, config.faqSuggestions]);
+
+    useEffect(() => {
+        const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+            if (!hasUnsavedChanges) return;
+            event.preventDefault();
+            event.returnValue = '';
+        };
+
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }, [hasUnsavedChanges]);
+
     const handleSave = async () => {
+        const nextConfig = normalizeConfig(config);
+        if (configValidationErrors.length > 0) {
+            showToast(configValidationErrors[0], 'error');
+            return;
+        }
+
         try {
             setIsSaving(true);
             const payload = {
-                title: config.title,
-                primary_color: config.primaryColor,
-                welcome_message: config.welcomeMessage,
-                faq_suggestions: config.faqSuggestions
+                title: nextConfig.title,
+                primary_color: nextConfig.primaryColor,
+                welcome_message: nextConfig.welcomeMessage,
+                faq_suggestions: nextConfig.faqSuggestions
             };
             await apiClient.post('/settings/chat/', payload);
-            showToast('Settings saved successfully!', 'success');
+            setConfig(nextConfig);
+            setSavedConfig(nextConfig);
+            showToast('Settings saved successfully', 'success');
         } catch (error) {
             console.error('Failed to save chat settings:', error);
             showToast('Failed to save settings', 'error');
@@ -100,14 +251,17 @@ export const ChatSettingsPage: React.FC = () => {
     };
 
     const handleAddFaq = () => {
-        if (newFaq.trim() && config.faqSuggestions.length < 5) {
+        const value = newFaq.trim();
+        if (newFaqError) {
+            showToast(newFaqError, 'error');
+            return;
+        }
+        if (value) {
             setConfig({
                 ...config,
-                faqSuggestions: [...config.faqSuggestions, newFaq.trim()]
+                faqSuggestions: [...config.faqSuggestions, value]
             });
             setNewFaq('');
-        } else if (config.faqSuggestions.length >= 5) {
-            showToast('Max 5 suggestions allowed', 'error');
         }
     };
 
@@ -147,6 +301,7 @@ export const ChatSettingsPage: React.FC = () => {
             const createResponse = await apiClient.post<Banner>('/banners/', createPayload);
             const created = createResponse.data;
             setBanners((prev) => [...prev, created]);
+            setSavedBannersById((prev) => ({ ...prev, [created.id]: normalizeBanner(created) }));
             showToast('Banner uploaded', 'success');
         } catch (error) {
             console.error('Failed to upload banner:', error);
@@ -163,6 +318,11 @@ export const ChatSettingsPage: React.FC = () => {
     };
 
     const handleBannerSave = async (banner: Banner) => {
+        if (!isValidOptionalHttpUrl(banner.link_url)) {
+            showToast('Banner link must be a valid http or https URL', 'error');
+            return;
+        }
+
         try {
             setBannerSavingId(banner.id);
             const payload = {
@@ -176,6 +336,7 @@ export const ChatSettingsPage: React.FC = () => {
             const response = await apiClient.post<Banner>('/banners/', payload);
             const updated = response.data;
             setBanners((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+            setSavedBannersById((prev) => ({ ...prev, [updated.id]: normalizeBanner(updated) }));
             showToast('Banner saved', 'success');
         } catch (error) {
             console.error('Failed to save banner:', error);
@@ -186,9 +347,20 @@ export const ChatSettingsPage: React.FC = () => {
     };
 
     const handleBannerDelete = async (bannerId: number) => {
+        const banner = banners.find((item) => item.id === bannerId);
+        const label = banner?.alt_text || banner?.image_url || `banner ${bannerId}`;
+        if (!window.confirm(`Delete "${label}"? This cannot be undone.`)) {
+            return;
+        }
+
         try {
             await apiClient.delete(`/banners/${bannerId}`);
             setBanners((prev) => prev.filter((banner) => banner.id !== bannerId));
+            setSavedBannersById((prev) => {
+                const next = { ...prev };
+                delete next[bannerId];
+                return next;
+            });
             showToast('Banner deleted', 'success');
         } catch (error) {
             console.error('Failed to delete banner:', error);
@@ -196,13 +368,54 @@ export const ChatSettingsPage: React.FC = () => {
         }
     };
 
-    const sortedBanners = useMemo(() => {
-        return [...banners].sort((a, b) => {
-            const orderDiff = (a.sort_order || 0) - (b.sort_order || 0);
-            if (orderDiff !== 0) return orderDiff;
-            return a.id - b.id;
-        });
-    }, [banners]);
+    const persistBannerOrder = async (nextBanners: Banner[]) => {
+        setIsBannerReordering(true);
+        try {
+            const changedBanners = nextBanners.filter((banner) => {
+                const current = banners.find((item) => item.id === banner.id);
+                return current?.sort_order !== banner.sort_order;
+            });
+
+            await Promise.all(
+                changedBanners.map((banner) =>
+                    apiClient.post<Banner>('/banners/', {
+                        id: banner.id,
+                        image_url: banner.image_url,
+                        link_url: banner.link_url || '',
+                        alt_text: banner.alt_text || '',
+                        is_active: banner.is_active,
+                        sort_order: banner.sort_order,
+                    })
+                )
+            );
+            setBanners(nextBanners);
+            setSavedBannersById(
+                Object.fromEntries(nextBanners.map((banner) => [banner.id, normalizeBanner(banner)]))
+            );
+            showToast('Banner order updated', 'success');
+        } catch (error) {
+            console.error('Failed to reorder banners:', error);
+            showToast('Failed to update banner order', 'error');
+        } finally {
+            setIsBannerReordering(false);
+        }
+    };
+
+    const handleMoveBanner = async (bannerId: number, direction: 'up' | 'down') => {
+        if (dirtyBannerCount > 0) {
+            showToast('Save or discard banner edits before changing order', 'error');
+            return;
+        }
+
+        const currentIndex = sortedBanners.findIndex((banner) => banner.id === bannerId);
+        const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+        if (currentIndex < 0 || targetIndex < 0 || targetIndex >= sortedBanners.length) return;
+
+        const reordered = [...sortedBanners];
+        [reordered[currentIndex], reordered[targetIndex]] = [reordered[targetIndex], reordered[currentIndex]];
+        const nextBanners = reordered.map((banner, index) => ({ ...banner, sort_order: index + 1 }));
+        await persistBannerOrder(nextBanners);
+    };
 
     // Mock website content for preview
     const MockWebsiteBackground = () => (
@@ -230,22 +443,7 @@ export const ChatSettingsPage: React.FC = () => {
     );
 
     const handleCopyCode = () => {
-        const scriptCode = `
-<!-- GenAI Chat Widget -->
-<link rel="stylesheet" href="${widgetCssUrl}">
-<script>
-  window.genaiConfig = {
-    title: "${config.title}",
-    primaryColor: "${config.primaryColor}",
-    welcomeMessage: "${config.welcomeMessage}",
-    faqSuggestions: ${JSON.stringify(config.faqSuggestions)},
-    apiBaseUrl: "${widgetApiBaseUrl}"
-  };
-</script>
-<script src="${widgetScriptUrl}" async></script>
-<!-- End GenAI Chat Widget -->`;
-
-        navigator.clipboard.writeText(scriptCode);
+        navigator.clipboard.writeText(embedCode);
         showToast('Embed code copied to clipboard!', 'success');
     };
 
@@ -259,23 +457,28 @@ export const ChatSettingsPage: React.FC = () => {
 
     return (
         <div className="space-y-6">
-            <div className="sticky top-0 z-20 -mx-4 md:-mx-6 px-4 md:px-6 py-4 bg-gray-50/95 backdrop-blur border-b border-gray-200">
-                <div className="flex justify-between items-center">
-                    <div>
-                        <h1 className="text-3xl font-bold text-gray-900 tracking-tight">Chat Setting</h1>
-                        <p className="mt-2 text-gray-600">
-                            Customize your AI assistant's appearance and behavior.
-                        </p>
-                    </div>
-                    <Button
-                        onClick={handleSave}
-                        isLoading={isSaving}
-                        className="shadow-md"
-                    >
-                        Save Settings
-                    </Button>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+                <div className="min-h-[20px] text-sm">
+                    {hasUnsavedChanges ? (
+                        <span className="font-medium text-amber-700">Unsaved changes</span>
+                    ) : (
+                        <span className="text-gray-400">All changes saved</span>
+                    )}
                 </div>
+                <Button
+                    onClick={handleSave}
+                    isLoading={isSaving}
+                    disabled={!hasConfigChanges || hasInvalidConfig}
+                    className="shadow-md"
+                >
+                    Save Settings
+                </Button>
             </div>
+            {configValidationErrors.length > 0 && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {configValidationErrors[0]}
+                </div>
+            )}
 
             <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 items-start">
                 <div className="xl:col-span-4 space-y-6">
@@ -312,7 +515,7 @@ export const ChatSettingsPage: React.FC = () => {
                                         <div className="relative">
                                             <input
                                                 type="color"
-                                                value={config.primaryColor}
+                                                value={isValidHexColor(config.primaryColor) ? config.primaryColor : DEFAULT_PRIMARY_COLOR}
                                                 onChange={(e) => setConfig({ ...config, primaryColor: e.target.value })}
                                                 className="h-10 w-10 rounded-lg border border-gray-200 cursor-pointer overflow-hidden p-0"
                                             />
@@ -325,7 +528,11 @@ export const ChatSettingsPage: React.FC = () => {
                                             type="text"
                                             value={config.primaryColor}
                                             onChange={(e) => setConfig({ ...config, primaryColor: e.target.value })}
-                                            className="flex-1 rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 font-mono text-sm uppercase"
+                                            className={`flex-1 rounded-lg shadow-sm focus:ring-indigo-500 font-mono text-sm uppercase ${
+                                                isValidHexColor(config.primaryColor)
+                                                    ? 'border-gray-300 focus:border-indigo-500'
+                                                    : 'border-red-300 focus:border-red-500'
+                                            }`}
                                         />
                                     </div>
                                 </div>
@@ -355,13 +562,16 @@ export const ChatSettingsPage: React.FC = () => {
                                             value={newFaq}
                                             onChange={(e) => setNewFaq(e.target.value)}
                                             placeholder="Add suggestion..."
-                                            className="flex-1 rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm"
-                                            onKeyPress={(e) => e.key === 'Enter' && handleAddFaq()}
+                                            className={`flex-1 rounded-lg shadow-sm focus:ring-indigo-500 text-sm ${
+                                                newFaqError ? 'border-red-300 focus:border-red-500' : 'border-gray-300 focus:border-indigo-500'
+                                            }`}
+                                            onKeyDown={(e) => e.key === 'Enter' && handleAddFaq()}
                                         />
-                                        <Button onClick={handleAddFaq} size="sm" disabled={config.faqSuggestions.length >= 5}>
+                                        <Button onClick={handleAddFaq} size="sm" disabled={!newFaq.trim() || Boolean(newFaqError)}>
                                             Add
                                         </Button>
                                     </div>
+                                    {newFaqError && <p className="text-xs text-red-600">{newFaqError}</p>}
 
                                     <div className="flex flex-wrap gap-2">
                                         {config.faqSuggestions.map((faq, index) => (
@@ -382,7 +592,7 @@ export const ChatSettingsPage: React.FC = () => {
                                         )}
                                     </div>
                                     <p className="text-xs text-gray-400">
-                                        Max 5 buttons. Users can tap these for quick answers.
+                                        Max {MAX_FAQ_COUNT} buttons. Each suggestion can be up to {MAX_FAQ_LENGTH} characters.
                                     </p>
                                 </div>
                             </div>
@@ -406,18 +616,7 @@ export const ChatSettingsPage: React.FC = () => {
                                         </Button>
                                     </div>
                                     <div className="bg-gray-800/50 backdrop-blur rounded-lg p-3 font-mono text-[10px] text-indigo-200 overflow-x-auto whitespace-pre border border-white/5">
-                                        {`<!-- GenAI Chat Widget -->
-<link rel="stylesheet" href="${widgetCssUrl}">
-<script>
-window.genaiConfig = {
-title: "${config.title}",
-primaryColor: "${config.primaryColor}",
-welcomeMessage: "${config.welcomeMessage}",
-faqSuggestions: ${JSON.stringify(config.faqSuggestions)},
-apiBaseUrl: "${widgetApiBaseUrl}"
-};
-</script>
-<script src="${widgetScriptUrl}" async></script>`}
+                                        {embedCode}
                                     </div>
                                     <p className="mt-3 text-[10px] text-gray-500">
                                         Paste before <code className="text-indigo-400">&lt;/body&gt;</code>.
@@ -463,7 +662,10 @@ apiBaseUrl: "${widgetApiBaseUrl}"
                                 </div>
                             ) : (
                                 <>
-                                    {sortedBanners.map((banner) => (
+                                    {sortedBanners.map((banner, index) => {
+                                        const bannerDirty = bannerHasChanges(banner);
+                                        const bannerUrlInvalid = !isValidOptionalHttpUrl(banner.link_url);
+                                        return (
                                         <div key={banner.id} className="border border-gray-200 rounded-xl p-4 space-y-3">
                                             <div className="flex items-start gap-4">
                                                 <div className="w-24 aspect-[3/2] rounded-lg border border-gray-200 overflow-hidden bg-gray-50 flex items-center justify-center">
@@ -478,13 +680,51 @@ apiBaseUrl: "${widgetApiBaseUrl}"
                                                     )}
                                                 </div>
                                                 <div className="flex-1 space-y-2">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <div className="flex items-center gap-1.5">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleMoveBanner(banner.id, 'up')}
+                                                                disabled={index === 0 || isBannerReordering}
+                                                                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                                                title="Move banner up"
+                                                            >
+                                                                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                                                                </svg>
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleMoveBanner(banner.id, 'down')}
+                                                                disabled={index === sortedBanners.length - 1 || isBannerReordering}
+                                                                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                                                title="Move banner down"
+                                                            >
+                                                                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                                                </svg>
+                                                            </button>
+                                                        </div>
+                                                        {bannerDirty && (
+                                                            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                                                                Unsaved
+                                                            </span>
+                                                        )}
+                                                    </div>
                                                     <input
                                                         type="text"
                                                         value={banner.link_url || ''}
                                                         onChange={(event) => handleBannerChange(banner.id, { link_url: event.target.value })}
-                                                        className="w-full rounded-lg border-gray-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500 text-sm"
+                                                        className={`w-full rounded-lg shadow-sm focus:ring-emerald-500 text-sm ${
+                                                            bannerUrlInvalid
+                                                                ? 'border-red-300 focus:border-red-500'
+                                                                : 'border-gray-300 focus:border-emerald-500'
+                                                        }`}
                                                         placeholder="Link URL (optional)"
                                                     />
+                                                    {bannerUrlInvalid && (
+                                                        <p className="text-xs text-red-600">Use a valid http or https URL.</p>
+                                                    )}
                                                     <input
                                                         type="text"
                                                         value={banner.alt_text || ''}
@@ -518,6 +758,7 @@ apiBaseUrl: "${widgetApiBaseUrl}"
                                                         size="sm"
                                                         onClick={() => handleBannerSave(banner)}
                                                         isLoading={bannerSavingId === banner.id}
+                                                        disabled={!bannerDirty || bannerUrlInvalid}
                                                         className="shadow-none"
                                                     >
                                                         Save
@@ -532,7 +773,8 @@ apiBaseUrl: "${widgetApiBaseUrl}"
                                                 </div>
                                             </div>
                                         </div>
-                                    ))}
+                                        );
+                                    })}
                                     {sortedBanners.length === 0 && (
                                         <div className="text-sm text-gray-500">
                                             No banners uploaded yet. Upload a banner to show it in the widget carousel.
@@ -562,6 +804,7 @@ apiBaseUrl: "${widgetApiBaseUrl}"
                                 primaryColor={config.primaryColor}
                                 welcomeMessage={config.welcomeMessage}
                                 faqSuggestions={config.faqSuggestions}
+                                apiBaseUrl={widgetApiBaseUrl}
                             />
                         </div>
                     </div>

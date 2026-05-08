@@ -108,6 +108,94 @@ def test_response_adapter_prefers_components_over_legacy_fields() -> None:
     assert [item.id for item in component_contract.product_cards_from_response(response)] == [card.id]
 
 
+def test_chat_response_sanitizes_typographic_dashes_in_customer_text() -> None:
+    response = ChatResponse(
+        conversation_id=1,
+        reply_text=f"Legacy{chr(0x2014)}reply",
+        routing=ChatRouting(workflow="knowledge", execution_mode="component", needs_knowledge=True),
+        sources=[],
+        debug={},
+        components=[
+            ChatComponent(
+                type="assistant_message",
+                data={"text": f"Samples are available{chr(0x2014)}contact Sales."},
+            ),
+            ChatComponent(
+                type="knowledge_answer",
+                data={"answer": f"Showroom hours are Monday{chr(0x2013)}Saturday."},
+            ),
+        ],
+    )
+
+    payload = response.model_dump(mode="json")
+
+    assert payload["components"][0]["data"]["text"] == "Samples are available, contact Sales."
+    assert payload["components"][1]["data"]["answer"] == "Showroom hours are Monday-Saturday."
+    assert chr(0x2014) not in str(payload)
+    assert chr(0x2013) not in str(payload)
+
+
+def test_response_adapter_ignores_trailing_follow_up_text_as_primary_reply() -> None:
+    response = ChatResponse(
+        conversation_id=1,
+        reply_text="legacy reply",
+        routing=ChatRouting(workflow="catalog", execution_mode="component", needs_products=True),
+        sources=[],
+        debug={},
+        components=[
+            ChatComponent(type="assistant_message", data={"text": "canonical reply"}),
+            component_contract.follow_up_text_component(["Show Titanium jewelry"]),
+        ],
+    )
+
+    assert component_contract.assistant_text_from_response(response) == "canonical reply"
+
+
+def test_upsert_quick_replies_places_narrative_follow_up_after_pagination() -> None:
+    card = _product_card()
+    products = product_cards_component([card])
+    assert products is not None
+    response = ChatResponse(
+        conversation_id=1,
+        reply_text="I found a match.",
+        routing=ChatRouting(workflow="catalog", execution_mode="component", needs_products=True),
+        sources=[],
+        debug={},
+        components=[
+            ChatComponent(type="assistant_message", data={"text": "I found a match."}),
+            products,
+        ],
+    )
+
+    component_contract.upsert_quick_replies_component(
+        response,
+        ["Show more titanium labrets", "Show Steel jewelry"],
+    )
+
+    payload = [component.model_dump(mode="json") for component in response.components]
+    assert [component["type"] for component in payload] == [
+        "assistant_message",
+        "product_cards",
+        "quick_replies",
+        "assistant_message",
+    ]
+    assert payload[2]["data"]["items"] == [
+        {
+            "label": "Show more titanium labrets",
+            "action": "catalog_pagination",
+            "payload": {
+                "kind": "catalog_pagination",
+                "label": "Show more titanium labrets",
+            },
+        }
+    ]
+    assert payload[3]["data"]["placement"] == "after_quick_replies"
+    follow_up_text = payload[3]["data"]["text"]
+    assert follow_up_text.startswith("If you want, I can help you:\n- ")
+    assert "steel jewelry" in follow_up_text.lower()
+    assert response.reply_text == "I found a match."
+
+
 def test_chat_response_serializes_as_component_first_contract() -> None:
     response = ChatResponse(
         conversation_id=1,

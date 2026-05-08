@@ -26,7 +26,7 @@ class PipelineSupportMixin:
         "threading",
     }
 
-    async def _load_featured_product_ids(self, *, limit: int = 40) -> List[str]:
+    async def _load_store_overview_product_ids(self, *, limit: int = 40) -> List[str]:
             if not hasattr(self.db, "execute"):
                 return []
             stmt = (
@@ -34,9 +34,8 @@ class PipelineSupportMixin:
                 .where(Product.is_active.is_(True))
                 .order_by(
                     case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
-                    case((Product.is_featured.is_(True), 0), else_=1),
-                    Product.priority.desc(),
                     Product.created_at.desc(),
+                    Product.sku.asc(),
                 )
                 .limit(max(1, int(limit)))
             )
@@ -285,7 +284,7 @@ class PipelineSupportMixin:
             return ""
 
         text = re.sub(r"^\s*here is what i found:\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"^\s*(?:yes|no)\b[\s,;:—–-]*", "", text, flags=re.IGNORECASE)
+        text = re.sub("^\\s*(?:yes|no)\\b[\\s,;:\\u2014\\u2013-]*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"^\s*[^A-Za-z0-9]+", "", text)
 
         sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
@@ -354,6 +353,7 @@ class PipelineSupportMixin:
                         "Do not mix unrelated policy, contact, or showroom details into the answer. "
                         "Prefer the enrichment summary when it is present; use the raw chunk excerpt only if the summary is missing or insufficient. "
                         "Use a natural, shopper-friendly tone that adapts to the user's phrasing. "
+                        "Never use em dashes or en dashes; use commas, periods, parentheses, or ASCII hyphens instead. "
                         "Start with the direct answer. Do not use filler like 'Here is what I found'. "
                         "If multiple sources support the same answer, synthesize them into one short summary before replying. "
                         "Do not answer source-by-source or list snippets separately. "

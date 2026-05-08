@@ -176,6 +176,26 @@ async def test_build_clarify_policy_knowledge_unavailable_uses_contact_focus_fol
 
 
 @pytest.mark.asyncio
+async def test_build_clarify_policy_knowledge_clarification_prefers_llm_question() -> None:
+    question = "Which product or SKU are you asking about?"
+
+    result = await ComponentPipeline._build_clarify_policy(
+        reason="knowledge_needs_clarification",
+        user_text="So is the product from China or made in Thailand?",
+        reply_language="en-US",
+        products=[],
+        attribute_filters={},
+        needs_knowledge=True,
+        requested_fields=[],
+        clarify_question=question,
+    )
+
+    assert result["reason"] == "knowledge_needs_clarification"
+    assert result["questions"] == [question]
+    assert result["extra_debug"]["knowledge_clarify_focus"] == "general"
+
+
+@pytest.mark.asyncio
 async def test_build_clarify_policy_fallback_vague_store_request_uses_broad_scope_prompt() -> None:
     result = await ComponentPipeline._build_clarify_policy(
         reason="fallback_vague_store_request",

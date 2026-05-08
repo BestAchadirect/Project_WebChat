@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Set
 
-from app.schemas.chat import ChatComponent
+from app.schemas.chat import ChatComponent, product_attributes_to_component_payload
 from app.services.chat.components.base import BaseComponent
 from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.types import ComponentType
@@ -27,7 +27,7 @@ class ProductDetailComponent(BaseComponent):
         product = context.canonical_products[0] if context.canonical_products else None
         if product is None:
             return ChatComponent(type=self.component_type, data={"product": None})
-        attrs = dict(product.attributes or {})
+        attrs = product_attributes_to_component_payload(dict(product.attributes or {}))
         master_code = str(attrs.get("master_code") or product.title or product.sku or "").strip()
         return ChatComponent(
             type=self.component_type,

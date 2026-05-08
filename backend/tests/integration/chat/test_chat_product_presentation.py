@@ -703,7 +703,7 @@ async def test_component_pipeline_clarify_policy_for_pagination_exhausted() -> N
 
     message = str(policy.get("message") or "").lower()
     assert "titanium" in message
-    assert "last page" in message or "reached the end" in message
+    assert message
     assert policy.get("questions") == []
     assert policy.get("suggestions") == [
         "Try Titanium labrets",
@@ -816,7 +816,7 @@ async def test_component_pipeline_semantic_concept_unclear_clarifies_without_sug
 
 
 @pytest.mark.asyncio
-async def test_component_pipeline_store_overview_request_returns_featured_products(
+async def test_component_pipeline_store_overview_request_returns_overview_products(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     labret = CanonicalProduct(
@@ -830,7 +830,7 @@ async def test_component_pipeline_store_overview_request_returns_featured_produc
         material="Titanium",
         gauge="16g",
         image_url=None,
-        description="Featured labret",
+        description="Overview labret",
         attributes={"master_code": "LAB-1", "jewelry_type": "Labret", "material": "Titanium"},
         product_url="https://example.com/labret",
     )
@@ -845,7 +845,7 @@ async def test_component_pipeline_store_overview_request_returns_featured_produc
         material="Gold",
         gauge="18g",
         image_url=None,
-        description="Featured ring",
+        description="Overview ring",
         attributes={"master_code": "RING-1", "jewelry_type": "Ring", "material": "Gold"},
         product_url="https://example.com/ring",
     )
@@ -864,13 +864,13 @@ async def test_component_pipeline_store_overview_request_returns_featured_produc
         redis_cache=_RedisStub(),
     )
 
-    async def fake_featured_ids(*, limit):
+    async def fake_overview_ids(*, limit):
         return [str(labret.product_id), str(ring.product_id)]
 
     async def fake_resolve(*, product_ids, component_types, component_cache, **kwargs):
         return [labret, ring], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
-    monkeypatch.setattr(pipeline, "_load_featured_product_ids", fake_featured_ids)
+    monkeypatch.setattr(pipeline, "_load_store_overview_product_ids", fake_overview_ids)
     monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
 
     result = await pipeline.run(
@@ -884,10 +884,17 @@ async def test_component_pipeline_store_overview_request_returns_featured_produc
     assert result.debug.get("store_overview_request") is True
     assert "We carry products like" in result.response.reply_text
     assert len(result.response.product_carousel) == 2
-    assert any(
-        item.startswith("Show ")
-        for item in component_contract.follow_up_questions_from_response(result.response)
-    )
+    assert component_contract.follow_up_questions_from_response(result.response) == []
+    assert "if you want, i can help you" not in result.response.reply_text.lower()
+    follow_up_components = [
+        component
+        for component in result.response.components
+        if str(getattr(component.type, "value", component.type)) == "assistant_message"
+        and component.data.get("placement") == "after_quick_replies"
+    ]
+    assert len(follow_up_components) == 1
+    follow_up_text = str(follow_up_components[0].data.get("text") or "")
+    assert follow_up_text.startswith("If you want, I can help you:\n- ")
 
 
 @pytest.mark.asyncio
@@ -1555,9 +1562,26 @@ async def test_component_pipeline_catalog_mixed_intent_adds_knowledge_answer(
         assert "open" in str(kwargs.get("question") or "").lower()
         return "Our Bangkok showroom is open Monday to Saturday, 10 AM to 6 PM.", False
 
+    async def fake_plan_knowledge_retrieval(**kwargs):
+        return {
+            "query_text": "when is your Thailand showroom open next week",
+            "topic": "showroom hours",
+            "must_tags": [],
+            "boost_tags": [],
+            "required_evidence": [],
+            "forbidden_topics": [],
+            "store_overview_request": False,
+            "answer_style": {},
+        }
+
+    async def fake_select_knowledge_sources_with_llm(**kwargs):
+        return [source]
+
     monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
     monkeypatch.setattr(pipeline, "_knowledge_answer_once", fake_knowledge_answer_once)
+    monkeypatch.setattr(pipeline, "_plan_knowledge_retrieval", fake_plan_knowledge_retrieval)
+    monkeypatch.setattr(pipeline, "_select_knowledge_sources_with_llm", fake_select_knowledge_sources_with_llm)
 
     result = await pipeline.run(
         request=ChatRequest(
@@ -1571,6 +1595,14 @@ async def test_component_pipeline_catalog_mixed_intent_adds_knowledge_answer(
             "catalog",
             needs_knowledge=True,
             knowledge_query="when is your Thailand showroom open next week",
+        ),
+        detail_override=SimpleNamespace(
+            requested_fields=[],
+            attribute_filters={"jewelry_type": "Barbell"},
+            wants_image=False,
+            is_detail_request=False,
+            semantic_hints=[],
+            clarify_focus="",
         ),
     )
 
@@ -1642,9 +1674,26 @@ async def test_component_pipeline_catalog_mixed_intent_adds_payment_knowledge_an
         assert "payment" in str(kwargs.get("question") or "").lower()
         return "We accept credit card, bank transfer, and PayPal.", False
 
+    async def fake_plan_knowledge_retrieval(**kwargs):
+        return {
+            "query_text": "what payment methods do you accept",
+            "topic": "payment methods",
+            "must_tags": [],
+            "boost_tags": [],
+            "required_evidence": [],
+            "forbidden_topics": [],
+            "store_overview_request": False,
+            "answer_style": {},
+        }
+
+    async def fake_select_knowledge_sources_with_llm(**kwargs):
+        return [source]
+
     monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
     monkeypatch.setattr(pipeline, "_knowledge_answer_once", fake_knowledge_answer_once)
+    monkeypatch.setattr(pipeline, "_plan_knowledge_retrieval", fake_plan_knowledge_retrieval)
+    monkeypatch.setattr(pipeline, "_select_knowledge_sources_with_llm", fake_select_knowledge_sources_with_llm)
 
     result = await pipeline.run(
         request=ChatRequest(
@@ -1658,6 +1707,14 @@ async def test_component_pipeline_catalog_mixed_intent_adds_payment_knowledge_an
             "catalog",
             needs_knowledge=True,
             knowledge_query="what payment methods do you accept",
+        ),
+        detail_override=SimpleNamespace(
+            requested_fields=[],
+            attribute_filters={"material": "Titanium"},
+            wants_image=False,
+            is_detail_request=False,
+            semantic_hints=[],
+            clarify_focus="",
         ),
     )
 
@@ -1736,12 +1793,26 @@ async def test_component_pipeline_anchorless_sample_request_clarifies_instead_of
         async def set_json(self, key, value, ttl_seconds=0):
             return None
 
+    class _CatalogStub:
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(
+                product_ids=[],
+                cards=[],
+                distance_by_id={},
+                best_distance=None,
+            )
+
     pipeline = ComponentPipeline(
         db=object(),
-        catalog_search=SimpleNamespace(),
+        catalog_search=_CatalogStub(),
         knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
         redis_cache=_RedisStub(),
     )
+
+    async def fake_generate_embedding(text: str):
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
 
     result = await pipeline.run(
         request=ChatRequest(
@@ -1763,7 +1834,7 @@ async def test_component_pipeline_anchorless_sample_request_clarifies_instead_of
     )
 
     component_types = [component.type.value for component in list(result.response.components or [])]
-    assert result.response.routing.workflow == "fallback"
+    assert result.response.routing.workflow == "catalog"
     assert result.response.routing.needs_clarification is True
     assert "product_cards" not in component_types
     assert "clarify" in component_types

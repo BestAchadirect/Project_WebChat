@@ -591,7 +591,7 @@ class PipelinePresentationMixin:
 
             return {
                 "components": list(finalized_contract["components"] or []),
-                "assistant_text": str(assistant_text or ""),
+                "assistant_text": str(finalized_contract.get("assistant_text") or assistant_text or ""),
                 "carousel_msg": carousel_msg,
                 "product_carousel": list(finalized_contract["product_carousel"] or []),
                 "follow_up_questions": list(finalized_contract["follow_up_questions"] or []),

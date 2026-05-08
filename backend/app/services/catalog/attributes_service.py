@@ -20,6 +20,7 @@ class EAVService:
 
     def __init__(self) -> None:
         self._searchable_attribute_cache: Tuple[float, Tuple[str, ...]] = (0.0, tuple())
+        self._searchable_attribute_metadata_cache: Tuple[float, Tuple[Dict[str, Any], ...]] = (0.0, tuple())
 
     @staticmethod
     def _normalize_name(name: str) -> str:
@@ -93,10 +94,30 @@ class EAVService:
         ttl_seconds: int = 300,
     ) -> List[str]:
         """Return enabled attributes that currently have at least one catalog value."""
+        metadata = await self.get_searchable_attribute_metadata(
+            db,
+            exclude_internal=exclude_internal,
+            ttl_seconds=ttl_seconds,
+        )
+        names = [str(item.get("name") or "").strip().lower() for item in metadata if str(item.get("name") or "").strip()]
+        if exclude_internal:
+            names = [name for name in names if name not in self._INTERNAL_SEARCH_ATTRIBUTE_NAMES]
+        deduped = tuple(dict.fromkeys(names))
+        self._searchable_attribute_cache = (time.time(), deduped)
+        return list(deduped)
+
+    async def get_searchable_attribute_metadata(
+        self,
+        db: AsyncSession,
+        *,
+        exclude_internal: bool = True,
+        ttl_seconds: int = 300,
+    ) -> List[Dict[str, Any]]:
+        """Return enabled searchable attributes with field behavior metadata for the LLM."""
         now = time.time()
-        cached_at, cached_names = self._searchable_attribute_cache
-        if cached_names and cached_at + max(1, int(ttl_seconds)) > now:
-            return list(cached_names)
+        cached_at, cached_metadata = self._searchable_attribute_metadata_cache
+        if cached_metadata and cached_at + max(1, int(ttl_seconds)) > now:
+            return [dict(item) for item in cached_metadata]
 
         exists_values = (
             select(ProductAttributeValue.id)
@@ -105,22 +126,37 @@ class EAVService:
             .exists()
         )
         stmt = (
-            select(AttributeDefinition.name)
+            select(
+                AttributeDefinition.name,
+                AttributeDefinition.display_name,
+                AttributeDefinition.data_type,
+                AttributeDefinition.is_multivalue,
+            )
             .where(AttributeDefinition.is_enabled.is_(True))
             .where(exists_values)
             .order_by(AttributeDefinition.display_order.asc(), AttributeDefinition.name.asc())
         )
-        rows = list((await db.execute(stmt)).scalars().all() or [])
-        names = [
-            str(name or "").strip().lower()
-            for name in rows
-            if str(name or "").strip()
-        ]
-        if exclude_internal:
-            names = [name for name in names if name not in self._INTERNAL_SEARCH_ATTRIBUTE_NAMES]
-        deduped = tuple(dict.fromkeys(names))
-        self._searchable_attribute_cache = (now, deduped)
-        return list(deduped)
+        rows = (await db.execute(stmt)).all()
+        metadata: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for name, display_name, data_type, is_multivalue in rows:
+            clean_name = str(name or "").strip().lower()
+            if not clean_name or clean_name in seen:
+                continue
+            if exclude_internal and clean_name in self._INTERNAL_SEARCH_ATTRIBUTE_NAMES:
+                continue
+            seen.add(clean_name)
+            metadata.append(
+                {
+                    "name": clean_name,
+                    "display_name": str(display_name or self._default_display_name(clean_name)),
+                    "data_type": str(data_type or "string"),
+                    "is_multivalue": bool(is_multivalue) or clean_name == "category",
+                }
+            )
+        cached = tuple(dict(item) for item in metadata)
+        self._searchable_attribute_metadata_cache = (now, cached)
+        return [dict(item) for item in cached]
 
     async def ensure_definitions(
         self,
@@ -460,7 +496,7 @@ class EAVService:
         for product_id, name, is_multivalue, value, value_norm, _row_id in rows:
             item = payload.setdefault(product_id, {})
             key_name = str(name)
-            if bool(is_multivalue):
+            if bool(is_multivalue) or key_name == "category":
                 if value is None or not str(value).strip():
                     continue
                 bucket_key = (product_id, key_name)

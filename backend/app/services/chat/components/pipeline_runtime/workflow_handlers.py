@@ -104,9 +104,9 @@ class PipelineWorkflowHandlersMixin(PipelineWorkflowCatalogMixin, PipelineWorkfl
                 return
             if not store_overview_request:
                 return
-            featured_started = time.perf_counter()
-            state.catalog.product_ids = await self._load_featured_product_ids(limit=result_fetch_limit)
-            spans["db_product_lookup_ms"] += (time.perf_counter() - featured_started) * 1000.0
+            overview_started = time.perf_counter()
+            state.catalog.product_ids = await self._load_store_overview_product_ids(limit=result_fetch_limit)
+            spans["db_product_lookup_ms"] += (time.perf_counter() - overview_started) * 1000.0
             state.retrieval.result_count = len(state.catalog.product_ids)
             state.retrieval.source = ComponentSource.SQL
             debug_meta["store_overview_candidate_count"] = int(state.retrieval.result_count)

@@ -98,8 +98,6 @@ def test_record_mapping_keeps_missing_optional_fields_as_none() -> None:
     assert payload is not None
     assert payload["price"] is None
     assert payload["visibility"] is None
-    assert payload["is_featured"] is None
-    assert payload["priority"] is None
 
 
 def test_record_mapping_stores_klevu_id_separate_from_object_id() -> None:

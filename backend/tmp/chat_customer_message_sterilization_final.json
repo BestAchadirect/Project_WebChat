@@ -1,0 +1,223 @@
+{
+  "summary": {
+    "cases": 4,
+    "turns": 5,
+    "workflows": {
+      "catalog": 5
+    },
+    "issues": {},
+    "issue_turn_count": 0,
+    "by_group": {
+      "ambiguous_catalog": {
+        "turns": 2,
+        "workflows": {
+          "catalog": 2
+        },
+        "issues": {}
+      },
+      "multi_turn": {
+        "turns": 2,
+        "workflows": {
+          "catalog": 2
+        },
+        "issues": {}
+      },
+      "typos": {
+        "turns": 1,
+        "workflows": {
+          "catalog": 1
+        },
+        "issues": {}
+      }
+    }
+  },
+  "results": [
+    {
+      "case_id": "catalog_ambiguous_sterilization_product",
+      "group": "ambiguous_catalog",
+      "turn_index": 1,
+      "message": "Do you have any sterilization product?",
+      "locale": "en-US",
+      "conversation_id": 1223,
+      "expected_workflow": "catalog",
+      "expected_workflows": [
+        "catalog"
+      ],
+      "expected_needs_clarification": false,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User asked broadly about sterilization products without specifying type or intended use; product database retrieval is needed to show relevant items.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Sterilized. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 215,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 197.64
+      },
+      "runner_latency_ms": 12505.59,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_ambiguous_opal",
+      "group": "ambiguous_catalog",
+      "turn_index": 1,
+      "message": "Can I see sterilization with opal?",
+      "locale": "en-US",
+      "conversation_id": 1224,
+      "expected_workflow": "catalog",
+      "expected_workflows": [
+        "catalog"
+      ],
+      "expected_needs_clarification": false,
+      "expected_allow_no_products": true,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "The request likely asks to view a product or images ('see sterilization with opal') but no product anchor or SKU is provided, so product retrieval is needed and a clarifying question is required.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "I couldn't find products matching all of these details: Category Opal Body Jewelry and Sterilized. I can broaden the search by removing one filter, or show the closest matching product group separately.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 852.7
+      },
+      "runner_latency_ms": 12216.31,
+      "issues": []
+    },
+    {
+      "case_id": "typo_sterilized",
+      "group": "typos",
+      "turn_index": 1,
+      "message": "Do u have strelized item?",
+      "locale": "en-US",
+      "conversation_id": 1225,
+      "expected_workflow": "catalog",
+      "expected_workflows": [
+        "catalog"
+      ],
+      "expected_needs_clarification": false,
+      "expected_allow_no_products": false,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User asked if store has 'strelized' items but didn't specify product type or SKU; needs product lookup, so product_information with a clarifying question is required.",
+      "confidence": 0.89,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Sterilized. These options are durable and versatile.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 215,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 165.44
+      },
+      "runner_latency_ms": 12362.93,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_sterilization_correction",
+      "group": "multi_turn",
+      "turn_index": 1,
+      "message": "I want to buy sterilization with opal",
+      "locale": "en-US",
+      "conversation_id": 1226,
+      "expected_workflow": "catalog",
+      "expected_workflows": [
+        "catalog"
+      ],
+      "expected_needs_clarification": false,
+      "expected_allow_no_products": true,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested to buy but gave an ambiguous product description ('sterilization with opal'); product retrieval is needed but product anchor is missing.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "I couldn't find products matching all of these details: Category Opal Body Jewelry and Sterilized. I can broaden the search by removing one filter, or show the closest matching product group separately.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 692.92
+      },
+      "runner_latency_ms": 11848.74,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_sterilization_correction",
+      "group": "multi_turn",
+      "turn_index": 2,
+      "message": "No i mean i want to see product with sterilization with opal color",
+      "locale": "en-US",
+      "conversation_id": 1226,
+      "expected_workflow": "catalog",
+      "expected_workflows": [
+        "catalog"
+      ],
+      "expected_needs_clarification": null,
+      "expected_allow_no_products": true,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User requested to see products with a sterilization feature in opal color but did not specify a product category or other filters; product database retrieval is needed.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "I couldn't find products matching all of these details: Category Opal Body Jewelry and Sterilized. I can broaden the search by removing one filter, or show the closest matching product group separately.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 672.45
+      },
+      "runner_latency_ms": 16529.67,
+      "issues": []
+    }
+  ]
+}

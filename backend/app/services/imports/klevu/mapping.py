@@ -402,9 +402,6 @@ class KlevuMappingMixin:
             record.get("link"),
         )
         visibility = parse_bool(self._first_non_empty(record.get("visibility"), record.get("visible")))
-        is_featured = parse_bool(self._first_non_empty(record.get("is_featured"), record.get("featured")))
-        priority = parse_int(self._first_non_empty(record.get("priority"), record.get("rank"), record.get("sort_order")))
-
         attributes = self._extract_attributes(record)
         if raw_sku != canonical_sku:
             attributes["source_raw_sku"] = raw_sku
@@ -435,7 +432,5 @@ class KlevuMappingMixin:
             "attributes": attributes,
             "legacy_sku": legacy_sku,
             "visibility": visibility,
-            "is_featured": is_featured,
-            "priority": priority,
             "updated_at": updated_at,
         }

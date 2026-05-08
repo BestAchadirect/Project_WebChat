@@ -117,6 +117,19 @@ def _is_company_info_request(understanding: UnderstandingResult) -> bool:
     return bool(understanding.store_overview_request)
 
 
+def _is_unscoped_general_task(understanding: UnderstandingResult) -> bool:
+    intent = str(getattr(understanding, "intent", "") or "").strip().lower()
+    if intent != "general_talking":
+        return False
+    response_policy = str(getattr(understanding, "response_policy", "") or "").strip().lower()
+    if response_policy != "answer_from_allowed_capabilities":
+        return False
+    return bool(
+        str(getattr(understanding, "pending_task_type", "") or "").strip()
+        and str(getattr(understanding, "missing_slot", "") or "").strip()
+    )
+
+
 def _derive_internal_workflow(understanding: UnderstandingResult) -> str:
     if not str(understanding.normalized_text or "").strip():
         return "clarify"
@@ -133,10 +146,14 @@ def _derive_internal_workflow(understanding: UnderstandingResult) -> str:
                 return "policy_info"
             return "general_talking"
         if intent == "knowledge_policy":
+            if bool(understanding.needs_products) and bool(understanding.needs_knowledge):
+                return "mixed"
             if _is_company_info_request(understanding):
                 return "company_info"
             return "policy_info"
         if intent == "general_talking":
+            if _is_unscoped_general_task(understanding):
+                return "off_topic"
             if _is_contact_like_request(understanding):
                 return "company_info"
             if bool(understanding.needs_knowledge) or response_policy == "answer_from_retrieved_data":
@@ -144,10 +161,19 @@ def _derive_internal_workflow(understanding: UnderstandingResult) -> str:
             return "general_talking"
         if intent == "off_topic":
             return "off_topic"
+        if intent == "clarify":
+            if bool(understanding.needs_products) and bool(understanding.needs_knowledge):
+                return "mixed"
+            if bool(understanding.needs_products):
+                return "product_detail" if list(understanding.sku_tokens or []) else "catalog_search"
+            if bool(understanding.needs_knowledge):
+                return "company_info" if _is_company_info_request(understanding) else "policy_info"
+            response_policy = str(getattr(understanding, "response_policy", "") or "").strip().lower()
+            if response_policy == "safe_redirect":
+                return "off_topic"
+            return "clarify"
         if legacy_workflow in {"company_info", "policy_info", "mixed", "smalltalk", "off_topic", "catalog_search", "product_detail"}:
             return legacy_workflow
-        if intent == "clarify":
-            return "clarify"
         return "clarify"
     return "clarify"
 
@@ -166,8 +192,12 @@ def _derive_public_workflow(understanding: UnderstandingResult) -> str:
                 return "knowledge"
             return "general_talking"
         if intent == "knowledge_policy":
+            if bool(understanding.needs_products) and bool(understanding.needs_knowledge):
+                return "catalog"
             return "knowledge" if bool(understanding.needs_knowledge) else "general_talking"
         if intent == "general_talking":
+            if _is_unscoped_general_task(understanding):
+                return "off_topic"
             if _is_contact_like_request(understanding):
                 return "knowledge"
             if bool(understanding.needs_knowledge) or response_policy == "answer_from_retrieved_data":
@@ -175,6 +205,15 @@ def _derive_public_workflow(understanding: UnderstandingResult) -> str:
             return "general_talking"
         if intent == "off_topic":
             return "off_topic"
+        if intent == "clarify":
+            if bool(understanding.needs_products):
+                return "catalog"
+            if bool(understanding.needs_knowledge):
+                return "knowledge"
+            response_policy = str(getattr(understanding, "response_policy", "") or "").strip().lower()
+            if response_policy == "safe_redirect":
+                return "off_topic"
+            return "fallback"
         if legacy_workflow in {"company_info", "policy_info"}:
             return "knowledge"
         if legacy_workflow in {"mixed", "catalog_search", "product_detail"}:
@@ -183,8 +222,6 @@ def _derive_public_workflow(understanding: UnderstandingResult) -> str:
             return "general_talking"
         if legacy_workflow == "off_topic":
             return "off_topic"
-        if intent == "clarify":
-            return "fallback"
         return "fallback"
     return "fallback"
 

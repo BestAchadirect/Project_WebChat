@@ -7,7 +7,7 @@ import json
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,13 @@ class ProductSearchResult:
 class _StructuredCacheEntry:
     payload: Dict[str, Any]
     expires_at: float
+
+
+@dataclass(frozen=True)
+class _AttributeFilterSlot:
+    attribute_id: int
+    key: str
+    expected_norm: str
 
 
 class CatalogProductSearchService:
@@ -95,6 +102,36 @@ class CatalogProductSearchService:
         return normalize_text(value)
 
     @staticmethod
+    def _split_filter_values(value: Any, *, is_multivalue: bool) -> List[Any]:
+        if not is_multivalue:
+            return [value]
+
+        values: List[Any] = []
+
+        def _collect(raw: Any) -> None:
+            if raw is None:
+                return
+            if isinstance(raw, (list, tuple, set)):
+                for nested in raw:
+                    _collect(nested)
+                return
+            text = str(raw or "").strip()
+            if not text:
+                return
+            if ";;" in text:
+                for token in text.split(";;"):
+                    _collect(token)
+                return
+            if ";" in text:
+                for token in text.split(";"):
+                    _collect(token)
+                return
+            values.append(text)
+
+        _collect(value)
+        return values
+
+    @staticmethod
     def _like_condition(column, expected_norm: str):
         return func.lower(func.coalesce(column, "")).like(f"%{expected_norm}%")
 
@@ -117,6 +154,149 @@ class CatalogProductSearchService:
             ProductAttributeValue.attribute_id == attribute_id,
             value_expr == expected_norm,
         )
+
+    @classmethod
+    def _attribute_filter_slots(
+        cls,
+        *,
+        definitions: Mapping[str, Any],
+        clean_filters: Mapping[str, Any],
+    ) -> List[_AttributeFilterSlot]:
+        slots: List[_AttributeFilterSlot] = []
+        seen: set[Tuple[int, str]] = set()
+        for name, expected in dict(clean_filters or {}).items():
+            definition = definitions.get(name)
+            if not definition:
+                continue
+            is_multivalue = bool(getattr(definition, "is_multivalue", False)) or name == "category"
+            for raw_value in cls._split_filter_values(expected, is_multivalue=is_multivalue):
+                expected_norm = cls._normalize_filter_value(raw_value)
+                if not expected_norm:
+                    continue
+                dedupe_key = (int(definition.id), expected_norm)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                slots.append(
+                    _AttributeFilterSlot(
+                        attribute_id=int(definition.id),
+                        key=str(name),
+                        expected_norm=expected_norm,
+                    )
+                )
+        return slots
+
+    @classmethod
+    def _attribute_slot_exists(cls, slot: _AttributeFilterSlot):
+        return (
+            select(ProductAttributeValue.id)
+            .where(ProductAttributeValue.product_id == Product.id)
+            .where(
+                cls._eav_filter_condition(
+                    attribute_id=slot.attribute_id,
+                    key=slot.key,
+                    expected_norm=slot.expected_norm,
+                )
+            )
+            .exists()
+        )
+
+    @staticmethod
+    def _master_partition_expr():
+        return func.lower(func.coalesce(Product.master_code, Product.sku))
+
+    @staticmethod
+    def _representative_rank_exprs() -> Dict[str, Any]:
+        return {
+            "stock_rank": case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
+            "image_rank": case((func.length(func.coalesce(Product.image_url, "")) > 0, 0), else_=1),
+        }
+
+    async def _products_by_ids(self, product_ids: Sequence[Any]) -> List[Product]:
+        ids = [item for item in list(product_ids or []) if item]
+        if not ids:
+            return []
+        result = await self.db.execute(select(Product).where(Product.id.in_(ids)))
+        products_by_id = {str(product.id): product for product in result.scalars().all()}
+        return [products_by_id[str(product_id)] for product_id in ids if str(product_id) in products_by_id]
+
+    async def _master_representative_product_ids(
+        self,
+        *,
+        filter_slots: Sequence[_AttributeFilterSlot],
+        limit: int,
+        search_text_norm: str = "",
+    ) -> List[Any]:
+        slots = list(filter_slots or [])
+        text_filter = str(search_text_norm or "").strip()
+        if not slots and not text_filter:
+            return []
+
+        rank_exprs = self._representative_rank_exprs()
+        row_number = func.row_number().over(
+            partition_by=self._master_partition_expr(),
+            order_by=(
+                rank_exprs["stock_rank"].asc(),
+                rank_exprs["image_rank"].asc(),
+                Product.created_at.desc(),
+                Product.sku.asc(),
+            ),
+        ).label("rn")
+        ranked_stmt = (
+            select(
+                Product.id.label("product_id"),
+                Product.master_code.label("master_code"),
+                Product.sku.label("sku"),
+                Product.created_at.label("created_at"),
+                rank_exprs["stock_rank"].label("stock_rank"),
+                rank_exprs["image_rank"].label("image_rank"),
+                row_number,
+            )
+            .where(Product.is_active.is_(True))
+        )
+        for slot in slots:
+            ranked_stmt = ranked_stmt.where(self._attribute_slot_exists(slot))
+        if text_filter:
+            ranked_stmt = ranked_stmt.where(
+                func.lower(func.coalesce(Product.search_text, "")).like(f"%{text_filter}%")
+            )
+
+        ranked = ranked_stmt.subquery()
+        stmt = (
+            select(ranked.c.product_id)
+            .where(ranked.c.rn == 1)
+            .order_by(
+                ranked.c.stock_rank.asc(),
+                ranked.c.image_rank.asc(),
+                ranked.c.created_at.desc(),
+                ranked.c.master_code.asc(),
+                ranked.c.sku.asc(),
+            )
+            .limit(max(1, int(limit or 1)))
+        )
+        result = await self.db.execute(stmt)
+        return [row[0] for row in result.all()]
+
+    async def _count_master_representatives(
+        self,
+        *,
+        filter_slots: Sequence[_AttributeFilterSlot],
+        search_text_norm: str = "",
+    ) -> int:
+        slots = list(filter_slots or [])
+        text_filter = str(search_text_norm or "").strip()
+        if not slots and not text_filter:
+            return 0
+        stmt = (
+            select(func.count(func.distinct(self._master_partition_expr())))
+            .where(Product.is_active.is_(True))
+        )
+        for slot in slots:
+            stmt = stmt.where(self._attribute_slot_exists(slot))
+        if text_filter:
+            stmt = stmt.where(func.lower(func.coalesce(Product.search_text, "")).like(f"%{text_filter}%"))
+        result = await self.db.execute(stmt)
+        return int(result.scalar() or 0)
 
     @staticmethod
     def _structured_cache_key(
@@ -536,6 +716,7 @@ class CatalogProductSearchService:
             )
 
         candidates: List[Product] = []
+        master_product_ids: List[Any] = []
         lookup_started = time.perf_counter()
         if not candidates and clean_sku:
             sku_stmt = (
@@ -550,58 +731,62 @@ class CatalogProductSearchService:
         if not candidates and clean_filters:
             definitions = await eav_service.get_definitions_by_name(self.db, list(clean_filters.keys()))
             if len(definitions) == len(clean_filters):
-                if len(clean_filters) > 1:
-                    conditions = []
-                    filtered_count = 0
-                    for name, expected in clean_filters.items():
-                        definition = definitions.get(name)
-                        if not definition:
-                            conditions = []
-                            break
-                        expected_norm = self._normalize_filter_value(expected)
-                        conditions.append(
-                            self._eav_filter_condition(
-                                attribute_id=int(definition.id),
-                                key=name,
-                                expected_norm=expected_norm,
+                filter_slots = self._attribute_filter_slots(
+                    definitions=definitions,
+                    clean_filters=clean_filters,
+                )
+                if filter_slots:
+                    master_product_ids = await self._master_representative_product_ids(
+                        filter_slots=filter_slots,
+                        limit=max(1, int(limit)),
+                    )
+                    if not master_product_ids and len(filter_slots) == 1:
+                        first_key = "material" if "material" in clean_filters else sorted(clean_filters.keys())[0]
+                        first_value_norm = filter_slots[0].expected_norm
+                        if first_key == "material" and first_value_norm:
+                            master_product_ids = await self._master_representative_product_ids(
+                                filter_slots=[],
+                                search_text_norm=first_value_norm,
+                                limit=max(1, int(limit)),
                             )
+                    if master_product_ids and not return_ids_only:
+                        candidates = await self._products_by_ids(master_product_ids)
+                if not master_product_ids and len(filter_slots) > 1:
+                    product_stmt = (
+                        select(Product)
+                        .where(Product.is_active.is_(True))
+                        .order_by(
+                            case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
+                            Product.created_at.desc(),
                         )
-                        filtered_count += 1
-                    if conditions:
-                        refined_subq = (
+                        .limit(max(1, int(limit)))
+                    )
+                    for slot in filter_slots:
+                        slot_subq = (
                             select(ProductAttributeValue.product_id)
-                            .where(or_(*conditions))
-                            .group_by(ProductAttributeValue.product_id)
-                            .having(
-                                func.count(func.distinct(ProductAttributeValue.attribute_id))
-                                == filtered_count
+                            .where(
+                                self._eav_filter_condition(
+                                    attribute_id=slot.attribute_id,
+                                    key=slot.key,
+                                    expected_norm=slot.expected_norm,
+                                )
                             )
                             .subquery()
                         )
-                        product_stmt = (
-                            select(Product)
-                            .where(Product.id.in_(select(refined_subq.c.product_id)))
-                            .where(Product.is_active.is_(True))
-                            .order_by(
-                                case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
-                                Product.created_at.desc(),
-                            )
-                            .limit(max(1, int(limit)))
-                        )
-                        product_result = await self.db.execute(product_stmt)
-                        candidates = list(product_result.scalars().all())
-                else:
+                        product_stmt = product_stmt.where(Product.id.in_(select(slot_subq.c.product_id)))
+                    product_result = await self.db.execute(product_stmt)
+                    candidates = list(product_result.scalars().all())
+                elif not master_product_ids and len(filter_slots) == 1:
                     first_key = "material" if "material" in clean_filters else sorted(clean_filters.keys())[0]
-                    first_def = definitions[first_key]
-                    first_value = clean_filters[first_key]
-                    first_value_norm = self._normalize_filter_value(first_value)
+                    first_slot = filter_slots[0]
+                    first_value_norm = first_slot.expected_norm
                     material_fallback_used = False
                     candidate_stmt = (
                         select(ProductAttributeValue.product_id)
                         .where(
                             self._eav_filter_condition(
-                                attribute_id=int(first_def.id),
-                                key=first_key,
+                                attribute_id=first_slot.attribute_id,
+                                key=first_slot.key,
                                 expected_norm=first_value_norm,
                             )
                         )
@@ -637,7 +822,7 @@ class CatalogProductSearchService:
                         candidates = list(product_result.scalars().all())
         self._add_metric("db_product_lookup_ms", (time.perf_counter() - lookup_started) * 1000.0)
 
-        product_ids = [product.id for product in candidates[: max(1, int(limit))]]
+        product_ids = list(master_product_ids or [product.id for product in candidates[: max(1, int(limit))]])
         cards: List[ProductCard] = []
         distance_by_id: Dict[str, float] = {}
         if not return_ids_only:
@@ -664,6 +849,7 @@ class CatalogProductSearchService:
                 "structured_query_cache_hit": False,
                 "structured_candidate_cap": cap,
                 "structured_filter_count": len(clean_filters),
+                "structured_master_first_used": bool(master_product_ids),
                 "structured_used_sku": bool(clean_sku),
             },
         )
@@ -691,14 +877,21 @@ class CatalogProductSearchService:
             if len(definitions) != len(clean_filters):
                 return 0
 
+            filter_slots = self._attribute_filter_slots(
+                definitions=definitions,
+                clean_filters=clean_filters,
+            )
+            if not filter_slots:
+                return 0
+
             first_key = "material" if "material" in clean_filters else sorted(clean_filters.keys())[0]
-            first_def = definitions[first_key]
-            first_value_norm = self._normalize_filter_value(clean_filters[first_key])
+            first_slot = filter_slots[0]
+            first_value_norm = first_slot.expected_norm
             material_fallback_used = False
-            if first_key == "material" and first_value_norm:
+            if first_key == "material" and first_value_norm and len(filter_slots) == 1:
                 first_condition = self._eav_filter_condition(
-                    attribute_id=int(first_def.id),
-                    key=first_key,
+                    attribute_id=first_slot.attribute_id,
+                    key=first_slot.key,
                     expected_norm=first_value_norm,
                 )
                 material_exists_stmt = (
@@ -708,53 +901,15 @@ class CatalogProductSearchService:
                 )
                 material_fallback_used = (await self.db.execute(material_exists_stmt)).first() is None
 
-            conditions = []
-            filtered_count = 0
-            for name, expected in clean_filters.items():
-                if material_fallback_used and name == "material":
-                    continue
-                definition = definitions.get(name)
-                if not definition:
-                    return 0
-                expected_norm = self._normalize_filter_value(expected)
-                conditions.append(
-                    self._eav_filter_condition(
-                        attribute_id=int(definition.id),
-                        key=name,
-                        expected_norm=expected_norm,
-                    )
-                )
-                filtered_count += 1
-
-            if not conditions:
-                if material_fallback_used and first_value_norm:
-                    stmt = (
-                        select(func.count(Product.id))
-                        .where(Product.is_active.is_(True))
-                        .where(func.lower(func.coalesce(Product.search_text, "")).like(f"%{first_value_norm}%"))
-                    )
-                    result = await self.db.execute(stmt)
-                    return int(result.scalar() or 0)
-                return 0
-
-            refined_subq = (
-                select(ProductAttributeValue.product_id)
-                .where(or_(*conditions))
-                .group_by(ProductAttributeValue.product_id)
-                .having(func.count(func.distinct(ProductAttributeValue.attribute_id)) == filtered_count)
-                .subquery()
-            )
-            stmt = (
-                select(func.count(Product.id))
-                .where(Product.id.in_(select(refined_subq.c.product_id)))
-                .where(Product.is_active.is_(True))
-            )
             if material_fallback_used and first_value_norm:
-                stmt = stmt.where(func.lower(func.coalesce(Product.search_text, "")).like(f"%{first_value_norm}%"))
-            result = await self.db.execute(stmt)
-            return int(result.scalar() or 0)
+                return await self._count_master_representatives(
+                    filter_slots=[],
+                    search_text_norm=first_value_norm,
+                )
 
-        stmt = select(func.count(Product.id)).where(Product.is_active.is_(True))
+            return await self._count_master_representatives(filter_slots=filter_slots)
+
+        stmt = select(func.count(func.distinct(self._master_partition_expr()))).where(Product.is_active.is_(True))
         result = await self.db.execute(stmt)
         return int(result.scalar() or 0)
 

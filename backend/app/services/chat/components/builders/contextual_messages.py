@@ -14,6 +14,7 @@ from app.prompts.component_prompts import (
 )
 from app.services.ai.llm_service import llm_service
 from app.services.chat.components.context import ComponentContext
+from app.schemas.chat import sanitize_assistant_text
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,21 @@ def _reply_language(context: ComponentContext) -> str:
 
 def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
+
+
+def _clean_generated_reply(value: Any) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return ""
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        text = text[1:-1].strip()
+    if text.endswith('"}') and "{" not in text:
+        text = text[:-2].rstrip()
+    elif text.endswith("}") and "{" not in text:
+        text = text[:-1].rstrip()
+    if text.endswith('"') and text.count('"') % 2 == 1:
+        text = text[:-1].rstrip()
+    return sanitize_assistant_text(text)
 
 
 def _product_payload(context: ComponentContext, payload: Mapping[str, Any] | None = None) -> Dict[str, Any]:
@@ -152,7 +168,7 @@ async def _generate_json_reply(
         message = str((data or {}).get("message") or "").strip()
     if not message and reply_key != "reply":
         message = str((data or {}).get("reply") or "").strip()
-    return " ".join(message.split())
+    return _clean_generated_reply(message)
 
 
 async def generate_contextual_reply(

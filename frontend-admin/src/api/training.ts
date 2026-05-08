@@ -45,11 +45,10 @@ export interface Product {
     description?: string;
     in_stock: boolean;
     visibility: boolean;
-    is_featured: boolean;
-    priority: number;
     master_code?: string;
 
     // Extended attributes
+    category?: string;
     jewelry_type?: string;
     material?: string;
     length?: string;
@@ -84,6 +83,10 @@ export interface ProductFiltersResponse {
 
 export type ProductListResponse = PaginatedResponse<Product>;
 export type QALogListResponse = PaginatedResponse<QALog>;
+
+export interface MasterCodeVariantListResponse extends PaginatedResponse<Product> {
+    masterCode: string;
+}
 
 export interface Document {
     id: string;
@@ -235,7 +238,6 @@ export const productsApi = {
         pageSize?: number;
         search?: string;
         visibility?: boolean;
-        is_featured?: boolean;
         material?: string | string[];
         jewelry_type?: string | string[];
         color?: string | string[];
@@ -285,7 +287,6 @@ export const productsApi = {
     async listProductFilters(params?: {
         search?: string;
         visibility?: boolean;
-        is_featured?: boolean;
         material?: string | string[];
         jewelry_type?: string | string[];
         color?: string | string[];
@@ -334,6 +335,25 @@ export const productsApi = {
 
     async updateProduct(id: string, data: Partial<Product>): Promise<Product> {
         const response = await apiClient.put(`/products/${id}`, data);
+        return response.data;
+    },
+
+    async listMasterCodeVariants(masterCode: string, params?: {
+        page?: number;
+        pageSize?: number;
+        search?: string;
+        in_stock?: boolean;
+    }): Promise<MasterCodeVariantListResponse> {
+        const searchParams = new URLSearchParams();
+        if (params) {
+            Object.entries(params).forEach(([key, value]) => {
+                if (value !== undefined && value !== null && value !== '') {
+                    searchParams.append(key, String(value));
+                }
+            });
+        }
+        const query = searchParams.toString();
+        const response = await apiClient.get(`/products/master/${encodeURIComponent(masterCode)}/variants${query ? `?${query}` : ''}`);
         return response.data;
     },
 

@@ -1,0 +1,470 @@
+{
+  "summary": {
+    "cases": 10,
+    "turns": 12,
+    "workflows": {
+      "catalog": 9,
+      "general_talking": 1,
+      "off_topic": 1,
+      "knowledge": 1
+    },
+    "issues": {
+      "workflow_mismatch:knowledge->catalog": 1
+    },
+    "issue_turn_count": 1,
+    "by_group": {
+      "ambiguous_catalog": {
+        "turns": 3,
+        "workflows": {
+          "catalog": 3
+        },
+        "issues": {}
+      },
+      "general_talking": {
+        "turns": 1,
+        "workflows": {
+          "general_talking": 1
+        },
+        "issues": {}
+      },
+      "mixed": {
+        "turns": 1,
+        "workflows": {
+          "catalog": 1
+        },
+        "issues": {}
+      },
+      "multi_turn": {
+        "turns": 4,
+        "workflows": {
+          "catalog": 4
+        },
+        "issues": {
+          "workflow_mismatch:knowledge->catalog": 1
+        }
+      },
+      "multilingual": {
+        "turns": 1,
+        "workflows": {
+          "knowledge": 1
+        },
+        "issues": {}
+      },
+      "off_topic": {
+        "turns": 1,
+        "workflows": {
+          "off_topic": 1
+        },
+        "issues": {}
+      },
+      "typos": {
+        "turns": 1,
+        "workflows": {
+          "catalog": 1
+        },
+        "issues": {}
+      }
+    }
+  },
+  "results": [
+    {
+      "case_id": "catalog_ambiguous_opal",
+      "group": "ambiguous_catalog",
+      "turn_index": 1,
+      "message": "Can I see sterilization with opal?",
+      "locale": "en-US",
+      "conversation_id": 1050,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": true,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User query is ambiguous about whether they want product listings, specs, or a demonstration and no product/SKU was provided, so a clarifying question is required and product retrieval will likely be needed.",
+      "confidence": 0.88,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you mean a product named \u201cOpal\u201d used for sterilization, or are you asking for a demo (video/images) of sterilization performed with an Opal product\u2014if it\u2019s a product, please share the SKU or exact model?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 4203.15
+      },
+      "runner_latency_ms": 8676.98,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_ambiguous_nice",
+      "group": "ambiguous_catalog",
+      "turn_index": 1,
+      "message": "Show me something nice",
+      "locale": "en-US",
+      "conversation_id": 1051,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User request is a broad product discovery query without a specific product category or constraints, so product retrieval is needed and a clarifying question should be asked.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "What type of body jewelry are you looking for \u2014 earrings, nose rings, belly rings, or something else, and do you have a preferred material or size (gauge)?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 3,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 3913.74
+      },
+      "runner_latency_ms": 11501.22,
+      "issues": []
+    },
+    {
+      "case_id": "catalog_ambiguous_cheap",
+      "group": "ambiguous_catalog",
+      "turn_index": 1,
+      "message": "Do you have cheaper ones?",
+      "locale": "en-US",
+      "conversation_id": 1052,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User asked for cheaper ones but did not specify which product; product database retrieval is needed to find alternatives.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Which product are you referring to\u2014please provide the product name, SKU, or a brief description so I can find cheaper options?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 3,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 3154.7
+      },
+      "runner_latency_ms": 12273.28,
+      "issues": []
+    },
+    {
+      "case_id": "mixed_product_sample",
+      "group": "mixed",
+      "turn_index": 1,
+      "message": "Can I get samples before buying titanium labrets?",
+      "locale": "en-US",
+      "conversation_id": 1053,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "workflow": "catalog",
+      "needs_clarification": false,
+      "reason": "User asked about getting samples before buying a specific product type. This is a store policy/contact question (knowledge_policy) and also product-specific, so both product and knowledge retrieval are needed. The assistant should clarify what kind of sample is meant and whether the user is an individual or a business.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "product_cards",
+        "quick_replies"
+      ],
+      "assistant_text": "I found products that match your request in Labrets with Titanium G23 material. These options are lightweight and skin-friendly.",
+      "source_titles": [],
+      "meta": {
+        "source": "sql",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 129,
+        "product_display_count": 10,
+        "product_has_more": true,
+        "latency_ms": 12569.21
+      },
+      "runner_latency_ms": 22286.88,
+      "issues": []
+    },
+    {
+      "case_id": "general_really",
+      "group": "general_talking",
+      "turn_index": 1,
+      "message": "Really?",
+      "locale": "en-US",
+      "conversation_id": 1054,
+      "expected_workflow": "general_talking",
+      "expected_needs_clarification": null,
+      "workflow": "general_talking",
+      "needs_clarification": false,
+      "reason": "User utterance is a brief reaction/exclamation that does not request product or knowledge-base information.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary"
+      ],
+      "assistant_text": "Yes\u2014would you like me to double-check stock or pricing for a specific piece of body jewelry?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1381.13
+      },
+      "runner_latency_ms": 3844.49,
+      "issues": []
+    },
+    {
+      "case_id": "off_topic_code",
+      "group": "off_topic",
+      "turn_index": 1,
+      "message": "Can you write Python code for me?",
+      "locale": "en-US",
+      "conversation_id": 1055,
+      "expected_workflow": "off_topic",
+      "expected_needs_clarification": null,
+      "workflow": "off_topic",
+      "needs_clarification": false,
+      "reason": "User requests code generation, which is not a product or company policy question; classify as off-topic relative to store/product/KB intents and handled by allowed capabilities.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary"
+      ],
+      "assistant_text": "I can\u2019t help create code, but I can assist with anything related to body jewelry products, such as finding items by type, filtering by material, color, gauge or size, checking stock, price, SKUs, images, product details, or explaining store policies\u2014what would you like to do?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1675.23
+      },
+      "runner_latency_ms": 4414.42,
+      "issues": []
+    },
+    {
+      "case_id": "typo_sterilized",
+      "group": "typos",
+      "turn_index": 1,
+      "message": "Do u have strelized item?",
+      "locale": "en-US",
+      "conversation_id": 1056,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": true,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User's message is unclear/misspelled and asks about product availability but provides no product anchor; need clarification on what item or category they mean.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you mean \u201csterilized\u201d items\u2014if so, which product or product type are you looking for (for example a piercing needle, implant, or specific jewelry SKU)?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 3996.96
+      },
+      "runner_latency_ms": 7362.13,
+      "issues": []
+    },
+    {
+      "case_id": "multilingual_thai_contact",
+      "group": "multilingual",
+      "turn_index": 1,
+      "message": "\u0e15\u0e34\u0e14\u0e15\u0e48\u0e2d\u0e23\u0e49\u0e32\u0e19\u0e44\u0e14\u0e49\u0e22\u0e31\u0e07\u0e44\u0e07",
+      "locale": "th-TH",
+      "conversation_id": 1057,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "workflow": "knowledge",
+      "needs_clarification": false,
+      "reason": "User asked in Thai how to contact the store; this is a company/support question requiring knowledge-base info. Need to know which contact method they want or if they want all options.",
+      "confidence": 0.93,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "knowledge_answer"
+      ],
+      "assistant_text": "**Direct contact**\n\n- Phone: +66 (0)2-629-5858\n- Email: sales@achadirect.com\n\n**Live chat / contact form / customer support**\n\n- The provided context does not confirm a live chat or a web contact form; use the email or phone above.\n\n**Showroom / in\u2011store visit & appointments**\n\n- Address: Acha Co., Ltd., 247\u2011249 Tanao Road, Bavornives, Pranakorn, Bangkok 10200, Thailand\n- Showroom hours (GMT+7): Monday\u2013Saturday 8:00 am\u20135:00 pm; Sunday closed\n- The context does not state whether appointments are required\u2014call or email to confirm if you need an appointment.",
+      "source_titles": [
+        "How can I contact Acha?"
+      ],
+      "meta": {
+        "source": "knowledge",
+        "llm_calls": 1,
+        "embedding_calls": 0,
+        "product_result_count": 1,
+        "product_display_count": 0,
+        "product_has_more": true,
+        "latency_ms": 8786.52
+      },
+      "runner_latency_ms": 12511.16,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_sterilization_correction",
+      "group": "multi_turn",
+      "turn_index": 1,
+      "message": "I want to buy sterilization with opal",
+      "locale": "en-US",
+      "conversation_id": 1058,
+      "expected_workflow": "knowledge",
+      "expected_needs_clarification": null,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User expressed intent to buy but provided an ambiguous product phrase ('sterilization with opal'). Product database lookup is needed but product anchor is missing, so a clarifying question is required.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you mean a specific product or brand named \u201cOpal\u201d for sterilization, or are you asking about sterilizing an opal body jewelry piece\u2014if the latter, which material and gauge is the jewelry?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1431.38
+      },
+      "runner_latency_ms": 14512.06,
+      "issues": [
+        "workflow_mismatch:knowledge->catalog"
+      ]
+    },
+    {
+      "case_id": "conversation_sterilization_correction",
+      "group": "multi_turn",
+      "turn_index": 2,
+      "message": "No i mean i want to see product with sterilization with opal color",
+      "locale": "en-US",
+      "conversation_id": 1058,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User requested product results but did not specify product category or type; need a product anchor to search inventory.",
+      "confidence": 0.93,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you mean opal-colored body jewelry that is sold as sterilized or jewelry that can be sterilized (and which specific item type or material\u2014e.g., labret, ring, titanium\u2014are you looking for)?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1965.77
+      },
+      "runner_latency_ms": 15821.83,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_browse_then_detail",
+      "group": "multi_turn",
+      "turn_index": 1,
+      "message": "Show me belly bananas",
+      "locale": "en-US",
+      "conversation_id": 1059,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "The user requested a product search but did not provide a clear product anchor or category; assistant must query product database to show matching items and should clarify what 'belly bananas' refers to.",
+      "confidence": 0.92,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Do you mean a specific product called \u201cBelly Bananas\u201d (brand or SKU), banana-themed belly jewelry/clothing, a food item/dessert, or something else?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 2,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 1563.41
+      },
+      "runner_latency_ms": 11472.72,
+      "issues": []
+    },
+    {
+      "case_id": "conversation_browse_then_detail",
+      "group": "multi_turn",
+      "turn_index": 2,
+      "message": "Which one is cheapest?",
+      "locale": "en-US",
+      "conversation_id": 1059,
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": null,
+      "workflow": "catalog",
+      "needs_clarification": true,
+      "reason": "User asked which is cheapest but gave no product context or SKUs; product data retrieval is needed.",
+      "confidence": 0.91,
+      "selection_source": "llm",
+      "component_types": [
+        "assistant_message",
+        "query_summary",
+        "clarify"
+      ],
+      "assistant_text": "Which products are you comparing\u2014please provide product names or SKUs so I can check prices and tell you which is cheapest?",
+      "source_titles": [],
+      "meta": {
+        "source": "error",
+        "llm_calls": 3,
+        "embedding_calls": 0,
+        "product_result_count": 0,
+        "product_display_count": 0,
+        "product_has_more": false,
+        "latency_ms": 3080.24
+      },
+      "runner_latency_ms": 14913.87,
+      "issues": []
+    }
+  ]
+}

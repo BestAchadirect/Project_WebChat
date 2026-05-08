@@ -1,0 +1,422 @@
+{
+  "version": 1,
+  "description": "Exploratory customer-message coverage for live catalog, knowledge, general, off-topic, mixed, ambiguous, and multi-turn chatbot behavior.",
+  "cases": [
+    {
+      "id": "catalog_basic_belly_banana",
+      "group": "catalog_basic",
+      "message": "Find me belly banana",
+      "expected_workflow": "catalog",
+      "notes": "Broad product browse by jewelry type/category."
+    },
+    {
+      "id": "catalog_basic_show_belly_bananas",
+      "group": "catalog_basic",
+      "message": "Show Belly Bananas",
+      "expected_workflow": "catalog",
+      "notes": "Capitalization variant of broad product browse."
+    },
+    {
+      "id": "catalog_basic_titanium_labret",
+      "group": "catalog_basic",
+      "message": "Show me titanium labrets",
+      "expected_workflow": "catalog",
+      "notes": "Product browse with material and jewelry type."
+    },
+    {
+      "id": "catalog_basic_black_opal_labret",
+      "group": "catalog_basic",
+      "message": "Do you guys have any black opal labrets?",
+      "expected_workflow": "catalog",
+      "notes": "Product browse with color/stone wording."
+    },
+    {
+      "id": "catalog_basic_steel_barbell",
+      "group": "catalog_basic",
+      "message": "I need surgical steel barbells",
+      "expected_workflow": "catalog",
+      "notes": "Material phrase plus jewelry type."
+    },
+    {
+      "id": "catalog_attr_category",
+      "group": "catalog_attributes",
+      "message": "Show Belly Bananas for belly piercing",
+      "expected_workflow": "catalog",
+      "target_attribute": "category"
+    },
+    {
+      "id": "catalog_attr_material",
+      "group": "catalog_attributes",
+      "message": "Show Titanium G23 jewelry",
+      "expected_workflow": "catalog",
+      "target_attribute": "material"
+    },
+    {
+      "id": "catalog_attr_jewelry_type",
+      "group": "catalog_attributes",
+      "message": "Find circular barbells",
+      "expected_workflow": "catalog",
+      "target_attribute": "jewelry_type"
+    },
+    {
+      "id": "catalog_attr_gauge",
+      "group": "catalog_attributes",
+      "message": "Find 14g body jewelry",
+      "expected_workflow": "catalog",
+      "target_attribute": "gauge"
+    },
+    {
+      "id": "catalog_attr_length",
+      "group": "catalog_attributes",
+      "message": "Show barbells with 10mm length",
+      "expected_workflow": "catalog",
+      "target_attribute": "length"
+    },
+    {
+      "id": "catalog_attr_color",
+      "group": "catalog_attributes",
+      "message": "Show black PVD jewelry",
+      "expected_workflow": "catalog",
+      "target_attribute": "color"
+    },
+    {
+      "id": "catalog_attr_size_in_pack",
+      "group": "catalog_attributes",
+      "message": "Show packs with 20 pieces sizes 2g to 00g",
+      "expected_workflow": "catalog",
+      "target_attribute": "size_in_pack"
+    },
+    {
+      "id": "catalog_attr_crystal_color",
+      "group": "catalog_attributes",
+      "message": "Show clear crystal products",
+      "expected_workflow": "catalog",
+      "target_attribute": "crystal_color"
+    },
+    {
+      "id": "catalog_attr_quantity_in_bulk",
+      "group": "catalog_attributes",
+      "message": "Show bulk packs with 100 pcs",
+      "expected_workflow": "catalog",
+      "target_attribute": "quantity_in_bulk"
+    },
+    {
+      "id": "catalog_attr_cz_color",
+      "group": "catalog_attributes",
+      "message": "Show AB CZ color jewelry",
+      "expected_workflow": "catalog",
+      "target_attribute": "cz_color"
+    },
+    {
+      "id": "catalog_attr_size",
+      "group": "catalog_attributes",
+      "message": "Show medium size jewelry",
+      "expected_workflow": "catalog",
+      "target_attribute": "size"
+    },
+    {
+      "id": "catalog_attr_outer_diameter",
+      "group": "catalog_attributes",
+      "message": "Show rings with 8 mm outer diameter",
+      "expected_workflow": "catalog",
+      "target_attribute": "outer_diameter"
+    },
+    {
+      "id": "catalog_attr_packing_option",
+      "group": "catalog_attributes",
+      "message": "Show individually packed products",
+      "expected_workflow": "catalog",
+      "target_attribute": "packing_option"
+    },
+    {
+      "id": "catalog_attr_pincher_size",
+      "group": "catalog_attributes",
+      "message": "Show small pincher size products",
+      "expected_workflow": "catalog",
+      "target_attribute": "pincher_size"
+    },
+    {
+      "id": "catalog_attr_height",
+      "group": "catalog_attributes",
+      "message": "Show 12mm height products",
+      "expected_workflow": "catalog",
+      "target_attribute": "height"
+    },
+    {
+      "id": "catalog_attr_design",
+      "group": "catalog_attributes",
+      "message": "Show heart design jewelry",
+      "expected_workflow": "catalog",
+      "target_attribute": "design"
+    },
+    {
+      "id": "catalog_attr_threading",
+      "group": "catalog_attributes",
+      "message": "Show internally threaded jewelry",
+      "expected_workflow": "catalog",
+      "target_attribute": "threading"
+    },
+    {
+      "id": "catalog_detail_price_sku",
+      "group": "catalog_detail",
+      "message": "How much is BBT5C?",
+      "expected_workflow": "catalog",
+      "notes": "SKU/master-code price request."
+    },
+    {
+      "id": "catalog_detail_stock_sku",
+      "group": "catalog_detail",
+      "message": "Is BBT5C in stock?",
+      "expected_workflow": "catalog",
+      "notes": "SKU/master-code stock request."
+    },
+    {
+      "id": "catalog_detail_picture_sku",
+      "group": "catalog_detail",
+      "message": "Can I see a picture of BBT5C?",
+      "expected_workflow": "catalog",
+      "notes": "SKU/master-code image request."
+    },
+    {
+      "id": "catalog_detail_attributes_sku",
+      "group": "catalog_detail",
+      "message": "What are the details for BBT5C?",
+      "expected_workflow": "catalog",
+      "notes": "SKU/master-code attribute detail request."
+    },
+    {
+      "id": "catalog_ambiguous_sterilization_product",
+      "group": "ambiguous_catalog",
+      "message": "Do you have any sterilization product?",
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": false,
+      "notes": "Should normalize sterilization wording to the DB-backed Sterilized category instead of showing unrelated surgical steel product cards."
+    },
+    {
+      "id": "catalog_ambiguous_opal",
+      "group": "ambiguous_catalog",
+      "message": "Can I see sterilization with opal?",
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": false,
+      "expected_allow_no_products": true,
+      "notes": "Should use DB-backed catalog attributes and return products or a grounded no-match instead of repeated clarification."
+    },
+    {
+      "id": "catalog_ambiguous_nice",
+      "group": "ambiguous_catalog",
+      "message": "Show me something nice",
+      "expected_workflow": "catalog",
+      "notes": "Very broad discovery request."
+    },
+    {
+      "id": "catalog_ambiguous_cheap",
+      "group": "ambiguous_catalog",
+      "message": "Do you have cheaper ones?",
+      "expected_workflow": "catalog",
+      "notes": "Context-dependent follow-up asked without context."
+    },
+    {
+      "id": "knowledge_contact",
+      "group": "knowledge",
+      "message": "How can I contact you?",
+      "expected_workflow": "knowledge"
+    },
+    {
+      "id": "knowledge_return_policy",
+      "group": "knowledge",
+      "message": "What is your return policy?",
+      "expected_workflow": "knowledge"
+    },
+    {
+      "id": "knowledge_shipping_policy",
+      "group": "knowledge",
+      "message": "What is your shipping policy?",
+      "expected_workflow": "knowledge"
+    },
+    {
+      "id": "knowledge_samples",
+      "group": "knowledge",
+      "message": "Can I see a sample before buying?",
+      "expected_workflow": "knowledge"
+    },
+    {
+      "id": "knowledge_minimum_order",
+      "group": "knowledge",
+      "message": "What is your minimum order?",
+      "expected_workflow": "knowledge"
+    },
+    {
+      "id": "knowledge_customs",
+      "group": "knowledge",
+      "message": "Who pays import taxes?",
+      "expected_workflow": "knowledge"
+    },
+    {
+      "id": "knowledge_payment",
+      "group": "knowledge",
+      "message": "What payment methods do you accept?",
+      "expected_workflow": "knowledge"
+    },
+    {
+      "id": "knowledge_marketing_images",
+      "group": "knowledge",
+      "message": "Can I get product images without watermark?",
+      "expected_workflow": "knowledge"
+    },
+    {
+      "id": "mixed_product_shipping",
+      "group": "mixed",
+      "message": "Do you have titanium labrets and how long does shipping take?",
+      "expected_workflow": "catalog",
+      "notes": "Product result plus knowledge enrichment."
+    },
+    {
+      "id": "mixed_product_return",
+      "group": "mixed",
+      "message": "Show gold rings and tell me your return policy",
+      "expected_workflow": "catalog",
+      "notes": "Product result plus return policy enrichment."
+    },
+    {
+      "id": "mixed_product_sample",
+      "group": "mixed",
+      "message": "Can I get samples before buying titanium labrets?",
+      "expected_workflow": "catalog",
+      "notes": "Product anchor plus sample policy."
+    },
+    {
+      "id": "general_what_can_you_do",
+      "group": "general_talking",
+      "message": "What can you do for me?",
+      "expected_workflow": "general_talking"
+    },
+    {
+      "id": "general_are_you_human",
+      "group": "general_talking",
+      "message": "Are you human?",
+      "expected_workflow": "general_talking"
+    },
+    {
+      "id": "general_thanks",
+      "group": "general_talking",
+      "message": "Thanks",
+      "expected_workflow": "general_talking"
+    },
+    {
+      "id": "general_really",
+      "group": "general_talking",
+      "message": "Really?",
+      "expected_workflow": "general_talking"
+    },
+    {
+      "id": "off_topic_code",
+      "group": "off_topic",
+      "message": "Can you write Python code for me?",
+      "expected_workflow": "off_topic"
+    },
+    {
+      "id": "off_topic_weather",
+      "group": "off_topic",
+      "message": "What is the weather today?",
+      "expected_workflow": "off_topic"
+    },
+    {
+      "id": "frustrated_not_helping",
+      "group": "frustrated",
+      "message": "Doesn't seem like you are helping at all",
+      "expected_workflow": "general_talking"
+    },
+    {
+      "id": "frustrated_insult",
+      "group": "frustrated",
+      "message": "This is stupid",
+      "expected_workflow": "general_talking"
+    },
+    {
+      "id": "typo_belly_banana",
+      "group": "typos",
+      "message": "belly banan",
+      "expected_workflow": "catalog"
+    },
+    {
+      "id": "typo_titanium_labret",
+      "group": "typos",
+      "message": "labert titanum",
+      "expected_workflow": "catalog"
+    },
+    {
+      "id": "typo_sterilized",
+      "group": "typos",
+      "message": "Do u have strelized item?",
+      "expected_workflow": "catalog",
+      "expected_needs_clarification": false
+    },
+    {
+      "id": "multilingual_thai_product",
+      "group": "multilingual",
+      "message": "มี titanium labret ไหม",
+      "locale": "th-TH",
+      "expected_workflow": "catalog"
+    },
+    {
+      "id": "multilingual_thai_contact",
+      "group": "multilingual",
+      "message": "ติดต่อร้านได้ยังไง",
+      "locale": "th-TH",
+      "expected_workflow": "knowledge"
+    },
+    {
+      "id": "conversation_sterilization_correction",
+      "group": "multi_turn",
+      "turns": [
+        {
+          "message": "I want to buy sterilization with opal",
+          "expected_workflow": "catalog",
+          "expected_needs_clarification": false,
+          "expected_allow_no_products": true
+        },
+        {
+          "message": "No i mean i want to see product with sterilization with opal color",
+          "expected_workflow": "catalog",
+          "expected_allow_no_products": true
+        }
+      ],
+      "notes": "Ambiguous product wording should clarify first, then stay catalog when the user corrects toward product browsing."
+    },
+    {
+      "id": "conversation_company_then_product",
+      "group": "multi_turn",
+      "turns": [
+        {
+          "message": "Is your company in China or Thailand?",
+          "expected_workflow": "knowledge"
+        },
+        {
+          "message": "So is the product from China or made in Thailand?",
+          "expected_workflows": ["catalog", "knowledge"],
+          "expected_needs_clarification": true
+        },
+        {
+          "message": "Steel product",
+          "expected_workflow": "catalog"
+        }
+      ],
+      "notes": "Topic shift from company/manufacturing to product catalog."
+    },
+    {
+      "id": "conversation_browse_then_detail",
+      "group": "multi_turn",
+      "turns": [
+        {
+          "message": "Show me belly bananas",
+          "expected_workflow": "catalog"
+        },
+        {
+          "message": "Which one is cheapest?",
+          "expected_workflow": "catalog"
+        }
+      ],
+      "notes": "Context-dependent product follow-up."
+    }
+  ]
+}

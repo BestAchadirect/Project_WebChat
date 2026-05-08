@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from enum import Enum
+import re
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -117,13 +118,121 @@ class ChatComponent(BaseModel):
     data: Dict[str, Any] = Field(default_factory=dict)
 
 
+PUBLIC_ATTRIBUTE_BLOCKLIST = frozenset({"source_id", "source_raw_sku"})
+
+
+def sanitize_assistant_text(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    text = re.sub(r"[ \t]*[\u2014\u2015][ \t]*", ", ", text)
+    text = re.sub(r"[ \t]*\u2013[ \t]*", "-", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r",\s*,+", ",", text)
+    return text.strip()
+
+
+def _sanitize_quick_reply_item(item: Any) -> Any:
+    if isinstance(item, dict):
+        clean = dict(item)
+        for key in ("label", "text", "question", "message"):
+            if key in clean:
+                clean[key] = sanitize_assistant_text(clean.get(key))
+        payload = clean.get("payload")
+        if isinstance(payload, dict):
+            clean["payload"] = {
+                key: sanitize_assistant_text(value) if isinstance(value, str) else value
+                for key, value in payload.items()
+            }
+        return clean
+    if isinstance(item, str):
+        return sanitize_assistant_text(item)
+    return item
+
+
+def sanitize_chat_component(component: ChatComponent) -> ChatComponent:
+    data = dict(component.data or {})
+    kind = _component_type_value(component)
+    text_keys_by_type = {
+        ChatComponentType.ASSISTANT_MESSAGE.value: ("text",),
+        ChatComponentType.KNOWLEDGE_ANSWER.value: ("answer",),
+        ChatComponentType.CLARIFY.value: ("message",),
+        ChatComponentType.ERROR.value: ("message",),
+        ChatComponentType.QUERY_SUMMARY.value: ("text",),
+    }
+    for key in text_keys_by_type.get(kind, ()):
+        if key in data:
+            data[key] = sanitize_assistant_text(data.get(key))
+    if kind == ChatComponentType.CLARIFY.value and isinstance(data.get("suggestions"), list):
+        data["suggestions"] = [
+            sanitize_assistant_text(item) if isinstance(item, str) else item
+            for item in list(data.get("suggestions") or [])
+        ]
+    if kind == ChatComponentType.QUICK_REPLIES.value:
+        if isinstance(data.get("items"), list):
+            data["items"] = [_sanitize_quick_reply_item(item) for item in list(data.get("items") or [])]
+        if isinstance(data.get("questions"), list):
+            data["questions"] = [_sanitize_quick_reply_item(item) for item in list(data.get("questions") or [])]
+    return ChatComponent(type=component.type, data=data)
+
+
 def _component_type_value(component: ChatComponent) -> str:
     raw_type = getattr(component, "type", "")
     return str(getattr(raw_type, "value", raw_type) or "").strip().lower()
 
 
+def _split_component_category_value(value: Any) -> List[str]:
+    items: List[str] = []
+
+    def _collect(raw: Any) -> None:
+        if raw is None:
+            return
+        if isinstance(raw, (list, tuple, set)):
+            for nested in raw:
+                _collect(nested)
+            return
+        text = str(raw or "").strip()
+        if not text:
+            return
+        if ";;" in text:
+            for token in text.split(";;"):
+                _collect(token)
+            return
+        if ";" in text:
+            for token in text.split(";"):
+                _collect(token)
+            return
+        items.append(text)
+
+    _collect(value)
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in items:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def product_attributes_to_component_payload(attributes: Dict[str, Any]) -> Dict[str, Any]:
+    payload = {
+        str(key): value
+        for key, value in dict(attributes or {}).items()
+        if str(key or "").strip().lower() not in PUBLIC_ATTRIBUTE_BLOCKLIST
+    }
+    if "category" in payload:
+        category_tags = _split_component_category_value(payload.get("category"))
+        if category_tags:
+            payload["category"] = category_tags
+        else:
+            payload.pop("category", None)
+    return payload
+
+
 def product_card_to_component_payload(card: ProductCard) -> Dict[str, Any]:
-    attributes = dict(card.attributes or {})
+    attributes = product_attributes_to_component_payload(dict(card.attributes or {}))
     return {
         "product_id": str(card.id),
         "object_id": card.object_id,
@@ -143,7 +252,7 @@ def product_card_to_component_payload(card: ProductCard) -> Dict[str, Any]:
 
 
 def assistant_message_component(reply_text: str) -> Optional["ChatComponent"]:
-    text = str(reply_text or "").strip()
+    text = sanitize_assistant_text(reply_text)
     if not text:
         return None
     return ChatComponent(
@@ -174,10 +283,10 @@ def quick_replies_component(items: List[Any]) -> Optional["ChatComponent"]:
             if not label:
                 continue
             item = dict(raw)
-            item["label"] = label
+            item["label"] = sanitize_assistant_text(label)
             clean_items.append(item)
             continue
-        text = str(raw or "").strip()
+        text = sanitize_assistant_text(raw)
         if text:
             clean_items.append(text)
     if not clean_items:
@@ -258,11 +367,15 @@ class ChatResponse(BaseModel):
 
     @model_validator(mode="after")
     def ensure_component_contract(self) -> "ChatResponse":
+        self.reply_text = sanitize_assistant_text(self.reply_text)
+        if self.carousel_msg is not None:
+            self.carousel_msg = sanitize_assistant_text(self.carousel_msg)
         self.components = _augment_chat_components(
             components=list(self.components or []),
             reply_text=self.reply_text,
             product_carousel=list(self.product_carousel or []),
         )
+        self.components = [sanitize_chat_component(component) for component in list(self.components or [])]
         return self
 
 
@@ -288,6 +401,7 @@ class ChatHistoryMessage(BaseModel):
     def ensure_component_contract(self) -> "ChatHistoryMessage":
         if str(self.role or "").strip().lower() != "assistant":
             return self
+        self.content = sanitize_assistant_text(self.content)
         product_cards: List[ProductCard] = []
         for raw in list(self.product_data or []):
             if not isinstance(raw, dict):
@@ -301,6 +415,7 @@ class ChatHistoryMessage(BaseModel):
             reply_text=self.content,
             product_carousel=product_cards,
         )
+        self.components = [sanitize_chat_component(component) for component in list(self.components or [])]
         return self
 
 
