@@ -180,6 +180,7 @@ class ComponentPipeline(
             if (
                 workflow == "catalog"
                 and not detail_parse_failed
+                and not list(sku_tokens or [])
                 and not dict(getattr(detail, "attribute_filters", {}) or {})
                 and not ambiguity_blocks_retrieval(detail_clarify_focus)
             ):
@@ -222,10 +223,17 @@ class ComponentPipeline(
                 and str(getattr(decision_state, "pending_task_type", "") or "").strip().lower()
                 in {"compare_price", "find_cheaper_products"}
             )
+            context_related_followup_possible = bool(
+                workflow == "catalog"
+                and list(debug_meta.get("conversation_last_product_ids") or [])
+                and self._looks_like_related_product_followup(text=text)
+            )
+            product_anchor_present = bool(debug_meta.get("catalog_product_anchor_present"))
             if (
                 workflow == "catalog"
                 and not catalog_pagination_requested
                 and not context_price_followup_possible
+                and not context_related_followup_possible
                 and not dict(getattr(detail, "attribute_filters", {}) or {})
                 and "product_anchor" in str(getattr(decision_state, "missing_slot", "") or "").strip().lower()
                 and (
@@ -233,6 +241,7 @@ class ComponentPipeline(
                     or str(getattr(decision_state, "pending_task_type", "") or "").strip()
                     or str(getattr(decision_state, "clarify_question", "") or "").strip()
                 )
+                and not product_anchor_present
             ):
                 state.decision.ambiguity_reason = "pending_task_missing_slot"
                 state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]

@@ -124,6 +124,24 @@ async def test_product_presentation_builds_extended_filter_copy(
 
 
 @pytest.mark.asyncio
+async def test_product_presentation_reports_missing_anodized_material_with_related_options() -> None:
+    products = [
+        _canonical_product(sku="A-1", title="Gold Labret", master_code="GOLD-1"),
+        _canonical_product(sku="A-2", title="Steel Barbell", master_code="STEEL-1"),
+    ]
+
+    reply = await product_presentation.build_product_match_reply(
+        attribute_filters={},
+        user_text="Do you have anodized product?",
+        products=products,
+        use_llm=False,
+    )
+
+    assert "don't currently have anodized products" in reply.lower()
+    assert "related options" in reply.lower()
+
+
+@pytest.mark.asyncio
 async def test_component_pipeline_catalog_pagination_continues_cached_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

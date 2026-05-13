@@ -1,11 +1,11 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import newAchaLogo from '../../assets/new acha logo.png';
 import { pageLabel } from '../../routes/pageMeta';
 
-/* ════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Types
-   ════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 interface SidebarProps {
     onMobileClose?: () => void;
@@ -25,9 +25,9 @@ interface SubItem {
     badge?: string | number;
 }
 
-/* ════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Navigation data
-   ════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 const railItems: RailItem[] = [
     {
@@ -99,16 +99,16 @@ const settingsItem: RailItem = {
     path: '/dashboard/chat',
 };
 
-/* ════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Collapse-aware helpers (mobile only label visibility)
-   ════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 const _showMobileLabel = 'md:hidden ml-3';
 const _alwaysCenterDesktop = 'md:justify-center px-3 md:px-0';
 
-/* ════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Component
-   ════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 export const Sidebar: React.FC<SidebarProps> = ({ onMobileClose }) => {
     const { pathname } = useLocation();
@@ -143,7 +143,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onMobileClose }) => {
     const isDirectActive = (item: RailItem) =>
         item.path ? (pathname === item.path || pathname.startsWith(item.path + '/')) : false;
 
-    /* ── Tooltip/Flyout Positioning ── */
+    /* â”€â”€ Tooltip/Flyout Positioning â”€â”€ */
     const [flyoutStyle, setFlyoutStyle] = useState({ top: 0, left: 0 });
     const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -183,7 +183,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onMobileClose }) => {
         }, 150); // Small grace period when moving mouse from rail icon to flyout panel
     };
 
-    /* ── Render a direct-link rail item ── */
+    /* â”€â”€ Render a direct-link rail item â”€â”€ */
     const renderDirectItem = (item: RailItem) => {
         const active = isDirectActive(item);
         return (
@@ -228,7 +228,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onMobileClose }) => {
         );
     };
 
-    /* ── Render a grouped rail item (Knowledge) ── */
+    /* â”€â”€ Render a grouped rail item (Knowledge) â”€â”€ */
     const renderGroupItem = (item: RailItem) => {
         const active = isGroupActive(item);
         const isMobileOpen = mobileOpenGroupId === item.id;
@@ -310,7 +310,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onMobileClose }) => {
     return (
         <>
             <aside className="bg-gradient-to-b from-gray-900 to-[#111827] text-white h-full w-full flex flex-col min-h-0 overflow-hidden">
-                {/* ── Brand ── */}
+                {/* â”€â”€ Brand â”€â”€ */}
                 <div className="px-4 py-5 border-b border-white/[0.06] flex items-center justify-between gap-2 shrink-0 md:px-2 md:justify-center">
                     <div className="flex items-center min-w-0">
                         <img
@@ -338,28 +338,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ onMobileClose }) => {
                     )}
                 </div>
 
-                {/* ── Primary nav ── */}
                 <nav className="flex-1 px-2.5 py-4 overflow-y-auto min-h-0 sidebar-scrollbar space-y-1" aria-label="Primary">
-                    {railItems.map(item =>
+                    {[...railItems, settingsItem].map(item =>
                         item.children ? renderGroupItem(item) : renderDirectItem(item)
                     )}
                 </nav>
-
-                {/* ── Bottom utility ── */}
-                <div className="px-2.5 py-3 border-t border-white/[0.06] space-y-1 shrink-0">
-                    {settingsItem.children
-                        ? renderGroupItem(settingsItem)
-                        : renderDirectItem(settingsItem)
-                    }
-                    <div className="pt-2 md:hidden">
-                        <p className="text-center text-xs text-gray-600 whitespace-nowrap">
-                            &copy; 2026 GenAI SaaS
-                        </p>
-                    </div>
-                </div>
             </aside>
 
-            {/* ═══ Desktop hover flyout panel (position: fixed, escapes all overflow) ═══ */}
+            {/* â•â•â• Desktop hover flyout panel (position: fixed, escapes all overflow) â•â•â• */}
             {activeHoverGroup && activeHoverGroup.children && (
                 <div
                     id="sidebar-flyout"

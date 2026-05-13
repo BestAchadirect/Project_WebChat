@@ -3,12 +3,15 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Sequence
 
+from app.core.config import settings
 from app.services.chat.components.pipeline_runtime.catalog_search import PipelineCatalogSearchMixin
 from app.services.chat.components.pipeline_runtime.state import PipelineWorkflowState
 from app.services.chat.components.pipeline_runtime.workflow_detail import PipelineWorkflowDetailMixin
 from app.services.chat.components.types import ComponentSource, ComponentType
 from app.services.chat.presentation import product_presentation
+from app.services.chat.routing import signals as routing_signals
 from app.services.chat.runtime.grounding import GroundingDecision, evaluate_catalog_grounding
+from app.services.chat.runtime.capabilities import build_chat_runtime_capabilities
 from app.services.chat.text_normalization import normalize_user_text
 
 
@@ -42,6 +45,8 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                 str(ambiguity_reason or "").strip() == "structured_no_match"
                 and dict(getattr(detail, "attribute_filters", {}) or {})
             ):
+                if list(product_ids or []):
+                    return [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
                 return [ComponentType.QUERY_SUMMARY, ComponentType.KNOWLEDGE_ANSWER]
             if bool(ambiguity_reason):
                 return [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
@@ -105,26 +110,36 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
 
     @classmethod
     def _build_structured_no_match_reply(cls, *, attribute_filters: Dict[str, str]) -> str:
-        labels: list[str] = []
-        for key, raw_value in dict(attribute_filters or {}).items():
-            clean_key = cls._display_filter_key(str(key or ""))
-            raw_values = [
-                str(item or "").strip()
-                for item in str(raw_value or "").split(";;")
-                if str(item or "").strip()
-            ]
-            values = [cls._display_filter_value(item) for item in raw_values if item]
-            if not clean_key or not values:
-                continue
-            labels.append(f"{clean_key} {cls._join_display_values(values)}")
-
-        if not labels:
-            return "I couldn't find products matching those details. I can broaden the search if you want."
-
-        details = cls._join_display_values(labels[:5])
+        del attribute_filters
         return (
-            f"I couldn't find products matching all of these details: {details}. "
-            "I can broaden the search by removing one filter, or show the closest matching product group separately."
+            "I couldn't find an exact match for that request. "
+            "I can show similar products or broaden the search if you'd like."
+        )
+
+    @staticmethod
+    def _looks_like_related_product_followup(*, text: str) -> bool:
+        text_norm = normalize_user_text(text)
+        if not text_norm:
+            return False
+        return any(
+            marker in text_norm
+            for marker in (
+                "similar product",
+                "similar products",
+                "similar option",
+                "similar options",
+                "related product",
+                "related products",
+                "related option",
+                "related options",
+                "another option",
+                "other option",
+                "another one",
+                "same one",
+                "same style",
+                "like this",
+                "like these",
+            )
         )
 
     async def _handle_attribute_list_workflow(
@@ -251,6 +266,96 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             }
             return bool(hints.intersection({"cheapest", "lower price", "cheaper", "lowest price", "budget"}))
 
+    @staticmethod
+    def _looks_like_compare_request(*, text: str, unique_sku_tokens: Sequence[str]) -> bool:
+            return routing_signals.looks_like_compare_request(text=text, sku_tokens=unique_sku_tokens)
+
+    async def _handle_compare_workflow(
+            self,
+            *,
+            state: PipelineWorkflowState,
+            text: str,
+            unique_sku_tokens: Sequence[str],
+            debug_meta: Dict[str, Any],
+            spans: Dict[str, float],
+        ) -> bool:
+            compare_tokens = [
+                str(token or "").strip()
+                for token in list(dict.fromkeys([str(item).strip() for item in list(unique_sku_tokens or [])]))
+                if str(token or "").strip()
+            ]
+            if len(compare_tokens) < 2:
+                return False
+            if not self._looks_like_compare_request(text=text, unique_sku_tokens=compare_tokens):
+                return False
+
+            capabilities = state.decision.runtime_capabilities or build_chat_runtime_capabilities()
+            compare_cards: list[Any] = []
+            compare_ids: list[str] = []
+            missing_tokens: list[str] = []
+            compare_started = time.perf_counter()
+            for token in compare_tokens[:5]:
+                try:
+                    structured_result, _structured_meta = await self._catalog_search.structured_search(
+                        sku_token=token,
+                        attribute_filters={},
+                        limit=1,
+                        candidate_cap=int(capabilities.chat_structured_candidate_cap),
+                        catalog_version=str(capabilities.chat_catalog_version),
+                        return_ids_only=False,
+                    )
+                except Exception as exc:
+                    debug_meta["compare_lookup_error"] = str(exc)
+                    missing_tokens.append(token)
+                    continue
+                cards = list(structured_result.cards or [])
+                if not cards:
+                    missing_tokens.append(token)
+                    continue
+                representative = cards[0]
+                card_id = self._card_identifier(representative)
+                if card_id and card_id not in compare_ids:
+                    compare_ids.append(card_id)
+                    compare_cards.append(representative)
+            spans["db_product_lookup_ms"] += (time.perf_counter() - compare_started) * 1000.0
+
+            if len(compare_cards) < 2:
+                if missing_tokens:
+                    state.decision.ambiguity_reason = "compare_request_needs_specific_product"
+                    state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                    state.presentation.canonical_products = []
+                    state.catalog.product_ids = []
+                    state.catalog.query_product_ids = []
+                    state.retrieval.result_count = 0
+                    state.retrieval.source = ComponentSource.ERROR
+                    debug_meta["compare_request_used"] = True
+                    debug_meta["compare_request_missing_tokens"] = list(missing_tokens)
+                    debug_meta["clarify_reason"] = state.decision.ambiguity_reason
+                    debug_meta["detail_compare_requested"] = True
+                    debug_meta["detail_compare_missing_tokens"] = list(missing_tokens)
+                    return True
+                return False
+
+            compare_reply = product_presentation.build_compare_product_reply(
+                products=compare_cards,
+                user_text=text,
+            )
+            state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
+            state.presentation.canonical_products = list(compare_cards)
+            state.catalog.product_ids = list(compare_ids)
+            state.catalog.query_product_ids = list(compare_ids)
+            state.retrieval.result_count = len(compare_cards)
+            state.retrieval.source = ComponentSource.SQL
+            state.catalog.pagination_has_more = False
+            debug_meta["compare_request_used"] = True
+            debug_meta["compare_request_tokens"] = list(compare_tokens)
+            debug_meta["compare_match_count"] = len(compare_cards)
+            debug_meta["detail_reply_text"] = compare_reply
+            debug_meta["detail_carousel_msg"] = "I compared the matching products below."
+            debug_meta["detail_follow_ups"] = []
+            debug_meta["detail_compare_requested"] = True
+            return True
+
     async def _handle_context_product_followup(
             self,
             *,
@@ -303,6 +408,64 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             debug_meta["context_product_followup_type"] = "price_compare"
             debug_meta["detail_reply_text"] = f"The cheapest option from the current results is {title} at {price:.2f} {currency}."
             debug_meta["detail_carousel_msg"] = "I included the cheapest matching product below."
+            return True
+
+    async def _handle_context_related_product_followup(
+            self,
+            *,
+            state: PipelineWorkflowState,
+            detail: Any,
+            text: str,
+            debug_meta: Dict[str, Any],
+            spans: Dict[str, float],
+        ) -> bool:
+            del detail
+            if not self._looks_like_related_product_followup(text=text):
+                return False
+            product_ids = [
+                str(item or "").strip()
+                for item in list(debug_meta.get("conversation_last_product_ids") or [])
+                if str(item or "").strip()
+            ]
+            if not product_ids:
+                return False
+
+            component_types = [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
+            products, _resolver_meta = await self._resolve_products_with_metrics(
+                product_ids=product_ids,
+                component_types=component_types,
+                spans=spans,
+                debug_meta=debug_meta,
+            )
+            products = [product for product in list(products or []) if product is not None]
+            if not products:
+                return False
+
+            related_cards: list[Any] = []
+            related_query = ""
+            related_limit = max(1, min(3, int(getattr(settings, "CHAT_DETAIL_RELATED_MATCHES", 3))))
+            related_query, related_cards = await self._load_related_product_cards(
+                seed_cards=products,
+                semantic_hints=["similar product"],
+                limit=related_limit,
+            )
+            if related_cards:
+                products = related_cards
+
+            state.presentation.selected_components = component_types
+            state.presentation.canonical_products = list(products)
+            state.catalog.product_ids = [self._card_identifier(product) for product in products if self._card_identifier(product)]
+            state.catalog.query_product_ids = list(state.catalog.product_ids)
+            state.retrieval.result_count = len(products)
+            state.retrieval.source = ComponentSource.SQL
+            state.catalog.pagination_has_more = False
+
+            debug_meta["context_related_product_followup_used"] = True
+            debug_meta["context_related_product_followup_type"] = "similar_products"
+            debug_meta["context_related_product_followup_count"] = len(products)
+            debug_meta["context_related_product_followup_query"] = related_query
+            debug_meta["detail_reply_text"] = "Here are some similar products you can browse."
+            debug_meta["detail_carousel_msg"] = "Similar products are shown below."
             return True
 
     @classmethod
@@ -373,6 +536,22 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                     if decision.safe_customer_action == "no_match"
                     else "grounding_needs_clarification"
                 )
+                if decision.safe_customer_action == "no_match" and list(state.presentation.canonical_products or []):
+                    close_products = list(state.presentation.canonical_products or [])
+                    close_ids = [cls._card_identifier(card) for card in close_products if cls._card_identifier(card)]
+                    state.decision.ambiguity_reason = ""
+                    state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
+                    state.catalog.product_ids = list(close_ids)
+                    state.catalog.query_product_ids = list(close_ids)
+                    state.catalog.pagination_has_more = False
+                    state.retrieval.result_count = len(close_products)
+                    state.retrieval.source = ComponentSource.SQL
+                    debug_meta["grounding_blocked_response"] = False
+                    debug_meta["catalog_close_match_used"] = True
+                    debug_meta["catalog_close_match_count"] = len(close_products)
+                    debug_meta["detail_reply_text"] = "I couldn't find an exact match, but here are similar products you can might like."
+                    debug_meta["detail_carousel_msg"] = "Similar products are shown below."
+                    return
                 state.decision.ambiguity_reason = reason
                 state.presentation.canonical_products = []
                 state.catalog.product_ids = []
@@ -534,9 +713,26 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             if state.decision.ambiguity_reason or state.catalog.handled_attribute_list:
                 return
 
+            if await self._handle_compare_workflow(
+                state=state,
+                text=text,
+                unique_sku_tokens=unique_sku_tokens,
+                debug_meta=debug_meta,
+                spans=spans,
+            ):
+                return
+
             if await self._handle_context_product_followup(
                 state=state,
                 detail=detail,
+                debug_meta=debug_meta,
+                spans=spans,
+            ):
+                return
+            if await self._handle_context_related_product_followup(
+                state=state,
+                detail=detail,
+                text=text,
                 debug_meta=debug_meta,
                 spans=spans,
             ):
@@ -588,12 +784,29 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                 debug_meta["semantic_first_used"] = True
 
             if str(state.decision.ambiguity_reason or "").strip() == "structured_no_match":
-                state.knowledge.answer = self._build_structured_no_match_reply(
-                    attribute_filters=dict(getattr(detail, "attribute_filters", {}) or {}),
-                )
-                state.catalog.query_product_ids = []
-                state.catalog.pagination_has_more = False
-                debug_meta["catalog_no_match_answer"] = state.knowledge.answer
+                candidate_products = list(state.presentation.canonical_products or [])
+                candidate_ids = [self._card_identifier(card) for card in candidate_products if self._card_identifier(card)]
+                close_match_ids = list(candidate_ids or [str(item).strip() for item in list(product_ids or []) if str(item).strip()])
+                if candidate_products or close_match_ids:
+                    state.decision.ambiguity_reason = ""
+                    state.knowledge.answer = ""
+                    state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
+                    state.catalog.product_ids = list(close_match_ids)
+                    state.catalog.query_product_ids = list(close_match_ids)
+                    state.catalog.pagination_has_more = False
+                    state.retrieval.result_count = max(len(candidate_products), len(close_match_ids))
+                    state.retrieval.source = ComponentSource.SQL
+                    debug_meta["detail_reply_text"] = "I couldn't find an exact match, but here are similar products you might like."
+                    debug_meta["detail_carousel_msg"] = "Similar products are shown below."
+                    debug_meta["catalog_no_match_answer"] = debug_meta["detail_reply_text"]
+                    debug_meta["catalog_no_match_preserved_product_count"] = max(len(candidate_products), len(close_match_ids))
+                else:
+                    state.knowledge.answer = self._build_structured_no_match_reply(
+                        attribute_filters=dict(getattr(detail, "attribute_filters", {}) or {}),
+                    )
+                    state.catalog.query_product_ids = []
+                    state.catalog.pagination_has_more = False
+                    debug_meta["catalog_no_match_answer"] = state.knowledge.answer
 
             state.presentation.selected_components = self._select_catalog_components(
                 text=text,
@@ -617,16 +830,20 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                     limit=4,
                 )
 
-            self._handle_detail_workflow(
+            await self._handle_detail_workflow(
                 state=state,
                 detail=detail,
                 unique_sku_tokens=unique_sku_tokens,
+                text=text,
                 debug_meta=debug_meta,
             )
 
             if (
                 state.catalog.query_cache_key
-                and not bool(getattr(detail, "is_detail_request", False))
+                and (
+                    not bool(getattr(detail, "is_detail_request", False))
+                    or bool(debug_meta.get("detail_broad_request_as_catalog"))
+                )
                 and list(state.catalog.query_product_ids or [])
             ):
                 unique_products, total_unique_products = product_presentation.dedupe_products_by_master_code(

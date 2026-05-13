@@ -828,7 +828,7 @@ class PipelinePresentationMixin:
             )
             return ComponentPipelineResult(
                 response=response,
-                detail_mode_triggered=bool(detail.is_detail_request),
+                detail_mode_triggered=bool(detail.is_detail_request and not debug_meta.get("compare_request_used")),
                 llm_calls=llm_calls,
                 embedding_calls=embedding_calls,
                 external_call_counts=external_call_counts,

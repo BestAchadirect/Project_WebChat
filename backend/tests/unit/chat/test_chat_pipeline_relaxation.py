@@ -59,6 +59,30 @@ def test_apply_soft_hint_gate_keeps_partial_matches_when_no_full_match_exists() 
 
 
 @pytest.mark.asyncio
+async def test_build_clarify_policy_pending_task_missing_slot_stays_product_focused() -> None:
+    result = await ComponentPipeline._build_clarify_policy(
+        reason="pending_task_missing_slot",
+        user_text="what size and color is available for code ulbcvin?",
+        reply_language="en-US",
+        products=[],
+        attribute_filters={},
+        needs_knowledge=False,
+        requested_fields=["size", "color"],
+        clarify_question="Which product are you asking about?",
+    )
+
+    assert result["reason"] == "pending_task_missing_slot"
+    assert result["message"] == "Which product are you asking about?"
+    assert result["questions"] == ["Which product are you asking about?"]
+    assert result["suggestions"] == [
+        "Share the product code",
+        "Tell me the material",
+        "Tell me the product type",
+    ]
+    assert result["extra_debug"]["clarify_mode"] == "pending_task"
+
+
+@pytest.mark.asyncio
 async def test_build_clarify_policy_semantic_concept_unclear_uses_focus_specific_copy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

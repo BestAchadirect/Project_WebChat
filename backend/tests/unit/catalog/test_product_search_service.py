@@ -21,6 +21,8 @@ from app.services.catalog.attributes_service import eav_service
 class _ProductStub:
     id: object
     sku: str
+    master_code: str = ""
+    group_id: object | None = None
     search_text: str = ""
     is_active: bool = True
     stock_status: str = "in_stock"
@@ -66,14 +68,14 @@ def _card(product: _ProductStub) -> ProductCard:
         object_id=product.sku,
         sku=product.sku,
         legacy_sku=[],
-        name=product.sku,
+        name=product.master_code or product.sku,
         description=None,
         price=1.0,
         currency="USD",
         stock_status=product.stock_status,
         image_url=None,
         product_url=None,
-        attributes={"material": "steel", "jewelry_type": "barbell"},
+        attributes={"master_code": product.master_code or product.sku, "material": "steel", "jewelry_type": "barbell"},
     )
 
 
@@ -107,6 +109,42 @@ async def test_structured_search_uses_sku_lookup_without_projection_read(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_structured_search_uses_master_code_lookup_for_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    group_id = uuid4()
+    anchor = _ProductStub(id=uuid4(), sku="BLK466-F02A12", master_code="BLK466", group_id=group_id)
+    second = _ProductStub(id=uuid4(), sku="BLK466-F04A12", master_code="BLK466", group_id=group_id)
+    db = _QueueDB(
+        [
+            _FakeResult(rows=[]),
+            _FakeResult(scalar=anchor),
+            _FakeResult(rows=[anchor, second]),
+        ]
+    )
+    service = CatalogProductSearchService(db=db)
+
+    async def fake_cards_from_products(self, products):
+        return [_card(item) for item in products]
+
+    monkeypatch.setattr(
+        eav_service,
+        "get_product_attributes",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(service, "_cards_from_products", fake_cards_from_products.__get__(service))
+
+    result, meta = await service.structured_search(
+        sku_token="BLK466",
+        attribute_filters={},
+        limit=5,
+    )
+
+    assert result.product_ids == [anchor.id, second.id]
+    assert [card.sku for card in result.cards] == ["BLK466-F02A12", "BLK466-F04A12"]
+    assert meta["structured_used_sku"] is True
+    assert meta["structured_used_master_code"] is True
+
+
+@pytest.mark.asyncio
 async def test_structured_search_uses_eav_filters_for_single_and_multi_filter_cases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -115,6 +153,7 @@ async def test_structured_search_uses_eav_filters_for_single_and_multi_filter_ca
         [
             _FakeResult(rows=[(product.id,)]),
             _FakeResult(rows=[product]),
+            _FakeResult(rows=[(product.id,)]),
             _FakeResult(rows=[product]),
         ]
     )
@@ -163,7 +202,7 @@ async def test_structured_search_treats_category_as_multi_tag_membership(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     product = _ProductStub(id=uuid4(), sku="BNCHK-A07000")
-    db = _QueueDB([_FakeResult(rows=[product])])
+    db = _QueueDB([_FakeResult(rows=[(product.id,)]), _FakeResult(rows=[product])])
     service = CatalogProductSearchService(db=db)
 
     async def fake_cards_from_products(self, products):
@@ -185,7 +224,7 @@ async def test_structured_search_treats_category_as_multi_tag_membership(
     assert result.product_ids == [product.id]
     assert result.cards[0].sku == "BNCHK-A07000"
     assert meta["structured_filter_count"] == 1
-    assert len(db.executed) == 1
+    assert len(db.executed) == 2
 
 
 @pytest.mark.asyncio

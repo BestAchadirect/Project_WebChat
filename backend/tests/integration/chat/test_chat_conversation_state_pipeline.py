@@ -267,6 +267,104 @@ async def test_component_pipeline_resumes_pending_product_anchor_task(
 
 
 @pytest.mark.asyncio
+async def test_component_pipeline_resumes_pending_task_from_master_code_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True)
+
+    product = canonical_product(
+        sku="DMBJ38-A09000",
+        name="DMBJ38",
+        attributes={"master_code": "DMBJ38", "material": "titanium g23"},
+    )
+    pending_task = conversation_state.build_pending_task(
+        task_type="product_details_question",
+        missing_slot="product_anchor",
+        original_question="Can I see this product?",
+        original_intent="clarify",
+        clarify_question="Which product are you asking about?",
+    )
+
+    class CatalogStub:
+        async def vector_search(self, **kwargs):
+            return SimpleNamespace(
+                cards=[product],
+                product_ids=[str(product.product_id)],
+                best_distance=0.0,
+                distance_by_id={str(product.product_id): 0.0},
+            )
+
+        async def structured_search(self, **kwargs):
+            return (
+                SimpleNamespace(product_ids=[str(product.product_id)]),
+                {},
+            )
+
+        async def structured_count(self, **kwargs):
+            return 1
+
+        async def smart_search(self, **kwargs):
+            raise AssertionError("semantic fallback should not run in this test")
+
+    pipeline = ComponentPipeline(
+        db=ConversationStateDB(
+            {
+                "version": conversation_state.CONVERSATION_STATE_VERSION,
+                "pending_task": pending_task,
+            }
+        ),
+        catalog_search=CatalogStub(),
+        knowledge_retrieval=KnowledgeStub(),
+        redis_cache=RedisStub(),
+    )
+
+    async def fake_resolve(*, product_ids, component_types, redis_cache):
+        return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+
+    decision_state = DecisionState(
+        internal_workflow="clarify",
+        public_workflow="catalog",
+        intent_confidence=0.92,
+        retrieval_confidence=0.0,
+        answerability="none",
+        reason="master code anchor supplied",
+        needs_products=True,
+        needs_knowledge=False,
+        intent="clarify",
+        subintent="product_search",
+        product_query="DMBJ38",
+        response_policy="ask_clarifying_question",
+        clarify_question="Which product are you asking about?",
+        pending_task_type="product_details_question",
+        missing_slot="product_anchor",
+    )
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Can I see DMBJ38?", locale="en-US"),
+        conversation_id=78,
+        run_id="run-master-code-anchor",
+        route_decision_override=_workflow_decision(),
+        detail_override=DetailQuery(
+            requested_fields=["attributes"],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=True,
+            semantic_hints=[],
+            clarify_focus="",
+        ),
+        decision_state_override=decision_state,
+    )
+
+    assert result.debug.get("pending_task_resumed") is True
+    assert result.response.product_carousel
+    assert not any(component.type.value == "clarify" for component in result.response.components)
+    assert result.conversation_state is not None
+    assert dict(result.conversation_state.get("pending_task") or {}) == {}
+
+
+@pytest.mark.asyncio
 async def test_component_pipeline_does_not_merge_filters_when_state_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", False)
 

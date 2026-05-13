@@ -9,7 +9,7 @@ FIELD_LABELS = {
     "image": "Image",
     "attributes": "Attributes",
     "name": "Name",
-    "sku": "Master code",
+    "sku": "Product code",
 }
 
 HIGHLIGHT_ATTRIBUTE_ORDER = (
@@ -66,6 +66,35 @@ class DetailResponseBuilder:
     @staticmethod
     def _label_for_key(key: str) -> str:
         return str(key or "").replace("_", " ").strip().upper()
+
+    @classmethod
+    def _distinct_attribute_values(
+        cls,
+        *,
+        cards: List[Any],
+        key: str,
+        limit: int = 8,
+    ) -> List[str]:
+        wanted = cls._normalize_attr_key(key)
+        if not wanted:
+            return []
+        out: List[str] = []
+        seen: set[str] = set()
+        for card in list(cards or []):
+            raw = cls._get_attr_value(card, wanted)
+            if not raw:
+                raw = str(getattr(card, wanted, "") or "").strip()
+            text = cls._format_highlight_value(raw)
+            if not text:
+                continue
+            norm = text.strip().lower()
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            out.append(text)
+            if len(out) >= max(1, int(limit)):
+                break
+        return out
 
     @classmethod
     def _extract_master_code(cls, card: Any) -> str:
@@ -161,6 +190,27 @@ class DetailResponseBuilder:
         return text
 
     @staticmethod
+    def _summarize_stock(items: List[Any]) -> str:
+        states: List[bool] = []
+        for item in list(items or []):
+            stock_status = str(getattr(item, "stock_status", "") or "").strip().lower()
+            if stock_status:
+                states.append(stock_status == "in_stock")
+                continue
+            states.append(bool(getattr(item, "in_stock", False)))
+        if not states:
+            return "unavailable"
+        if all(states):
+            return "in stock"
+        if not any(states):
+            return "out of stock"
+        in_stock_count = sum(1 for state in states if state)
+        out_stock_count = len(states) - in_stock_count
+        if in_stock_count == 1 and out_stock_count == 1:
+            return "mixed availability"
+        return f"mixed availability ({in_stock_count} in stock, {out_stock_count} out of stock)"
+
+    @staticmethod
     def _truthy_attributes(card: Any) -> Dict[str, str]:
         attrs = card.attributes or {}
         out: Dict[str, str] = {}
@@ -192,8 +242,8 @@ class DetailResponseBuilder:
     def _render_image_master_line(cls, *, index: int, master_code: str, representative: Any) -> str:
         image_url = str(getattr(representative, "image_url", "") or "").strip()
         if image_url:
-            return f"{index}. Master code: {master_code}; Image: {image_url}"
-        return f"{index}. Master code: {master_code}; Image: unavailable"
+            return f"{index}. Product: {master_code}; Image: {image_url}"
+        return f"{index}. Product: {master_code}; Image: unavailable"
 
     @classmethod
     def build_detail_reply(
@@ -247,14 +297,14 @@ class DetailResponseBuilder:
         if master_count == 1 and variant_count > 1:
             master_code = str(master_groups[0]["master_code"] or "").strip()
             if image_focus_mode:
-                header = f"I found image links for {variant_count} variants in master code {master_code}."
+                header = f"I found images for {variant_count} options in {master_code}."
             else:
-                header = f"I found {variant_count} variants for master code {master_code}."
+                header = f"I found {variant_count} options for {master_code}."
         elif master_count > 1 and variant_count > 1:
             if image_focus_mode:
-                header = f"I found image links for {master_count} master codes ({variant_count} variants)."
+                header = f"I found images for {master_count} matching styles."
             else:
-                header = f"I found {master_count} master styles ({variant_count} variants)."
+                header = f"I found {master_count} matching styles."
         else:
             header = (
                 "I found 1 matching product."
@@ -279,10 +329,35 @@ class DetailResponseBuilder:
                 if price_value:
                     detail_bits.append(f"Price: {price_value}")
             if "stock" in requested_set:
-                stock_value = "in stock" if bool(getattr(first, "in_stock", False)) else "out of stock"
+                stock_value = cls._summarize_stock(display_items)
                 detail_bits.append(f"Stock: {stock_value}")
             if detail_bits:
                 lines.append("Key details: " + " | ".join(detail_bits))
+        else:
+            requested_variant_fields = requested_set.intersection({"color", "size", "length"})
+            if requested_variant_fields:
+                # Use all matches (not just displayed cards) so the option list is complete.
+                source_for_values = matches
+                value_lines: List[str] = []
+
+                color_values = cls._distinct_attribute_values(cards=source_for_values, key="color", limit=8)
+                size_values = cls._distinct_attribute_values(cards=source_for_values, key="size", limit=8)
+                length_values = cls._distinct_attribute_values(cards=source_for_values, key="length", limit=8)
+
+                if "color" in requested_variant_fields and color_values:
+                    value_lines.append("Colors: " + ", ".join(color_values))
+
+                if "size" in requested_variant_fields:
+                    if size_values:
+                        value_lines.append("Sizes: " + ", ".join(size_values))
+                    elif length_values:
+                        value_lines.append("Sizes: not available; lengths are: " + ", ".join(length_values))
+
+                if "length" in requested_variant_fields and length_values:
+                    value_lines.append("Lengths: " + ", ".join(length_values))
+
+                if value_lines:
+                    lines.append("Available options: " + " | ".join(value_lines))
         reply_text = "\n".join(lines)
 
         show_cards = True
@@ -297,15 +372,15 @@ class DetailResponseBuilder:
         if show_cards:
             if master_count == 1:
                 master_code = str(master_groups[0]["master_code"] or "").strip()
-                variant_word = "variant" if variant_count == 1 else "variants"
+                option_word = "option" if variant_count == 1 else "options"
                 carousel_msg = (
-                    f"Master code {master_code} has {variant_count} {variant_word}. "
-                    "Expand to view variant details."
+                    f"{master_code} has {variant_count} {option_word}. "
+                    "Open it to view details."
                 )
             elif master_count > 1:
                 carousel_msg = (
-                    f"Showing {master_count} master styles ({variant_count} variants). "
-                    "Expand a style to view variant details."
+                    f"Showing {master_count} matching styles. "
+                    "Open one to view details."
                 )
 
         return DetailResponsePayload(

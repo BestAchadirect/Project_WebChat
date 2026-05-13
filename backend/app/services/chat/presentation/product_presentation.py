@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 from app.services.chat.components.builders.contextual_messages import generate_contextual_reply
 
 PRODUCT_DISPLAY_LIMIT = 10
+_MISSING_MATERIAL_TERMS = ("anodized", "anodised")
 ATTRIBUTE_DISPLAY_ORDER = (
     "category",
     "presentation_type",
@@ -145,12 +146,35 @@ def _build_deterministic_product_reply(
     attribute_filters: Dict[str, str],
     user_text: str,
     products: Sequence[Any] | None = None,
+    requested_fields: Sequence[str] | None = None,
+    result_count: int | None = None,
 ) -> str:
     phrase = build_attribute_match_phrase(attribute_filters)
     product_list = list(products or [])
+    if _looks_like_missing_material_request(user_text=user_text, products=product_list):
+        if product_list:
+            return "We don't currently have anodized products in the store. Here are some related options you might like."
+        return "We don't currently have anodized products in the store."
     if product_list:
         focus_label = _product_focus_label(products=product_list, attribute_filters=attribute_filters)
         benefit_text = _product_benefit_text(products=product_list, attribute_filters=attribute_filters)
+        requested = {
+            str(item or "").strip().lower()
+            for item in list(requested_fields or [])
+            if str(item or "").strip()
+        }
+        count = int(result_count or len(product_list) or 0)
+        count_text = f"{count} " if count > 0 else ""
+        if requested.intersection({"price", "stock"}):
+            detail_bits: List[str] = []
+            if "price" in requested:
+                detail_bits.append("prices")
+            if "stock" in requested:
+                detail_bits.append("stock status")
+            details = " and ".join(detail_bits)
+            verb = "are" if len(detail_bits) > 1 or "price" in requested else "is"
+            scope = focus_label or "matching products"
+            return f"I found {count_text}{scope}. {details.capitalize()} {verb} shown on each item below."
         base = "I found products that match your request"
         if phrase:
             base = f"{base} {phrase}"
@@ -175,16 +199,24 @@ async def build_product_match_reply(
     products: Sequence[Any] | None = None,
     locale: str = "en-US",
     use_llm: bool = True,
+    requested_fields: Sequence[str] | None = None,
+    result_count: int | None = None,
 ) -> str:
+    product_list = list(products or [])
+    if _looks_like_missing_material_request(user_text=user_text, products=product_list):
+        if product_list:
+            return "We don't currently have anodized products in the store. Here are some related options you might like."
+        return "We don't currently have anodized products in the store."
     if not use_llm:
         return _build_deterministic_product_reply(
             attribute_filters=attribute_filters,
             user_text=user_text,
-            products=products,
+            products=product_list,
+            requested_fields=requested_fields,
+            result_count=result_count,
         )
 
     phrase = build_attribute_match_phrase(attribute_filters)
-    product_list = list(products or [])
     if product_list:
         focus_label = _product_focus_label(products=product_list, attribute_filters=attribute_filters)
         benefit_text = _product_benefit_text(products=product_list, attribute_filters=attribute_filters)
@@ -234,6 +266,46 @@ async def build_product_match_reply(
     if phrase:
         return f"I found products that match what you're looking for {phrase}."
     return "I found products that match what you're looking for."
+
+
+def build_compare_product_reply(
+    *,
+    products: Sequence[Any],
+    user_text: str = "",
+) -> str:
+    product_list = [product for product in list(products or []) if product is not None]
+    if not product_list:
+        return "I couldn't find enough products to compare."
+
+    lines: List[str] = []
+    count = len(product_list)
+    lines.append(f"I found {count} products to compare.")
+    for product in product_list[:5]:
+        master_code = _display_text(master_code_from_product(product)) or _display_text(getattr(product, "sku", ""))
+        price = getattr(product, "price", None)
+        currency = _display_text(getattr(product, "currency", "")) or "USD"
+        stock_status = "in stock" if bool(getattr(product, "in_stock", False)) else "out of stock"
+        attrs = dict(getattr(product, "attributes", {}) or {})
+        parts: List[str] = []
+        for key in ("material", "jewelry_type", "gauge", "color", "length"):
+            value = _display_text(attrs.get(key))
+            if value:
+                parts.append(value)
+        detail_bits: List[str] = []
+        if price is not None:
+            try:
+                detail_bits.append(f"{float(price):.2f} {currency}")
+            except Exception:
+                detail_bits.append(f"{price} {currency}")
+        detail_bits.append(stock_status)
+        if parts:
+            detail_bits.append(", ".join(parts[:3]))
+        line = f"- {master_code}: " + ", ".join(detail_bits)
+        lines.append(line)
+
+    if user_text:
+        lines.append("Open a card to compare the full details side by side.")
+    return "\n".join(lines)
 
 
 def _product_attribute_values(products: Sequence[Any], key: str, limit: int = 3) -> List[str]:
@@ -302,6 +374,21 @@ def _product_benefit_text(*, products: Sequence[Any], attribute_filters: Dict[st
     if any(token in jewelry_type for token in ("top", "attachment", "end")):
         return "easy to mix and match"
     return "a strong everyday choice"
+
+
+def _looks_like_missing_material_request(*, user_text: str, products: Sequence[Any]) -> bool:
+    text = _display_text(user_text).lower()
+    if not text or not any(term in text for term in _MISSING_MATERIAL_TERMS):
+        return False
+
+    product_list = list(products or [])
+    searchable_terms = " ".join(
+        [
+            *(_product_attribute_values(product_list, "material", limit=6)),
+            *(_product_attribute_values(product_list, "category", limit=6)),
+        ]
+    ).lower()
+    return not any(term in searchable_terms for term in _MISSING_MATERIAL_TERMS)
 
 
 def build_see_more_follow_up(*, attribute_filters: Dict[str, str], user_text: str) -> str:

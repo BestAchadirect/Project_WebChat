@@ -13,6 +13,16 @@ def test_extract_sku_tokens_dedupes_and_filters_noise() -> None:
     assert tokens == ["ABC-1", "SKU_XY-22"]
 
 
+def test_extract_sku_tokens_accepts_master_code_references() -> None:
+    tokens = routing_policy.extract_sku_tokens("How much for master code GULBZ and DMBJ38 in 14g?")
+    assert tokens == ["GULBZ", "DMBJ38"]
+
+
+def test_extract_sku_tokens_accepts_lowercase_explicit_code_references() -> None:
+    tokens = routing_policy.extract_sku_tokens("what size and color is available for code ulbcvin?")
+    assert tokens == ["ulbcvin"]
+
+
 def test_agentic_tool_suitability_allows_supported_read_only_requests() -> None:
     assert (
         routing_policy.is_agentic_tool_suitable(

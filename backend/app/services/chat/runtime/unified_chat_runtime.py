@@ -148,6 +148,7 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
                     wants_image=bool(detail.wants_image),
                     is_detail_request=True,
                     semantic_hints=list(detail.semantic_hints or []),
+                    unknown_terms=list(getattr(detail, "unknown_terms", []) or []),
                     clarify_focus=str(detail.clarify_focus or "detail_request_needs_specific_product"),
                 )
             detail_llm_calls = int(detail_inference.llm_call_count or 0)
@@ -159,6 +160,7 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
                 wants_image=False,
                 is_detail_request=False,
                 semantic_hints=[],
+                unknown_terms=[],
                 clarify_focus="",
             )
             detail_llm_calls = 0

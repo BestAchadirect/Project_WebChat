@@ -3,6 +3,7 @@ from __future__ import annotations
 INTERNAL_WORKFLOWS = {
     "catalog_search",
     "product_detail",
+    "compare_products",
     "company_info",
     "policy_info",
     "mixed",
@@ -15,6 +16,7 @@ INTERNAL_WORKFLOWS = {
 INTERNAL_WORKFLOW_PROMPT_ORDER = (
     "catalog_search",
     "product_detail",
+    "compare_products",
     "company_info",
     "policy_info",
     "mixed",

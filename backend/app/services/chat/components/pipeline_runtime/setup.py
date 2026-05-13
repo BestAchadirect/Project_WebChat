@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
 from app.core.config import settings
@@ -20,6 +21,26 @@ from app.services.chat.runtime import alias_cache, conversation_state
 from app.services.chat.runtime.search_plan import SearchPlan, build_search_plan
 from app.services.chat.text_normalization import normalize_user_text
 
+_OPAL_COLOR_PATTERN = r"\bopal\s+color\b"
+
+
+def _merge_catalog_filter_hints(
+    *,
+    current_filters: Dict[str, str],
+    user_text: str,
+) -> tuple[Dict[str, str], bool]:
+    merged = dict(current_filters or {})
+    normalized = normalize_user_text(user_text)
+    if "opal_color" in merged:
+        return merged, False
+    if not normalized:
+        return merged, False
+    if not re.search(_OPAL_COLOR_PATTERN, normalized):
+        return merged, False
+    merged["opal_color"] = "opal"
+    return merged, True
+
+
 def _pending_task_is_filled_by_current_turn(
     *,
     pending_task: Dict[str, Any],
@@ -29,9 +50,6 @@ def _pending_task_is_filled_by_current_turn(
     task = dict(pending_task or {})
     missing_slot = str(task.get("missing_slot") or "").strip().lower()
     if missing_slot != "product_anchor":
-        return False
-    intent = str(getattr(decision_state, "intent", "") or "").strip().lower()
-    if intent != "product_information":
         return False
     return bool(product_anchor_present)
 
@@ -357,6 +375,7 @@ class PipelineSetupMixin:
                     "conversation_last_product_skus": list(conversation_memory.last_product_skus or []),
                     "catalog_product_anchor_present": bool(product_anchor_present),
                     "detail_requested_fields": list(detail.requested_fields or []),
+                    "detail_unknown_terms": list(getattr(detail, "unknown_terms", []) or []),
                     "detail_parse_failed": bool(getattr(detail, "parse_failed", False)),
                     "detail_parse_error": str(getattr(detail, "parse_error", "") or ""),
                     "intent_confidence": float(getattr(decision_state_override, "intent_confidence", 0.0) or 0.0),
@@ -381,6 +400,7 @@ class PipelineSetupMixin:
                 "llm_detail_query_confidence",
                 "llm_detail_query_attribute_keys",
                 "llm_detail_query_semantic_hints",
+                "llm_detail_query_unknown_terms",
                 "llm_detail_query_clarify_focus",
             ):
                 if key in detail_debug:

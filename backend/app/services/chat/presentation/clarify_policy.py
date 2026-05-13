@@ -723,27 +723,10 @@ async def build_clarify_policy(
         ]
     elif reason_norm == "pending_task_missing_slot":
         question = str(clarify_question or "").strip() or "Which product are you asking about?"
-        message = await _contextual_message(
-            fallback=question,
-            payload={
-                "reason": reason_norm,
-                "user_text": user_text,
-                "clarify_focus": clarify_focus or "product_anchor",
-                "clarify_category": clarify_category,
-                "clarify_question": question,
-                "clarify_instruction": "Ask only for the missing detail needed to continue the customer's previous task.",
-                "attribute_filters": attribute_filters,
-                "suggested_questions": [question],
-                "suggested_examples": [
-                    "Share the SKU",
-                    "Tell me the material",
-                    "Tell me the product type",
-                ],
-            },
-        )
+        message = question
         questions = [question]
         suggestions = [
-            "Share the SKU",
+            "Share the product code",
             "Tell me the material",
             "Tell me the product type",
         ]

@@ -7,6 +7,7 @@ import pytest
 pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ProductCard
+from app.services.chat.routing import signals as routing_signals
 from app.services.chat.retrieval import sku_precheck
 
 
@@ -68,6 +69,17 @@ def test_sku_precheck_bypasses_multi_sku_queries_without_control_keywords() -> N
     assert should_run is False
     assert reason == "requires_single_sku_token"
     assert len(candidates) == 2
+
+
+def test_compare_signal_requires_explicit_compare_language() -> None:
+    assert routing_signals.looks_like_compare_request(
+        text="compare BLK466-F02A12 vs BLK466-F04A12",
+        sku_tokens=["BLK466-F02A12", "BLK466-F04A12"],
+    )
+    assert not routing_signals.looks_like_compare_request(
+        text="BLK466-F02A12 BLK466-F04A12",
+        sku_tokens=["BLK466-F02A12", "BLK466-F04A12"],
+    )
 
 
 @pytest.mark.asyncio

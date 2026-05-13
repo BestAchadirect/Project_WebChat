@@ -71,11 +71,13 @@ def normalize_text(text: str) -> str:
     return " ".join(str(text or "").strip().lower().split())
 
 
-def is_probable_sku_token(token: str) -> bool:
+def is_probable_sku_token(token: str, *, allow_lowercase_alpha_only: bool = False) -> bool:
     cleaned = (token or "").strip().strip(".,!?;:'\"()[]{}<>")
     if not cleaned:
         return False
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{1,31}", cleaned):
+        return False
+    if re.fullmatch(r"\d{1,2}g(?:auge)?", cleaned.lower()):
         return False
     has_alpha = any(ch.isalpha() for ch in cleaned)
     has_digit = any(ch.isdigit() for ch in cleaned)
@@ -83,16 +85,33 @@ def is_probable_sku_token(token: str) -> bool:
         return False
     if has_digit:
         return True
+    if cleaned.isalpha() and cleaned == cleaned.upper() and len(cleaned) >= 4:
+        return True
+    if allow_lowercase_alpha_only and cleaned.isalpha() and cleaned.islower() and len(cleaned) >= 4:
+        return True
     return cleaned == cleaned.upper() and any(ch in "._-" for ch in cleaned)
 
 
 def extract_sku_tokens(text: str) -> list[str]:
-    pattern = r"\b[A-Za-z0-9]{2,}(?:[-._][A-Za-z0-9]{1,})+\b"
-    found = re.findall(pattern, str(text or ""))
+    raw_text = str(text or "")
+    explicit_code_pattern = re.compile(
+        r"\b(?P<marker>sku|master\s+code|product\s+code|style\s+code|code|style)\s*[:#-]?\s*"
+        r"(?P<token>[A-Za-z0-9][A-Za-z0-9._-]{1,31})\b",
+        flags=re.IGNORECASE,
+    )
+    separated_code_pattern = r"\b[A-Za-z0-9]{2,}(?:[-._][A-Za-z0-9]{1,})+\b"
+    compact_master_pattern = r"\b[A-Za-z]{2,}[A-Za-z0-9]*\d[A-Za-z0-9._-]*\b"
+    found: list[tuple[str, bool]] = []
+    for match in explicit_code_pattern.finditer(raw_text):
+        marker = str(match.group("marker") or "").strip().lower()
+        token = str(match.group("token") or "").strip()
+        found.append((token, True if marker else False))
+    found.extend((token, False) for token in re.findall(separated_code_pattern, raw_text))
+    found.extend((token, False) for token in re.findall(compact_master_pattern, raw_text))
     deduped: list[str] = []
     seen = set()
-    for token in found:
-        if not is_probable_sku_token(token):
+    for token, is_explicit in found:
+        if not is_probable_sku_token(token, allow_lowercase_alpha_only=is_explicit):
             continue
         key = token.lower().strip()
         if not key or key in seen:

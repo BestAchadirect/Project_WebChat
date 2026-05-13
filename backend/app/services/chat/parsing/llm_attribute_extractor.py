@@ -155,6 +155,7 @@ def _understanding_hint_text(understanding: Any, key: str) -> str:
 class AttributeExtractionResult:
     exact_filters: Dict[str, str]
     semantic_hints: List[str]
+    unknown_terms: List[str] = field(default_factory=list)
     soft_filters: Dict[str, str] = field(default_factory=dict)
     clarify_focus: str = ""
     confidence: float = 0.0
@@ -176,6 +177,7 @@ class DetailQueryInferenceResult:
     attribute_filters: Dict[str, str]
     wants_image: bool
     semantic_hints: List[str]
+    unknown_terms: List[str]
     clarify_focus: str
     confidence: float = 0.0
     llm_call_count: int = 0
@@ -819,6 +821,7 @@ def _fallback_detail_from_attribute_candidates(
         attribute_filters={attribute: value_norm},
         wants_image=False,
         semantic_hints=[],
+        unknown_terms=[],
         clarify_focus="",
         confidence=confidence,
         llm_call_count=0,
@@ -911,6 +914,20 @@ def _normalize_semantic_hints(raw_hints: Any) -> List[str]:
         if len(hints) >= 4:
             break
     return hints
+
+
+def _normalize_unknown_terms(raw_terms: Any) -> List[str]:
+    terms: List[str] = []
+    seen: set[str] = set()
+    for raw in list(raw_terms or []):
+        term = normalize_text(str(raw or ""))
+        if not term or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+        if len(terms) >= 4:
+            break
+    return terms
 
 
 def _normalize_attribute_list_target(raw_target: Any) -> str:
@@ -1194,6 +1211,7 @@ def _build_detail_inference_from_llm_data(
         attribute_value_candidates=attribute_value_candidates,
     )
     semantic_hints = _normalize_semantic_hints((llm_data or {}).get("semantic_hints"))
+    unknown_terms = _normalize_unknown_terms((llm_data or {}).get("unknown_terms"))
     clarify_focus = normalize_focus_key((llm_data or {}).get("clarify_focus"))
     wants_image = bool((llm_data or {}).get("wants_image", False))
 
@@ -1201,6 +1219,7 @@ def _build_detail_inference_from_llm_data(
     debug["llm_detail_query_requested_fields"] = list(requested_fields)
     debug["llm_detail_query_attribute_keys"] = list(attribute_filters.keys())
     debug["llm_detail_query_semantic_hints"] = list(semantic_hints)
+    debug["llm_detail_query_unknown_terms"] = list(unknown_terms)
     debug["llm_detail_query_clarify_focus"] = clarify_focus
 
     trusted_llm_output = confidence >= min_confidence
@@ -1208,7 +1227,10 @@ def _build_detail_inference_from_llm_data(
         requested_fields = []
         attribute_filters = {}
         semantic_hints = []
+        unknown_terms = []
         wants_image = False
+        clarify_focus = clarify_focus or "detail_request_needs_specific_product"
+    elif unknown_terms and not attribute_filters and not semantic_hints and not requested_fields and not wants_image:
         clarify_focus = clarify_focus or "detail_request_needs_specific_product"
 
     return DetailQueryInferenceResult(
@@ -1216,6 +1238,7 @@ def _build_detail_inference_from_llm_data(
         attribute_filters=attribute_filters,
         wants_image=wants_image,
         semantic_hints=semantic_hints,
+        unknown_terms=unknown_terms,
         clarify_focus=clarify_focus,
         confidence=confidence if trusted_llm_output else 0.0,
         llm_call_count=1,
@@ -1242,6 +1265,7 @@ async def infer_detail_query(
         "llm_detail_query_requested_fields": [],
         "llm_detail_query_attribute_keys": [],
         "llm_detail_query_semantic_hints": [],
+        "llm_detail_query_unknown_terms": [],
         "llm_detail_query_clarify_focus": "",
     }
     if clean_workflow != "catalog":
@@ -1250,6 +1274,7 @@ async def infer_detail_query(
             attribute_filters={},
             wants_image=False,
             semantic_hints=[],
+            unknown_terms=[],
             clarify_focus="",
             debug=debug,
         )
@@ -1261,6 +1286,7 @@ async def infer_detail_query(
             attribute_filters={},
             wants_image=False,
             semantic_hints=[],
+            unknown_terms=[],
             clarify_focus="",
             debug=debug,
         )
@@ -1317,7 +1343,7 @@ async def infer_detail_query(
     min_confidence = float(getattr(settings, "CHAT_ATTRIBUTE_INTERPRETATION_MIN_CONFIDENCE", 0.55))
     system_prompt = (
         "You interpret detail requests for a body jewelry ecommerce assistant. "
-        "Return strict JSON with keys: requested_fields, attribute_filters, wants_image, semantic_hints, clarify_focus, confidence. "
+        "Return strict JSON with keys: requested_fields, attribute_filters, wants_image, semantic_hints, unknown_terms, clarify_focus, confidence. "
         "requested_fields must be an array using only fields from: price, stock, image, attributes, name, sku. "
         "attribute_filters must only contain supported product attributes and should preserve the user's meaning without code-side alias rewriting. "
         "Only use attributes listed in allowed_exact_attributes or allowed_soft_attributes; those are the DB-searchable attributes with product values. "
@@ -1343,10 +1369,12 @@ async def infer_detail_query(
         "Generic browse requests such as find/show/buy products should leave requested_fields empty and wants_image false; "
         "only set requested_fields or wants_image when the user explicitly asks for a specific detail like price, stock, SKU, measurements, attributes, details, or pictures. "
         "If a product concept cannot be supported by any searchable attribute or DB-backed candidate value, put the concept in semantic_hints or clarify_focus instead of attribute_filters. "
+        "If a word does not map to any supported attribute or DB-backed candidate value, put it in unknown_terms instead of filters. "
         "For gauge and measurement values, output the final product value directly. "
         "Examples: 25 gauge -> 25g, 1.5 inches -> 1.5inch, 8 mm -> 8mm. "
         "Do not rely on hardcoded synonym tables or alias rules. If a value is uncertain and no candidate supports it, keep it close to the user's wording instead of guessing a canonical form. "
         "semantic_hints must be up to 4 short concepts that should influence search but are not exact filters. "
+        "unknown_terms must be up to 4 short unsupported terms that should not be turned into filters. "
         "If the request is ambiguous, set clarify_focus to a family key rather than a one-off term. "
         f"Supported ambiguity families: {', '.join(AMBIGUITY_FAMILY_KEYS)}. "
         "Use body_part when the body area or product anchor is unclear or unsafe to infer. "
@@ -1371,6 +1399,7 @@ async def infer_detail_query(
     requested_fields: List[str] = []
     attribute_filters: Dict[str, str] = {}
     semantic_hints: List[str] = []
+    unknown_terms: List[str] = []
     clarify_focus = ""
     wants_image = False
     try:
@@ -1404,6 +1433,7 @@ async def infer_detail_query(
         requested_fields = list(detail_result.requested_fields or [])
         attribute_filters = dict(detail_result.attribute_filters or {})
         semantic_hints = list(detail_result.semantic_hints or [])
+        unknown_terms = list(detail_result.unknown_terms or [])
         clarify_focus = str(detail_result.clarify_focus or "")
         wants_image = bool(detail_result.wants_image)
     except Exception as exc:
@@ -1421,6 +1451,7 @@ async def infer_detail_query(
             attribute_filters={},
             wants_image=False,
             semantic_hints=[],
+            unknown_terms=[],
             clarify_focus="",
             confidence=0.0,
             llm_call_count=llm_call_count,
@@ -1432,6 +1463,7 @@ async def infer_detail_query(
         attribute_filters=attribute_filters,
         wants_image=wants_image,
         semantic_hints=semantic_hints,
+        unknown_terms=unknown_terms,
         clarify_focus=clarify_focus,
         confidence=confidence if confidence >= min_confidence else 0.0,
         llm_call_count=llm_call_count,
@@ -1502,6 +1534,7 @@ async def infer_chat_interpretation(
             attribute_filters={},
             wants_image=False,
             semantic_hints=[],
+            unknown_terms=[],
             clarify_focus="",
             confidence=0.0,
             llm_call_count=0,
@@ -1644,6 +1677,7 @@ async def enrich_product_attribute_filters(
         "llm_exact_filter_keys": [],
         "llm_soft_filter_keys": [],
         "semantic_hint_keys": [],
+        "unknown_term_keys": [],
         "semantic_hint_clarify_focus": "",
         "semantic_hint_source": "",
         "catalog_searchable_attribute_names": list(searchable_names),
@@ -1680,6 +1714,7 @@ async def enrich_product_attribute_filters(
         return AttributeExtractionResult(
             exact_filters={},
             semantic_hints=[],
+            unknown_terms=[],
             soft_filters={},
             clarify_focus="",
             debug=debug,
@@ -1692,6 +1727,7 @@ async def enrich_product_attribute_filters(
         return AttributeExtractionResult(
             exact_filters={},
             semantic_hints=[],
+            unknown_terms=[],
             soft_filters={},
             clarify_focus="",
             debug=debug,
@@ -1706,7 +1742,7 @@ async def enrich_product_attribute_filters(
 
     system_prompt = (
         "You interpret product-search intent for a body jewelry ecommerce assistant. "
-        "Return strict JSON with keys: exact_filters, soft_filters, semantic_hints, clarify_focus, confidence. "
+        "Return strict JSON with keys: exact_filters, soft_filters, semantic_hints, unknown_terms, clarify_focus, confidence. "
         "When a concept is ambiguous, clarify_focus must be a family key rather than a one-off term. "
         f"Supported ambiguity families: {', '.join(AMBIGUITY_FAMILY_KEYS)}. "
         "Use body_part when the body area or product anchor is unclear or unsafe to infer. "
@@ -1727,11 +1763,13 @@ async def enrich_product_attribute_filters(
         "If a value exists under both material and category, use the material attribute for material words such as gold, steel, titanium, acrylic, or silicone. "
         "Normalize customer wording to DB-backed values when the meaning is clear, including different word forms such as noun, adjective, singular, plural, or common ecommerce phrasing. "
         "If a concept cannot be supported by any searchable attribute or DB-backed candidate value, keep it in semantic_hints or clarify_focus instead of filters. "
+        "If a word does not map to any supported attribute or DB-backed candidate value, keep it in unknown_terms instead of filters. "
         "Return filter values directly from the user's meaning without code-side alias rewriting. "
         "For gauge and measurement values, return the final product value directly. "
         "Examples: 25 gauge -> 25g, 1.5 inches -> 1.5inch, 8 mm -> 8mm. "
         "`semantic_hints` must be an array of up to 4 short concept strings for ambiguous or discovery-style concepts "
         "that should influence semantic search instead of structured filters. "
+        "`unknown_terms` must be an array of up to 4 short unsupported terms that should not be turned into filters. "
         "Do not invent unsupported exact filters."
     )
     user_payload = {
@@ -1752,6 +1790,7 @@ async def enrich_product_attribute_filters(
     llm_exact_filters: Dict[str, str] = {}
     llm_soft_filters: Dict[str, str] = {}
     llm_semantic_hints: List[str] = []
+    llm_unknown_terms: List[str] = []
     llm_clarify_focus = ""
     try:
         llm_data = await llm_service.generate_chat_json(
@@ -1789,6 +1828,7 @@ async def enrich_product_attribute_filters(
             attribute_value_candidates=attribute_value_candidates,
         )
         llm_semantic_hints = _normalize_semantic_hints((llm_data or {}).get("semantic_hints"))
+        llm_unknown_terms = _normalize_unknown_terms((llm_data or {}).get("unknown_terms"))
         llm_clarify_focus = normalize_focus_key((llm_data or {}).get("clarify_focus"))
     except Exception as exc:
         debug["llm_attribute_interpretation_error"] = str(exc)
@@ -1801,11 +1841,13 @@ async def enrich_product_attribute_filters(
     soft_filters: Dict[str, str] = dict(llm_soft_filters) if trusted_llm_output else {}
 
     semantic_hints = list(llm_semantic_hints) if trusted_llm_output else []
+    unknown_terms = list(llm_unknown_terms) if trusted_llm_output else []
     clarify_focus = str(llm_clarify_focus or "") if trusted_llm_output else ""
 
     debug["llm_exact_filter_keys"] = list(validated_exact_filters.keys())
     debug["llm_soft_filter_keys"] = list(soft_filters.keys())
     debug["semantic_hint_keys"] = list(semantic_hints)
+    debug["unknown_term_keys"] = list(unknown_terms)
     debug["semantic_hint_clarify_focus"] = clarify_focus
     if semantic_hints:
         debug["semantic_hint_source"] = "llm"
@@ -1813,6 +1855,7 @@ async def enrich_product_attribute_filters(
     return AttributeExtractionResult(
         exact_filters=validated_exact_filters,
         semantic_hints=semantic_hints,
+        unknown_terms=unknown_terms,
         soft_filters=soft_filters,
         clarify_focus=clarify_focus,
         confidence=llm_confidence if trusted_llm_output else 0.0,

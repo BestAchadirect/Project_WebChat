@@ -134,8 +134,14 @@ class ProductDetailResolver:
         sku_token: Optional[str],
         nlu_product_code: Optional[str],
     ) -> bool:
-        sku = str(card.sku or "").strip().lower()
-        object_id = str(card.object_id or "").strip().lower()
+        attrs = dict(getattr(card, "attributes", {}) or {})
+        code_values = {
+            str(getattr(card, "sku", "") or "").strip().lower(),
+            str(getattr(card, "object_id", "") or "").strip().lower(),
+            str(getattr(card, "name", "") or "").strip().lower(),
+            str(attrs.get("master_code") or "").strip().lower(),
+        }
+        code_values = {value for value in code_values if value}
         candidates = {
             str(sku_token or "").strip().lower(),
             str(nlu_product_code or "").strip().lower(),
@@ -143,7 +149,7 @@ class ProductDetailResolver:
         candidates = {candidate for candidate in candidates if candidate}
         if not candidates:
             return False
-        return sku in candidates or object_id in candidates
+        return bool(code_values.intersection(candidates))
 
     @classmethod
     def resolve_detail_request(

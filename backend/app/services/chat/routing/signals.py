@@ -169,6 +169,17 @@ PRODUCT_DETAIL_MARKERS = (
     "what gauge",
     "what color",
 )
+COMPARE_REQUEST_MARKERS = (
+    "compare",
+    "comparison",
+    "compare to",
+    "compare with",
+    "vs",
+    "versus",
+    "difference between",
+    "which is better",
+    "which one is better",
+)
 PRODUCT_HINT_TERMS = (
     "jewelry",
     "labret",
@@ -478,6 +489,20 @@ def looks_like_product_detail(text: str, sku_tokens: Sequence[str]) -> bool:
     )
     question_term = re.search(r"\b(what|which|is|are|show|check)\b", text)
     return bool(detail_term and question_term)
+
+
+def looks_like_compare_request(text: str, sku_tokens: Sequence[str]) -> bool:
+    normalized = normalize_signal_text(text)
+    tokens = [
+        str(token or "").strip()
+        for token in list(sku_tokens or [])
+        if str(token or "").strip()
+    ]
+    if len(tokens) < 2 or not normalized:
+        return False
+    if contains_any_substring(normalized, COMPARE_REQUEST_MARKERS):
+        return True
+    return bool(re.search(r"\bcompare\b", normalized) and re.search(r"\b(vs|versus)\b", normalized))
 
 
 def is_smalltalk(text: str) -> bool:

@@ -712,11 +712,13 @@ class CatalogProductSearchService:
                     "structured_candidate_cap": cap,
                     "structured_filter_count": len(clean_filters),
                     "structured_used_sku": bool(clean_sku),
+                    "structured_used_master_code": False,
                 },
             )
 
         candidates: List[Product] = []
         master_product_ids: List[Any] = []
+        master_code_lookup_used = False
         lookup_started = time.perf_counter()
         if not candidates and clean_sku:
             sku_stmt = (
@@ -727,6 +729,37 @@ class CatalogProductSearchService:
             )
             sku_result = await self.db.execute(sku_stmt)
             candidates = list(sku_result.scalars().all())
+
+        if not candidates and clean_sku:
+            master_stmt = (
+                select(Product)
+                .where(Product.is_active.is_(True))
+                .where(func.lower(Product.master_code) == clean_sku.lower())
+                .order_by(
+                    case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
+                    Product.created_at.desc(),
+                )
+                .limit(1)
+            )
+            master_result = await self.db.execute(master_stmt)
+            master_product = master_result.scalar_one_or_none()
+            if master_product:
+                master_code_lookup_used = True
+                if master_product.group_id:
+                    variants_stmt = (
+                        select(Product)
+                        .where(Product.group_id == master_product.group_id)
+                        .where(Product.is_active.is_(True))
+                        .order_by(
+                            case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
+                            Product.created_at.desc(),
+                        )
+                        .limit(max(1, int(limit)))
+                    )
+                    variants_result = await self.db.execute(variants_stmt)
+                    candidates = list(variants_result.scalars().all())
+                else:
+                    candidates = [master_product]
 
         if not candidates and clean_filters:
             definitions = await eav_service.get_definitions_by_name(self.db, list(clean_filters.keys()))
@@ -851,6 +884,7 @@ class CatalogProductSearchService:
                 "structured_filter_count": len(clean_filters),
                 "structured_master_first_used": bool(master_product_ids),
                 "structured_used_sku": bool(clean_sku),
+                "structured_used_master_code": bool(master_code_lookup_used),
             },
         )
 
@@ -870,7 +904,29 @@ class CatalogProductSearchService:
                 .where(func.lower(Product.sku) == clean_sku.lower())
             )
             result = await self.db.execute(stmt)
-            return int(result.scalar() or 0)
+            count = int(result.scalar() or 0)
+            if count:
+                return count
+
+            master_stmt = (
+                select(Product)
+                .where(Product.is_active.is_(True))
+                .where(func.lower(Product.master_code) == clean_sku.lower())
+                .limit(1)
+            )
+            master_result = await self.db.execute(master_stmt)
+            master_product = master_result.scalar_one_or_none()
+            if not master_product:
+                return 0
+            if master_product.group_id:
+                group_stmt = (
+                    select(func.count(Product.id))
+                    .where(Product.is_active.is_(True))
+                    .where(Product.group_id == master_product.group_id)
+                )
+                group_result = await self.db.execute(group_stmt)
+                return int(group_result.scalar() or 0)
+            return 1
 
         if clean_filters:
             definitions = await eav_service.get_definitions_by_name(self.db, list(clean_filters.keys()))

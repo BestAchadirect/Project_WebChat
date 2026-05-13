@@ -45,7 +45,15 @@ def _card_identifier(card: Any) -> str:
 
 
 def _card_sku_values(card: Any) -> set[str]:
-    values = {normalize_user_text(str(getattr(card, "sku", "") or ""))}
+    values = {
+        normalize_user_text(str(getattr(card, "sku", "") or "")),
+        normalize_user_text(str(getattr(card, "object_id", "") or "")),
+        normalize_user_text(str(getattr(card, "name", "") or "")),
+        normalize_user_text(str(getattr(card, "title", "") or "")),
+    }
+    attrs = getattr(card, "attributes", {}) or {}
+    if isinstance(attrs, dict):
+        values.add(normalize_user_text(str(attrs.get("master_code") or "")))
     for raw in list(getattr(card, "legacy_sku", []) or []):
         values.add(normalize_user_text(str(raw or "")))
     return {value for value in values if value}

@@ -26,6 +26,7 @@ class DetailQuery:
     wants_image: bool
     is_detail_request: bool
     semantic_hints: List[str] = field(default_factory=list)
+    unknown_terms: List[str] = field(default_factory=list)
     clarify_focus: str = ""
     parse_failed: bool = False
     parse_error: str = ""
@@ -66,6 +67,7 @@ class DetailQueryParser:
         attribute_filters: Dict[str, str],
         wants_image: bool,
         semantic_hints: List[str],
+        unknown_terms: List[str],
         clarify_focus: str,
         confidence: float,
         allowed_attribute_filters: Sequence[str] | None = None,
@@ -86,7 +88,10 @@ class DetailQueryParser:
             filtered_fields = []
             clean_filters = {}
             semantic_hints = []
+            unknown_terms = []
             wants_image = False
+            clarify_focus = clarify_focus or "detail_request_needs_specific_product"
+        elif unknown_terms and not filtered_fields and not clean_filters and not semantic_hints and not wants_image:
             clarify_focus = clarify_focus or "detail_request_needs_specific_product"
         is_detail_request = bool(filtered_fields or wants_image)
         return DetailQuery(
@@ -95,6 +100,7 @@ class DetailQueryParser:
             wants_image=wants_image,
             is_detail_request=is_detail_request,
             semantic_hints=list(semantic_hints or []),
+            unknown_terms=list(unknown_terms or []),
             clarify_focus=str(clarify_focus or ""),
             parse_failed=bool(parse_failed),
             parse_error=str(parse_error or ""),
@@ -138,6 +144,7 @@ class DetailQueryParser:
             attribute_filters=dict(inference.attribute_filters or {}),
             wants_image=bool(inference.wants_image),
             semantic_hints=list(inference.semantic_hints or []),
+            unknown_terms=list(getattr(inference, "unknown_terms", []) or []),
             clarify_focus=str(inference.clarify_focus or ""),
             confidence=float(inference.confidence or 0.0),
             allowed_attribute_filters=allowed_filters,

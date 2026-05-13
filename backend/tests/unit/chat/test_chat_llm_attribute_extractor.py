@@ -219,6 +219,39 @@ async def test_infer_detail_query_accepts_each_searchable_catalog_attribute(
     assert seen_payload["attribute_metadata"] == _catalog_attribute_metadata()
 
 
+@pytest.mark.asyncio
+async def test_infer_detail_query_preserves_unknown_terms(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_load_candidates(**kwargs: Any) -> list[dict[str, Any]]:
+        return []
+
+    async def fake_generate_chat_json(*, messages, model, temperature, max_tokens, usage_kind, **extra):
+        return {
+            "requested_fields": [],
+            "attribute_filters": {},
+            "semantic_hints": [],
+            "unknown_terms": ["sterilized"],
+            "clarify_focus": "",
+            "wants_image": False,
+            "confidence": 0.94,
+        }
+
+    monkeypatch.setattr(extractor_module, "_load_attribute_value_candidates", fake_load_candidates)
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    result = await infer_detail_query(
+        user_text="sterilized with opal",
+        workflow="catalog",
+        alias_map={},
+        parser_rules=_rules(),
+        existing_filters={},
+        db=SimpleNamespace(execute=object()),
+        searchable_attribute_metadata=_catalog_attribute_metadata(),
+    )
+
+    assert result.unknown_terms == ["sterilized"]
+    assert result.clarify_focus == "detail_request_needs_specific_product"
+
+
 def test_catalog_attribute_cases_cover_current_searchable_db_attributes() -> None:
     # Snapshot from eav_service.get_searchable_attribute_metadata against the current catalog.
     current_searchable = {

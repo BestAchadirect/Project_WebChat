@@ -20,6 +20,7 @@ class _Card:
     name: str
     price: float
     currency: str
+    in_stock: bool
     stock_status: str
     image_url: str | None
     product_url: str | None
@@ -31,6 +32,7 @@ def _card(
     sku: str,
     name: str,
     price: float = 1.0,
+    in_stock: bool = True,
     stock_status: str = "in_stock",
     image_url: str | None = None,
     attributes: dict | None = None,
@@ -42,6 +44,7 @@ def _card(
         name=name,
         price=price,
         currency="USD",
+        in_stock=in_stock,
         stock_status=stock_status,
         image_url=image_url,
         product_url=None,
@@ -113,6 +116,7 @@ def _fake_detail_inference(
     attribute_filters: dict[str, str] | None = None,
     wants_image: bool = False,
     semantic_hints: list[str] | None = None,
+    unknown_terms: list[str] | None = None,
     clarify_focus: str = "",
     confidence: float = 0.91,
     debug: dict | None = None,
@@ -122,6 +126,7 @@ def _fake_detail_inference(
         attribute_filters=dict(attribute_filters or {}),
         wants_image=wants_image,
         semantic_hints=list(semantic_hints or []),
+        unknown_terms=list(unknown_terms or []),
         clarify_focus=clarify_focus,
         confidence=confidence,
         debug=dict(debug or {}),
@@ -230,6 +235,33 @@ async def test_detail_query_parser_does_not_force_sterilization_into_finish_with
 
     assert parsed.attribute_filters.get("finish") is None
     assert all(parsed.attribute_filters.get(key) is None for key in ("stone", "color", "opal_color"))
+
+
+@pytest.mark.asyncio
+async def test_detail_query_parser_uses_unknown_terms_to_request_specific_product(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_infer_detail_query(**kwargs):
+        return _fake_detail_inference(
+            requested_fields=[],
+            attribute_filters={},
+            semantic_hints=[],
+            unknown_terms=["sterilized"],
+            clarify_focus="",
+        )
+
+    monkeypatch.setattr(
+        "app.services.chat.parsing.detail_query_parser.infer_detail_query",
+        fake_infer_detail_query,
+    )
+
+    parsed = await DetailQueryParser.parse_async(
+        user_text="sterilized with opal",
+        nlu_data={"workflow": "catalog"},
+        alias_map=_db_alias_map(),
+        parser_rules=_db_rules(),
+    )
+
+    assert parsed.unknown_terms == ["sterilized"]
+    assert parsed.clarify_focus == "detail_request_needs_specific_product"
 
 
 @pytest.mark.asyncio
@@ -436,8 +468,35 @@ def test_detail_response_builder_reports_missing_image() -> None:
     assert "Image:" not in payload.reply_text
     assert payload.card_policy_reason == "single_match_text_only"
     assert len(payload.product_carousel) == 1
-    assert payload.carousel_msg == "Master code Example Product has 1 variant. Expand to view variant details."
+    assert payload.carousel_msg == "Example Product has 1 option. Open it to view details."
     assert payload.follow_up_questions == []
+
+
+def test_product_detail_resolver_treats_master_code_as_exact_product_anchor() -> None:
+    first = _card(
+        sku="BLK466-F02A12",
+        name="BLK466",
+        attributes={"master_code": "BLK466", "material": "Gold"},
+    )
+    second = _card(
+        sku="BLK466-F04A12",
+        name="BLK466",
+        attributes={"master_code": "BLK466", "material": "Gold"},
+    )
+    resolver = ProductDetailResolver()
+    resolved = resolver.resolve_detail_request(
+        candidate_cards=[first, second],
+        distance_by_id={str(first.id): 0.0, str(second.id): 0.0},
+        requested_fields=["price"],
+        attribute_filters={},
+        sku_token="BLK466",
+        nlu_product_code="BLK466",
+        max_matches=3,
+        min_confidence=0.55,
+    )
+
+    assert resolved.has_exact_match is True
+    assert [item.sku for item in resolved.matches] == ["BLK466-F02A12", "BLK466-F04A12"]
 
 
 def test_detail_response_builder_multi_match_followups_use_context() -> None:
@@ -462,14 +521,42 @@ def test_detail_response_builder_multi_match_followups_use_context() -> None:
         max_matches=3,
     )
     assert payload.card_policy_reason == "multiple_matches"
-    assert payload.carousel_msg == "Master code BLK466 has 2 variants. Expand to view variant details."
+    assert payload.carousel_msg == "BLK466 has 2 options. Open it to view details."
     assert payload.product_carousel
-    assert payload.reply_text.startswith("I found 2 variants for master code BLK466.")
+    assert payload.reply_text.startswith("I found 2 options for BLK466.")
     assert "Key details:" in payload.reply_text
     assert "[JEWELRY TYPE] Barbell" in payload.reply_text
     assert "Attributes:" not in payload.reply_text
     assert "Top master code:" not in payload.reply_text
     assert payload.follow_up_questions == []
+
+
+def test_detail_response_builder_stock_summary_uses_entire_variant_set() -> None:
+    first = _card(
+        sku="BRUBN2-F04000",
+        name="BRUBN2",
+        stock_status="in_stock",
+        in_stock=True,
+        attributes={"master_code": "BRUBN2"},
+    )
+    second = _card(
+        sku="BRUBN2-F06000",
+        name="BRUBN2",
+        stock_status="out_of_stock",
+        in_stock=False,
+        attributes={"master_code": "BRUBN2"},
+    )
+    payload = DetailResponseBuilder.build_detail_reply(
+        matches=[first, second],
+        requested_fields=["stock"],
+        attribute_filters={},
+        missing_fields_by_product={},
+        wants_image=False,
+        max_matches=3,
+    )
+
+    assert payload.reply_text.startswith("I found 2 options for BRUBN2.")
+    assert "Stock: mixed availability" in payload.reply_text
 
 
 def test_detail_response_builder_attribute_focus_highlights_filters() -> None:
@@ -491,13 +578,13 @@ def test_detail_response_builder_attribute_focus_highlights_filters() -> None:
         wants_image=False,
         max_matches=3,
     )
-    assert payload.reply_text.startswith("I found 2 variants for master code BLK466.")
+    assert payload.reply_text.startswith("I found 2 options for BLK466.")
     assert "Key details:" in payload.reply_text
     assert "[MATERIAL] Gold" in payload.reply_text
     assert "[COLOR] Gold" in payload.reply_text
     assert "Attributes:" not in payload.reply_text
     assert "Top master code:" not in payload.reply_text
-    assert payload.carousel_msg == "Master code BLK466 has 2 variants. Expand to view variant details."
+    assert payload.carousel_msg == "BLK466 has 2 options. Open it to view details."
 
 
 def test_detail_response_builder_image_focus_groups_master_without_sku_lines() -> None:
@@ -522,7 +609,7 @@ def test_detail_response_builder_image_focus_groups_master_without_sku_lines() -
         max_matches=3,
     )
 
-    assert payload.reply_text == "I found image links for 2 variants in master code BLK466."
+    assert payload.reply_text == "I found images for 2 options in BLK466."
     assert "SKU:" not in payload.reply_text
     assert payload.card_policy_reason == "image_master_grouped"
     assert len(payload.product_carousel) == 1

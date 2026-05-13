@@ -4,6 +4,7 @@ from typing import Optional
 
 from app.services.chat.components.types import ComponentSource
 from app.services.chat.routing import routing_policy
+from app.services.chat.routing import signals as routing_signals
 from app.services.chat.routing.signals import classify_fallback_reason
 from app.services.chat.routing.contracts import DecisionState, UnderstandingResult
 from app.services.chat.runtime.capabilities import ChatRuntimeCapabilities, build_chat_runtime_capabilities
@@ -133,11 +134,17 @@ def _is_unscoped_general_task(understanding: UnderstandingResult) -> bool:
 def _derive_internal_workflow(understanding: UnderstandingResult) -> str:
     if not str(understanding.normalized_text or "").strip():
         return "clarify"
+    compare_request = routing_signals.looks_like_compare_request(
+        text=str(understanding.normalized_text or ""),
+        sku_tokens=understanding.sku_tokens or [],
+    )
     if _uses_response_intent_contract(understanding):
         intent = str(getattr(understanding, "intent", "") or "").strip().lower()
         legacy_workflow = str(getattr(understanding, "workflow_hypothesis", "") or "").strip().lower()
         response_policy = str(getattr(understanding, "response_policy", "") or "").strip().lower()
         if intent == "product_information":
+            if compare_request and len(list(understanding.sku_tokens or [])) >= 2:
+                return "compare_products"
             if bool(understanding.needs_products) and bool(understanding.needs_knowledge):
                 return "mixed"
             if bool(understanding.needs_products):
@@ -162,6 +169,8 @@ def _derive_internal_workflow(understanding: UnderstandingResult) -> str:
         if intent == "off_topic":
             return "off_topic"
         if intent == "clarify":
+            if compare_request and len(list(understanding.sku_tokens or [])) >= 2:
+                return "compare_products"
             if bool(understanding.needs_products) and bool(understanding.needs_knowledge):
                 return "mixed"
             if bool(understanding.needs_products):

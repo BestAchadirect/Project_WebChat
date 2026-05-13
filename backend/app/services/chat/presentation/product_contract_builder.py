@@ -53,6 +53,8 @@ async def build_product_cards_contract(
             products=display_products,
             locale=str(getattr(context, "locale", "") or "en-US"),
             use_llm=False,
+            requested_fields=list(debug.get("detail_requested_fields") or []),
+            result_count=result_count,
         )
 
     if not carousel_msg:

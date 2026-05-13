@@ -5,13 +5,13 @@ import { PaginationControls } from '../../components/common/PaginationControls';
 import { defaultPageSize } from '../../constants/pagination';
 
 type BulkFieldState = Record<string, { enabled: boolean; value: string }>;
-type ReviewPreset = 'all' | 'needs_review' | 'missing_category' | 'missing_core' | 'missing_image' | 'no_master_code' | 'hidden_in_stock' | 'visible_out_of_stock';
 type DetailTab = 'attributes' | 'quality' | 'description';
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 type QualityFlagSeverity = 'info' | 'warning' | 'danger';
+type QualityFlagKey = 'missing_category' | 'missing_core' | 'missing_image' | 'no_master_code' | 'hidden_in_stock' | 'visible_out_of_stock';
 
 type QualityFlag = {
-    key: ReviewPreset;
+    key: QualityFlagKey;
     label: string;
     description: string;
     severity: QualityFlagSeverity;
@@ -97,24 +97,6 @@ const getProductQualityFlags = (product: Product): QualityFlag[] => {
     return flags;
 };
 
-const productMatchesReviewPreset = (product: Product, preset: ReviewPreset): boolean => {
-    if (preset === 'all') return true;
-    const flags = getProductQualityFlags(product);
-    if (preset === 'needs_review') return flags.length > 0;
-    return flags.some((flag) => flag.key === preset);
-};
-
-const reviewPresets: Array<{ key: ReviewPreset; label: string }> = [
-    { key: 'all', label: 'All' },
-    { key: 'needs_review', label: 'Needs review' },
-    { key: 'missing_category', label: 'No category' },
-    { key: 'missing_core', label: 'Missing core' },
-    { key: 'missing_image', label: 'No image' },
-    { key: 'no_master_code', label: 'No master code' },
-    { key: 'hidden_in_stock', label: 'Hidden in stock' },
-    { key: 'visible_out_of_stock', label: 'Visible out of stock' },
-];
-
 const saveStateLabel: Record<SaveState, string> = {
     idle: '',
     saving: 'Saving...',
@@ -133,7 +115,6 @@ export const ProductTuningPage: React.FC = () => {
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
-    const [reviewPreset, setReviewPreset] = useState<ReviewPreset>('all');
     const [detailTab, setDetailTab] = useState<DetailTab>('attributes');
     const [fieldSaveStates, setFieldSaveStates] = useState<Record<string, SaveState>>({});
     const [attributeDrafts, setAttributeDrafts] = useState<Record<string, string>>({});
@@ -231,17 +212,7 @@ export const ProductTuningPage: React.FC = () => {
     const [facetData, setFacetData] = useState<Record<string, ProductFilterValue[]>>({});
     const [facetLoading, setFacetLoading] = useState(false);
 
-    const displayedProducts = useMemo(
-        () => products.filter((product) => productMatchesReviewPreset(product, reviewPreset)),
-        [products, reviewPreset]
-    );
-    const reviewPresetCounts = useMemo(
-        () => reviewPresets.reduce((counts, preset) => {
-            counts[preset.key] = products.filter((product) => productMatchesReviewPreset(product, preset.key)).length;
-            return counts;
-        }, {} as Record<ReviewPreset, number>),
-        [products]
-    );
+    const displayedProducts = products;
     const categoryOptions = useMemo(
         () => (facetData.category || [])
             .map((option) => String(option.value || '').trim())
@@ -253,11 +224,6 @@ export const ProductTuningPage: React.FC = () => {
         [products, selectedProduct?.id]
     );
     const selectedMasterCode = (persistedSelectedProduct?.master_code || selectedProduct?.master_code || '').trim();
-    const masterVariantCount = selectedMasterCode ? Math.max(masterVariants.length, 1) : 1;
-    const masterVariantPreview = useMemo(
-        () => masterVariants.slice(0, 5).map((product) => product.sku).filter(Boolean),
-        [masterVariants]
-    );
 
     useEffect(() => {
         const firstPage = 1;
@@ -880,6 +846,10 @@ export const ProductTuningPage: React.FC = () => {
 
     const handleFieldBlur = async (key: keyof Product) => {
         if (!selectedProduct) return;
+        if (key === 'master_code') {
+            await handleMasterCodeCommit(String(selectedProduct.master_code || ''));
+            return;
+        }
         const current = products.find(p => p.id === selectedProduct.id);
         const nextValue = selectedProduct[key] as unknown;
         if (current && current[key] === nextValue) return;
@@ -949,6 +919,57 @@ export const ProductTuningPage: React.FC = () => {
         const current = products.find((p) => p.id === selectedProduct.id);
         if (current && normalizeCategoryValue(current.category) === normalized) return;
         await applyProductUpdate(selectedProduct.id, { category: normalized });
+    };
+
+    const handleMasterCodeCommit = async (nextMasterCode: string) => {
+        if (!selectedProduct) return;
+        const normalized = String(nextMasterCode || '').trim().toUpperCase();
+        const currentMasterCode = String(selectedProduct.master_code || '').trim().toUpperCase();
+        if (currentMasterCode === normalized) return;
+
+        const variantIds = Array.from(new Set(
+            (masterVariants.length > 0 ? masterVariants : [selectedProduct])
+                .map((product) => product.id)
+                .filter(Boolean)
+        ));
+        if (variantIds.length <= 1) {
+            await applyProductUpdate(selectedProduct.id, { master_code: normalized });
+            return;
+        }
+
+        const confirmed = window.confirm(
+            `Apply master code "${normalized || '(empty)'}" to ${variantIds.length} SKUs in this master group?\n\nThis will rename the master code on every child SKU in the group.`
+        );
+        if (!confirmed) return;
+
+        setFieldSaveStateForProducts(variantIds, 'master_code', 'saving');
+        try {
+            await productsApi.bulkUpdate(variantIds, { master_code: normalized });
+            setProducts((prods) => prods.map((product) => (
+                variantIds.includes(product.id) ? { ...product, master_code: normalized } : product
+            )));
+            setMasterVariants((variants) => variants.map((product) => (
+                variantIds.includes(product.id) ? { ...product, master_code: normalized } : product
+            )));
+            setSelectedProduct((current) => (
+                current && variantIds.includes(current.id) ? { ...current, master_code: normalized } : current
+            ));
+            setFieldSaveStateForProducts(variantIds, 'master_code', 'saved');
+            window.setTimeout(() => {
+                setFieldSaveStates((prev) => {
+                    const next = { ...prev };
+                    variantIds.forEach((productId) => {
+                        if (next[`${productId}:master_code`] === 'saved') {
+                            next[`${productId}:master_code`] = 'idle';
+                        }
+                    });
+                    return next;
+                });
+            }, 1600);
+        } catch (error) {
+            console.error('Failed to apply master code to master group:', error);
+            setFieldSaveStateForProducts(variantIds, 'master_code', 'error');
+        }
     };
 
 
@@ -1044,7 +1065,6 @@ export const ProductTuningPage: React.FC = () => {
     const displayedSelectedCount = displayedProducts.filter((product) => selectedIds.has(product.id)).length;
     const allSelected = displayedProducts.length > 0 && displayedSelectedCount === displayedProducts.length;
     const someSelected = displayedSelectedCount > 0 && displayedSelectedCount < displayedProducts.length;
-    const selectedQualityFlags = selectedProduct ? getProductQualityFlags(selectedProduct) : [];
     const selectedPersistedProduct = selectedProduct
         ? products.find((product) => product.id === selectedProduct.id) || selectedProduct
         : null;
@@ -1134,41 +1154,6 @@ export const ProductTuningPage: React.FC = () => {
                             </div>
                         </div>
                     )}
-                    <div className="rounded-2xl border border-gray-200 bg-gray-50/70 p-3">
-                        <div className="mb-2 flex items-center justify-between gap-3">
-                            <div>
-                                <div className="text-xs font-black uppercase tracking-[0.16em] text-gray-500">Review queue</div>
-                                <div className="text-xs text-gray-500">Use these presets to find records that need cleanup before editing.</div>
-                            </div>
-                            <div className="hidden text-xs font-semibold text-gray-500 sm:block">
-                                Showing {displayedProducts.length} of {products.length}
-                            </div>
-                        </div>
-                        <div className="flex gap-2 overflow-x-auto pb-1">
-                            {reviewPresets.map((preset) => {
-                                const active = reviewPreset === preset.key;
-                                return (
-                                    <button
-                                        key={preset.key}
-                                        type="button"
-                                        onClick={() => {
-                                            setReviewPreset(preset.key);
-                                            setSelectedIds(new Set());
-                                        }}
-                                        className={`flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold transition-all ${active
-                                            ? 'border-gray-900 bg-gray-900 text-white shadow-sm'
-                                            : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:text-gray-900'
-                                            }`}
-                                    >
-                                        <span>{preset.label}</span>
-                                        <span className={`rounded-full px-2 py-0.5 text-[10px] ${active ? 'bg-white/15 text-white' : 'bg-gray-100 text-gray-500'}`}>
-                                            {reviewPresetCounts[preset.key] || 0}
-                                        </span>
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    </div>
                     {/* Primary Controls: Search + Global Filters */}
                     <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center flex-1 min-w-0">
@@ -1649,8 +1634,8 @@ export const ProductTuningPage: React.FC = () => {
 
                         {!loading && products.length > 0 && displayedProducts.length === 0 && (
                             <div className="flex flex-col items-center justify-center py-20 text-center">
-                                <div className="mb-3 rounded-full bg-green-50 px-3 py-1 text-xs font-bold text-green-700">No records in this review queue</div>
-                                <p className="text-sm text-gray-500">Choose another review preset or change the active filters.</p>
+                                <div className="mb-3 rounded-full bg-green-50 px-3 py-1 text-xs font-bold text-green-700">No matching records</div>
+                                <p className="text-sm text-gray-500">Try a different search or change the active filters.</p>
                             </div>
                         )}
 
@@ -1729,7 +1714,7 @@ export const ProductTuningPage: React.FC = () => {
                                     <div className="grid grid-cols-3 border-b border-gray-200 bg-gray-50/70 p-1">
                                         {[
                                             { key: 'attributes', label: 'Attributes' },
-                                            { key: 'quality', label: `Quality ${selectedQualityFlags.length ? `(${selectedQualityFlags.length})` : ''}` },
+                                            { key: 'quality', label: 'Quality' },
                                             { key: 'description', label: 'Description' },
                                         ].map((tab) => (
                                             <button
@@ -1774,9 +1759,7 @@ export const ProductTuningPage: React.FC = () => {
                                                     value={selectedProduct.category}
                                                     options={categoryOptions}
                                                     saveState={getFieldSaveState('category')}
-                                                    masterVariantCount={masterVariantCount}
                                                     masterVariantsLoading={masterVariantsLoading}
-                                                    masterVariantPreview={masterVariantPreview}
                                                     onCommit={(value) => handleCategoryCommit(value, 'master')}
                                                 />
                                             </section>
@@ -1849,32 +1832,6 @@ export const ProductTuningPage: React.FC = () => {
                                                     <div className="text-[10px] font-black uppercase tracking-widest text-gray-400">Stock</div>
                                                     <div className="mt-1 text-sm font-black text-gray-900">{selectedProduct.in_stock ? 'In' : 'Out'}</div>
                                                 </div>
-                                            </div>
-
-                                            <div>
-                                                <h4 className="mb-2 text-xs font-black uppercase tracking-widest text-gray-400">Review Flags</h4>
-                                                {selectedQualityFlags.length > 0 ? (
-                                                    <div className="space-y-2">
-                                                        {selectedQualityFlags.map((flag) => (
-                                                            <div
-                                                                key={flag.key}
-                                                                className={`rounded-xl border p-3 ${flag.severity === 'danger'
-                                                                    ? 'border-red-200 bg-red-50 text-red-800'
-                                                                    : flag.severity === 'warning'
-                                                                        ? 'border-amber-200 bg-amber-50 text-amber-800'
-                                                                        : 'border-blue-200 bg-blue-50 text-blue-800'
-                                                                    }`}
-                                                            >
-                                                                <div className="text-sm font-black">{flag.label}</div>
-                                                                <div className="mt-1 text-xs opacity-80">{flag.description}</div>
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                ) : (
-                                                    <div className="rounded-xl border border-green-100 bg-green-50 p-4 text-sm font-semibold text-green-700">
-                                                        No review flags for this product.
-                                                    </div>
-                                                )}
                                             </div>
 
                                             <div className="rounded-xl border border-red-100 bg-red-50 p-4">
@@ -2188,24 +2145,22 @@ const CategoryAttributeEditor: React.FC<{
     value?: string | null;
     options?: string[];
     saveState?: SaveState;
-    masterVariantCount?: number;
     masterVariantsLoading?: boolean;
-    masterVariantPreview?: string[];
     onCommit: (value: string) => void;
 }> = ({
     label,
     value,
     options = [],
     saveState = 'idle',
-    masterVariantCount = 1,
     masterVariantsLoading = false,
-    masterVariantPreview = [],
     onCommit,
 }) => {
     const normalizedValue = normalizeCategoryValue(value);
     const tokens = useMemo(() => parseCategoryTokens(normalizedValue), [normalizedValue]);
     const [draftTokens, setDraftTokens] = useState<string[]>(tokens);
     const [newToken, setNewToken] = useState('');
+    const [composerOpen, setComposerOpen] = useState(false);
+    const composerInputRef = useRef<HTMLInputElement | null>(null);
     const draftValue = normalizeCategoryValue(draftTokens.join(CATEGORY_DELIMITER));
     const hasChanges = draftValue !== normalizedValue;
     const normalizedDraftKeys = useMemo(
@@ -2226,7 +2181,14 @@ const CategoryAttributeEditor: React.FC<{
     useEffect(() => {
         setDraftTokens(tokens);
         setNewToken('');
+        setComposerOpen(false);
     }, [normalizedValue]);
+
+    useEffect(() => {
+        if (composerOpen) {
+            window.setTimeout(() => composerInputRef.current?.focus(), 0);
+        }
+    }, [composerOpen]);
 
     const commitTokens = (nextTokens: string[]) => {
         onCommit(nextTokens.join(CATEGORY_DELIMITER));
@@ -2242,6 +2204,7 @@ const CategoryAttributeEditor: React.FC<{
         const nextTokens = parseCategoryTokens([...draftTokens, candidate].join(CATEGORY_DELIMITER));
         setDraftTokens(nextTokens);
         setNewToken('');
+        setComposerOpen(false);
     };
 
     return (
@@ -2259,50 +2222,66 @@ const CategoryAttributeEditor: React.FC<{
                 </div>
             </div>
 
-            <div className="flex flex-wrap gap-1.5 min-h-[28px]">
-                {draftTokens.length > 0 ? (
-                    draftTokens.map((token, index) => (
+            <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                    {draftTokens.length === 0 && (
+                        <span className="rounded-full border border-dashed border-gray-300 bg-white px-2.5 py-1 text-xs text-gray-400">
+                            No category values yet
+                        </span>
+                    )}
+                    {draftTokens.map((token, index) => (
                         <button
                             key={`${token}-${index}`}
                             type="button"
                             onClick={() => removeToken(index)}
-                            className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-white px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
+                            className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50"
                             title="Click to remove"
                         >
-                            <span className="max-w-[240px] truncate">{token}</span>
+                            <span className="max-w-[220px] truncate">{token}</span>
                             <span className="text-indigo-400">x</span>
                         </button>
-                    ))
-                ) : (
-                    <span className="text-xs text-gray-400">No category values yet</span>
-                )}
-            </div>
-
-            <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                    <input
-                        type="text"
-                        value={newToken}
-                        onChange={(event) => setNewToken(event.target.value)}
-                        onKeyDown={(event) => {
-                            if (event.key === 'Enter') {
-                                event.preventDefault();
-                                addToken();
-                            }
-                        }}
-                        placeholder="Search or add category"
-                        className="flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    />
-                    <button
-                        type="button"
-                        onClick={() => addToken()}
-                        disabled={!newToken.trim()}
-                        className="rounded-lg bg-primary-600 px-3 py-2 text-xs font-semibold text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        Add
-                    </button>
+                    ))}
+                    {!composerOpen ? (
+                        <button
+                            type="button"
+                            onClick={() => setComposerOpen(true)}
+                            className="inline-flex items-center gap-1 rounded-full border border-dashed border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-500 transition-colors hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
+                        >
+                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-current/10 text-[12px] leading-none">+</span>
+                            Add category
+                        </button>
+                    ) : (
+                        <div className="inline-flex items-center gap-1 rounded-full border border-indigo-300 bg-indigo-50 px-1.5 py-1 shadow-sm">
+                            <input
+                                ref={composerInputRef}
+                                type="text"
+                                value={newToken}
+                                onChange={(event) => setNewToken(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                        event.preventDefault();
+                                        addToken();
+                                    }
+                                    if (event.key === 'Escape') {
+                                        setComposerOpen(false);
+                                        setNewToken('');
+                                    }
+                                }}
+                                placeholder="Search or add category"
+                                className="min-w-[170px] max-w-[260px] border-0 bg-transparent px-2 py-1 text-xs font-medium text-gray-700 placeholder:text-gray-400 focus:outline-none"
+                            />
+                            <button
+                                type="button"
+                                onClick={() => addToken()}
+                                disabled={!newToken.trim()}
+                                className="inline-flex items-center rounded-full bg-primary-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                Add
+                            </button>
+                        </div>
+                    )}
                 </div>
-                {suggestions.length > 0 && (
+                {composerOpen && suggestions.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                         {suggestions.map((suggestion) => (
                             <button
@@ -2317,44 +2296,26 @@ const CategoryAttributeEditor: React.FC<{
                     </div>
                 )}
                 <div className="space-y-3 border-t border-indigo-100 pt-3">
-                    <div className="rounded-lg border border-gray-100 bg-white px-3 py-2">
-                        <div className="flex items-center justify-between gap-2">
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Master group impact</span>
-                            <span className="text-[10px] font-semibold text-gray-500">
-                                {masterVariantsLoading ? 'Loading SKUs...' : `${masterVariantCount} SKU${masterVariantCount === 1 ? '' : 's'}`}
-                            </span>
-                        </div>
-                        {masterVariantPreview.length > 0 && (
-                            <p className="mt-1 truncate text-[10px] text-gray-400" title={masterVariantPreview.join(', ')}>
-                                {masterVariantPreview.join(', ')}
-                                {masterVariantCount > masterVariantPreview.length ? `, +${masterVariantCount - masterVariantPreview.length} more` : ''}
-                            </p>
-                        )}
-                    </div>
-
-                    <div className="grid gap-2">
-                        <button
-                            type="button"
-                            onClick={() => commitTokens(draftTokens)}
-                            disabled={!hasChanges || saveState === 'saving' || masterVariantsLoading}
-                            className="flex w-full items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-3 text-left transition-all hover:border-indigo-300 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            <span className="shrink-0 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white">Update category</span>
-                        </button>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-2">
-                        <p className="text-[10px] text-gray-400">Category changes stay staged until you update the master group.</p>
+                    <div className="flex items-center justify-end gap-2">
                         <button
                             type="button"
                             onClick={() => {
                                 setDraftTokens(tokens);
                                 setNewToken('');
+                                setComposerOpen(false);
                             }}
                             disabled={!hasChanges}
                             className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             Reset
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => commitTokens(draftTokens)}
+                            disabled={!hasChanges || saveState === 'saving' || masterVariantsLoading}
+                            className="flex items-center gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-3 text-left transition-all hover:border-indigo-300 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <span className="shrink-0 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white">Update category</span>
                         </button>
                     </div>
                 </div>
