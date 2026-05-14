@@ -95,7 +95,27 @@ class ProductDetailResolver:
 
         if key == "jewelry_type":
             actual = cls._normalize(attrs.get("jewelry_type") or attrs.get("type") or "")
-            return bool(actual) and expected_norm in actual
+            expected_singular = expected_norm[:-1] if expected_norm.endswith("s") else expected_norm
+            actual_singular = actual[:-1] if actual.endswith("s") else actual
+            return bool(actual) and (
+                expected_norm in actual
+                or expected_singular in actual_singular
+                or actual_singular in expected_singular
+            )
+
+        if key == "stock_status":
+            actual_stock = cls._normalize_stock(getattr(card, "stock_status", "") or attrs.get("stock_status") or "")
+            return bool(actual_stock) and actual_stock == cls._normalize_stock(expected_norm)
+
+        if key in {"min_price", "max_price"}:
+            try:
+                actual_price = float(getattr(card, "price", None))
+                expected_price = float(str(expected_norm).replace("$", "").strip())
+            except Exception:
+                return False
+            if key == "min_price":
+                return actual_price >= expected_price
+            return actual_price <= expected_price
 
         if key in {"material", "threading", "color"}:
             actual = cls._normalize(attrs.get(key) or "")

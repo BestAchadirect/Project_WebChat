@@ -326,6 +326,7 @@ class PipelineWorkflowDetailMixin:
         debug_meta["raw_product_row_count"] = int(len(state.presentation.canonical_products))
         debug_meta["product_unique_master_count"] = int(total_unique_products)
         debug_meta["product_display_count"] = int(len(display_products))
+        debug_meta["final_product_count"] = int(len(display_products))
         if not bool(state.catalog.pagination_requested):
             state.catalog.pagination_offset = 0
             state.catalog.pagination_limit = int(display_limit)

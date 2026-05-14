@@ -78,7 +78,7 @@ def test_regression_eval_routing_case_uses_live_understanding_and_decision_path(
             "execution_mode": "agentic",
             "internal_workflow": "catalog_search",
             "workflow_hypothesis": "catalog_search",
-            "understanding_source": "deterministic",
+            "understanding_source": "llm",
             "selection_source": "agentic",
         },
     }

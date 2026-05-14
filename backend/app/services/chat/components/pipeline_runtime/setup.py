@@ -10,6 +10,8 @@ from app.services.chat.components.types import ComponentSource
 from app.services.chat.parsing import parser_rule_cache
 from app.services.chat.parsing.detail_query_parser import DetailQueryParser
 from app.services.chat.parsing.llm_attribute_extractor import enrich_product_attribute_filters
+from app.services.chat.parsing.attribute_resolver import resolve_catalog_attributes
+from app.services.chat.parsing.query_understanding import infer_catalog_query_understanding
 from app.services.catalog.attributes_service import eav_service
 from app.services.chat.presentation import reply_tone
 from app.services.chat.presentation import product_presentation
@@ -17,7 +19,7 @@ from app.services.chat.routing import routing_policy
 from app.services.chat.routing import signals as routing_signals
 from app.services.chat.routing.contracts import DecisionState
 from app.services.chat.runtime.capabilities import ChatRuntimeCapabilities, build_chat_runtime_capabilities
-from app.services.chat.runtime import alias_cache, conversation_state
+from app.services.chat.runtime import alias_cache, clarification_state, conversation_state
 from app.services.chat.runtime.search_plan import SearchPlan, build_search_plan
 from app.services.chat.text_normalization import normalize_user_text
 
@@ -97,6 +99,119 @@ def _has_product_anchor(
         or routing_signals.has_explicit_product_browse_signal(normalized)
         or routing_signals.looks_like_product_search(normalized)
     )
+
+
+def _merge_filter_maps(*, base: Dict[str, str], incoming: Dict[str, str]) -> Dict[str, str]:
+    merged = dict(base or {})
+    for key, value in dict(incoming or {}).items():
+        clean_key = str(key or "").strip().lower()
+        clean_value = str(value or "").strip()
+        if not clean_key or not clean_value:
+            continue
+        if clean_key == "category" and merged.get(clean_key):
+            existing = [item for item in str(merged[clean_key]).split(";;") if item.strip()]
+            new_items = [item for item in clean_value.split(";;") if item.strip()]
+            merged[clean_key] = ";;".join(list(dict.fromkeys(existing + new_items)))
+        else:
+            merged[clean_key] = clean_value
+    return merged
+
+
+def _merge_semantic_hints(*, existing: Sequence[Any], incoming: Sequence[Any]) -> List[str]:
+    hints: List[str] = []
+    seen: set[str] = set()
+    for raw in list(existing or []) + list(incoming or []):
+        text = normalize_user_text(str(raw or ""))
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        hints.append(text)
+    return hints
+
+
+def _extract_contextual_filter_overrides(text: str) -> Dict[str, str]:
+    normalized = normalize_user_text(text)
+    if not normalized:
+        return {}
+    material_terms = (
+        ("surgical steel", "surgical steel"),
+        ("stainless steel", "stainless steel"),
+        ("rose gold", "rose gold"),
+        ("titanium", "titanium"),
+        ("silicone", "silicone"),
+        ("acrylic", "acrylic"),
+        ("bioplast", "bioplast"),
+        ("glass", "glass"),
+        ("steel", "steel"),
+        ("gold", "gold"),
+    )
+    color_terms = (
+        "black",
+        "white",
+        "clear",
+        "blue",
+        "red",
+        "green",
+        "pink",
+        "purple",
+        "silver",
+    )
+    overrides: Dict[str, str] = {}
+    for phrase, value in material_terms:
+        if re.search(rf"\b{re.escape(phrase)}\b", normalized):
+            overrides["material"] = value
+            break
+    for value in color_terms:
+        if re.search(rf"\b{re.escape(value)}\b", normalized):
+            overrides.setdefault("color", value)
+            break
+    return overrides
+
+
+def _should_merge_conversation_filters(
+    *,
+    text: str,
+    current_filters: Dict[str, str],
+    prior_filters: Dict[str, str],
+) -> bool:
+    if not dict(prior_filters or {}):
+        return False
+    normalized = normalize_user_text(text)
+    if not normalized:
+        return False
+    if any(marker in normalized for marker in routing_signals.PRODUCT_CONTEXT_FOLLOW_UP_MARKERS):
+        return True
+    tokens = [token for token in normalized.split() if token]
+    if len(tokens) > 8:
+        return False
+    if re.match(r"^(?:do you have|do you carry|what about|how about|any|in|with)\b", normalized):
+        return bool(dict(current_filters or {}) or _extract_contextual_filter_overrides(normalized))
+    if re.search(r"\b(?:cheaper|cheapest|more|similar|same|other)\b", normalized):
+        return True
+    return False
+
+
+def _internal_workflow_from_query_intent(intent: str) -> str:
+    intent_norm = str(intent or "").strip().lower()
+    if intent_norm == "product_detail":
+        return "product_detail"
+    if intent_norm == "compare_products":
+        return "compare_products"
+    if intent_norm == "store_overview":
+        return "company_info"
+    if intent_norm == "knowledge":
+        return "policy_info"
+    return "catalog_search"
+
+
+def _price_or_stock_fields_from_text(text: str) -> List[str]:
+    normalized = normalize_user_text(text)
+    fields: List[str] = []
+    if any(term in normalized for term in ("price", "cost", "how much", "cheaper", "cheapest")):
+        fields.append("price")
+    if any(term in normalized for term in ("stock", "available", "availability", "in stock")):
+        fields.append("stock")
+    return fields
 
 
 @dataclass
@@ -241,12 +356,6 @@ class PipelineSetupMixin:
             else:
                 debug_state_version = conversation_state.CONVERSATION_STATE_VERSION
                 tone_recent = []
-            product_anchor_present = _has_product_anchor(
-                text=text,
-                detail=detail,
-                sku_tokens=unique_sku_tokens,
-                contextual_filters_applied=False,
-            )
             route_decision = route_decision_override
             if route_decision is None:
                 route_decision = routing_policy.WorkflowDecision(
@@ -259,6 +368,36 @@ class PipelineSetupMixin:
                     reason="missing_workflow_override",
                     confidence=0.0,
                 )
+
+            contextual_filters_applied = False
+            contextual_filter_reason = ""
+            if conversation_state_enabled and not catalog_pagination_requested:
+                prior_filters = dict(conversation_memory.last_attribute_filters or {})
+                current_filters = dict(getattr(detail, "attribute_filters", {}) or {})
+                if _should_merge_conversation_filters(
+                    text=text,
+                    current_filters=current_filters,
+                    prior_filters=prior_filters,
+                ):
+                    incoming_filters = _merge_filter_maps(
+                        base=current_filters,
+                        incoming=_extract_contextual_filter_overrides(text),
+                    )
+                    merged_filters = _merge_filter_maps(
+                        base=prior_filters,
+                        incoming=incoming_filters,
+                    )
+                    if merged_filters and merged_filters != current_filters:
+                        detail = replace(detail, attribute_filters=merged_filters)
+                        contextual_filters_applied = True
+                        contextual_filter_reason = "contextual_filter_merge"
+
+            product_anchor_present = _has_product_anchor(
+                text=text,
+                detail=detail,
+                sku_tokens=unique_sku_tokens,
+                contextual_filters_applied=contextual_filters_applied,
+            )
 
             if catalog_pagination_requested:
                 route_decision = replace(
@@ -326,8 +465,133 @@ class PipelineSetupMixin:
                     state_working = conversation_state.advance_pending_task_turn(state_working)
                     pending_task_advanced = True
 
+            query_understanding_debug: Dict[str, Any] = {}
+            query_understanding_llm_calls = 0
+            query_understanding_strictness: Dict[str, str] = {}
+            query_understanding_unresolved: List[Dict[str, str]] = []
+            query_understanding_semantic_query = ""
+            query_understanding_uses_context = False
+            query_understanding_anchor_required = False
+            query_understanding_internal_workflow = ""
+            if bool(getattr(settings, "CHAT_QUERY_UNDERSTANDING_V2_ENABLED", False)):
+                prior_search_plan = {
+                    "last_attribute_filters": dict(conversation_memory.last_attribute_filters or {}),
+                    "last_route": str(conversation_memory.last_route or ""),
+                    "last_refined_query": str(conversation_memory.last_refined_query or ""),
+                }
+                pagination_state = {
+                    "query_cache_key": str(conversation_continuation.last_query_cache_key or ""),
+                    "query_product_ids": list(conversation_continuation.last_query_product_ids or []),
+                    "result_count": int(conversation_continuation.last_result_count or 0),
+                    "display_offset": int(conversation_continuation.last_display_offset or 0),
+                    "display_limit": int(conversation_continuation.last_display_limit or 0),
+                }
+                recent_context = {
+                    "last_attribute_filters": dict(conversation_memory.last_attribute_filters or {}),
+                    "last_requested_fields": list(conversation_memory.last_requested_fields or []),
+                    "last_product_ids": list(conversation_memory.last_product_ids or []),
+                    "last_product_skus": list(conversation_memory.last_product_skus or []),
+                    "pending_task": dict(pending_task_resume or pending_task or {}),
+                }
+                query_understanding = await infer_catalog_query_understanding(
+                    user_text=text,
+                    normalized_text=normalized_text,
+                    recent_context=recent_context,
+                    previous_product_ids=list(conversation_memory.last_product_ids or []),
+                    previous_search_plan=prior_search_plan,
+                    pagination_state=pagination_state,
+                    known_catalog_attributes=list(searchable_attribute_metadata or []),
+                    sku_tokens=unique_sku_tokens,
+                )
+                query_understanding_debug.update(dict(query_understanding.debug or {}))
+                query_understanding_llm_calls += int(query_understanding.llm_call_count or 0)
+                understanding = query_understanding.understanding
+                if query_understanding.valid and query_understanding.trusted and understanding is not None:
+                    query_understanding_semantic_query = str(understanding.semantic_query or "").strip()
+                    query_understanding_uses_context = bool(understanding.uses_previous_context)
+                    query_understanding_anchor_required = bool(understanding.product_anchor_required)
+                    resolved_plan = await resolve_catalog_attributes(
+                        db=self.db,
+                        understanding=understanding,
+                    )
+                    query_understanding_debug["resolved_attributes"] = dict(resolved_plan.resolved_hard_constraints)
+                    query_understanding_debug["unresolved_attributes"] = list(resolved_plan.unresolved_constraints)
+                    query_understanding_debug["attribute_resolution"] = resolved_plan.to_debug_dict()
+                    query_understanding_strictness = dict(resolved_plan.strictness or {})
+                    query_understanding_unresolved = list(resolved_plan.unresolved_constraints or [])
+
+                    base_filters = dict(getattr(detail, "attribute_filters", {}) or {})
+                    if understanding.uses_previous_context:
+                        base_filters = _merge_filter_maps(
+                            base=dict(conversation_memory.last_attribute_filters or {}),
+                            incoming=base_filters,
+                        )
+                    merged_filters = _merge_filter_maps(
+                        base=base_filters,
+                        incoming=dict(resolved_plan.resolved_hard_constraints or {}),
+                    )
+                    merged_hints = _merge_semantic_hints(
+                        existing=list(getattr(detail, "semantic_hints", []) or []),
+                        incoming=list(resolved_plan.resolved_soft_hints or []),
+                    )
+                    requested_fields = list(getattr(detail, "requested_fields", []) or [])
+                    if understanding.intent == "product_detail":
+                        requested_fields = list(dict.fromkeys(requested_fields + _price_or_stock_fields_from_text(text)))
+                    detail = replace(
+                        detail,
+                        attribute_filters=merged_filters,
+                        semantic_hints=merged_hints,
+                        requested_fields=requested_fields,
+                        is_detail_request=bool(getattr(detail, "is_detail_request", False) or requested_fields or understanding.intent == "product_detail"),
+                    )
+
+                    if understanding.intent in {"catalog_search", "product_detail", "compare_products", "attribute_list"} and understanding.is_searchable_enough:
+                        route_decision = replace(
+                            route_decision,
+                            workflow="catalog",
+                            source=ComponentSource.SQL,
+                            needs_products=True,
+                            needs_clarification=False,
+                            store_overview_request=False,
+                            reason="query_understanding_searchable",
+                            confidence=max(float(route_decision.confidence or 0.0), float(understanding.confidence.intent or 0.0)),
+                        )
+                        query_understanding_internal_workflow = _internal_workflow_from_query_intent(understanding.intent)
+
+                    missing_slots = list(understanding.missing_slots or [])
+                    if query_understanding_unresolved:
+                        missing_slots.extend(
+                            str(item.get("attribute") or "")
+                            for item in query_understanding_unresolved
+                            if str(item.get("attribute") or "").strip()
+                        )
+                    task_id = clarification_state.build_task_id(
+                        intent=understanding.intent,
+                        missing_slots=missing_slots,
+                        semantic_query=query_understanding_semantic_query or text,
+                        hard_constraints=dict(resolved_plan.resolved_hard_constraints or {}),
+                    )
+                    loaded_clarification_state = conversation_state.load_clarification_state(state_working)
+                    loop_count = clarification_state.current_count(
+                        loaded_clarification_state,
+                        task_id=task_id,
+                    )
+                    query_understanding_debug["clarification_task_id"] = task_id
+                    query_understanding_debug["clarification_loop_count"] = loop_count
+                    query_understanding_debug["clarification_loop_stop"] = clarification_state.should_stop_clarifying(
+                        loaded_clarification_state,
+                        task_id=task_id,
+                    )
+                    query_understanding_debug["query_understanding_detail_filters"] = dict(getattr(detail, "attribute_filters", {}) or {})
+                    query_understanding_debug["query_understanding_semantic_hints"] = list(getattr(detail, "semantic_hints", []) or [])
+
             workflow = route_decision.workflow
-            internal_workflow = str(internal_workflow_override or getattr(decision_state_override, "internal_workflow", "") or workflow)
+            internal_workflow = str(
+                query_understanding_internal_workflow
+                or internal_workflow_override
+                or getattr(decision_state_override, "internal_workflow", "")
+                or workflow
+            )
             search_plan = build_search_plan(
                 user_text=text,
                 workflow=workflow,
@@ -338,8 +602,17 @@ class PipelineSetupMixin:
                     "last_attribute_filters": dict(conversation_memory.last_attribute_filters or {}),
                     "last_route": str(conversation_memory.last_route or ""),
                 },
-                context_allowed=False,
-                context_reason="",
+                context_allowed=bool(query_understanding_uses_context or contextual_filters_applied),
+                context_reason=(
+                    "query_understanding_previous_context"
+                    if query_understanding_uses_context
+                    else contextual_filter_reason
+                ),
+                strictness=query_understanding_strictness,
+                unresolved_constraints=query_understanding_unresolved,
+                semantic_query=query_understanding_semantic_query,
+                uses_previous_context=query_understanding_uses_context,
+                product_anchor_required=query_understanding_anchor_required,
             )
             execution_state = PipelineExecutionState(
                 debug_meta={
@@ -364,6 +637,8 @@ class PipelineSetupMixin:
                     "conversation_state_enabled": conversation_state_enabled,
                     "conversation_state_loaded_version": int(debug_state_version),
                     "conversation_state_written": False,
+                    "conversation_state_filter_merge_applied": bool(contextual_filters_applied),
+                    "conversation_state_filter_merge_reason": str(contextual_filter_reason or ""),
                     "pending_task_loaded": bool(pending_task),
                     "pending_task_resumed": bool(pending_task_resume),
                     "pending_task_cleared": bool(pending_task_cleared),
@@ -392,6 +667,11 @@ class PipelineSetupMixin:
                 external_call_counts={},
             )
             execution_state.debug_meta["detail_extraction_mode"] = "llm"
+            if query_understanding_debug:
+                execution_state.debug_meta.update(query_understanding_debug)
+                execution_state.debug_meta["search_plan"] = search_plan.to_debug_dict()
+            if query_understanding_llm_calls > 0:
+                execution_state.external_call_counts["llm_query_understanding"] = int(query_understanding_llm_calls)
             detail_debug = dict(getattr(detail, "extraction_debug", {}) or {})
             for key in (
                 "llm_detail_query_error",
@@ -443,7 +723,7 @@ class PipelineSetupMixin:
                 tone_controller=tone_controller,
                 runtime_capabilities=capabilities,
                 search_plan=search_plan,
-                llm_call_count=llm_call_count,
+                llm_call_count=int(llm_call_count or 0) + int(query_understanding_llm_calls or 0),
                 internal_workflow=internal_workflow,
                 decision_state=decision_state_override,
             )

@@ -18,6 +18,11 @@ class SearchPlan:
     context_allowed: bool = False
     context_reason: str = ""
     negative_constraints: List[str] = field(default_factory=list)
+    strictness: Dict[str, str] = field(default_factory=dict)
+    unresolved_constraints: List[Dict[str, str]] = field(default_factory=list)
+    semantic_query: str = ""
+    uses_previous_context: bool = False
+    product_anchor_required: bool = False
 
     def to_debug_dict(self) -> Dict[str, Any]:
         return {
@@ -31,6 +36,11 @@ class SearchPlan:
             "context_allowed": bool(self.context_allowed),
             "context_reason": self.context_reason,
             "negative_constraints": list(self.negative_constraints),
+            "strictness": dict(self.strictness),
+            "unresolved_constraints": [dict(item) for item in list(self.unresolved_constraints or [])],
+            "semantic_query": self.semantic_query,
+            "uses_previous_context": bool(self.uses_previous_context),
+            "product_anchor_required": bool(self.product_anchor_required),
         }
 
 
@@ -76,10 +86,36 @@ def build_search_plan(
     conversation_anchor: Mapping[str, Any] | None = None,
     context_allowed: bool = False,
     context_reason: str = "",
+    strictness: Mapping[str, Any] | None = None,
+    unresolved_constraints: Sequence[Mapping[str, Any]] | None = None,
+    semantic_query: str = "",
+    uses_previous_context: bool = False,
+    product_anchor_required: bool = False,
 ) -> SearchPlan:
     workflow_norm = str(workflow or "fallback").strip().lower() or "fallback"
     required_filters = _clean_filter_map(getattr(detail, "attribute_filters", {}) or {})
     semantic_terms = _clean_terms(getattr(detail, "semantic_hints", []) or [])
+    clean_strictness: Dict[str, str] = {}
+    for key, value in dict(strictness or {}).items():
+        clean_key = str(key or "").strip().lower()
+        clean_value = str(value or "").strip().lower()
+        if clean_key and clean_value in {"required", "preferred", "optional"}:
+            clean_strictness[clean_key] = clean_value
+    clean_unresolved: List[Dict[str, str]] = []
+    for item in list(unresolved_constraints or []):
+        if not isinstance(item, Mapping):
+            continue
+        attribute = str(item.get("attribute") or "").strip().lower()
+        value = str(item.get("value") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if attribute or value:
+            clean_unresolved.append(
+                {
+                    "attribute": attribute,
+                    "value": value,
+                    "reason": reason,
+                }
+            )
     clean_skus = [
         str(token or "").strip()
         for token in list(sku_tokens or [])
@@ -100,5 +136,10 @@ def build_search_plan(
         context_allowed=bool(context_allowed),
         context_reason=str(context_reason or "").strip(),
         negative_constraints=[],
+        strictness=clean_strictness,
+        unresolved_constraints=clean_unresolved,
+        semantic_query=normalize_user_text(semantic_query),
+        uses_previous_context=bool(uses_previous_context),
+        product_anchor_required=bool(product_anchor_required),
     )
 

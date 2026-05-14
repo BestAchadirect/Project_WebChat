@@ -58,6 +58,17 @@ def test_apply_soft_hint_gate_keeps_partial_matches_when_no_full_match_exists() 
     assert meta["semantic_soft_constraint_rejection_reason"] == ""
 
 
+def test_context_detail_followup_detects_ordinal_and_price_field() -> None:
+    assert ComponentPipeline._referenced_product_index(text="how much is the first one?") == 0
+    assert ComponentPipeline._referenced_product_index(text="price for the second item") == 1
+    fields = ComponentPipeline._requested_context_detail_fields(
+        text="how much is the first one?",
+        detail=SimpleNamespace(requested_fields=[]),
+    )
+
+    assert fields == ["price"]
+
+
 @pytest.mark.asyncio
 async def test_build_clarify_policy_pending_task_missing_slot_stays_product_focused() -> None:
     result = await ComponentPipeline._build_clarify_policy(

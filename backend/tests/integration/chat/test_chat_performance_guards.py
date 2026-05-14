@@ -126,9 +126,11 @@ def test_result_policy_match_tier_allows_semantic_suggestion() -> None:
 
 
 @pytest.mark.asyncio
-async def test_component_pipeline_structured_no_match_returns_clarify_without_vector_fallback(
+async def test_component_pipeline_hard_filter_no_match_uses_structured_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    structured_calls = 0
+
     class _CatalogStub:
         async def structured_count(self, **kwargs):
             return 0
@@ -137,7 +139,9 @@ async def test_component_pipeline_structured_no_match_returns_clarify_without_ve
             return SimpleNamespace(cards=[], distances=[], best_distance=None, distance_by_id={}, product_ids=[])
 
         async def structured_search(self, **kwargs):
-            raise AssertionError("structured search should not run before semantic search")
+            nonlocal structured_calls
+            structured_calls += 1
+            return SimpleNamespace(product_ids=[]), {}
 
     pipeline = ComponentPipeline(
         db=object(),
@@ -158,7 +162,10 @@ async def test_component_pipeline_structured_no_match_returns_clarify_without_ve
         "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
         fake_parse,
     )
-    monkeypatch.setattr(llm_service, "generate_embedding", lambda text: [0.1, 0.2, 0.3])
+    async def fake_generate_embedding(text: str):
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
 
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="show titanium labrets", locale="en-US"),
@@ -168,15 +175,15 @@ async def test_component_pipeline_structured_no_match_returns_clarify_without_ve
     )
 
     assert result.response.routing.workflow == "catalog"
-    assert any(component.type.value == "clarify" for component in result.response.components)
-    assert "material" in result.response.reply_text.lower() or "style" in result.response.reply_text.lower() or "gauge" in result.response.reply_text.lower()
+    assert structured_calls >= 1
+    assert "exact match" in result.response.reply_text.lower()
     assert result.debug.get("semantic_first_used") is True
+    assert result.debug.get("semantic_structured_first_used") is True
+    assert result.debug.get("semantic_structured_first_hit") is False
     assert result.debug.get("semantic_search_mode") == "vector_first"
-    assert result.debug.get("component_source") == "vector"
+    assert result.debug.get("component_source") == "sql"
     assert result.debug.get("match_tier") == "no_match"
     assert result.debug.get("retrieval_outcome", {}).get("match_tier") == "no_match"
-    assert result.debug.get("clarify_mode") == "recoverable_product"
-    assert result.debug.get("clarify_best_effort_help") is True
     assert result.debug.get("retrieval_outcome", {}).get("needs_clarification") is True
 
 

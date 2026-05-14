@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import Any, Dict, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -229,8 +230,49 @@ class ComponentPipeline(
                 and self._looks_like_related_product_followup(text=text)
             )
             product_anchor_present = bool(debug_meta.get("catalog_product_anchor_present"))
+            unresolved_attributes = [
+                dict(item)
+                for item in list(debug_meta.get("unresolved_attributes") or [])
+                if isinstance(item, dict)
+            ]
             if (
                 workflow == "catalog"
+                and unresolved_attributes
+                and not catalog_pagination_requested
+                and not bool(debug_meta.get("clarification_loop_stop"))
+            ):
+                missing_slots = [
+                    str(item.get("attribute") or "").strip()
+                    for item in unresolved_attributes
+                    if str(item.get("attribute") or "").strip()
+                ]
+                focus = str((missing_slots or [""])[0] or "").strip().lower()
+                state.decision.ambiguity_reason = "semantic_concept_unclear"
+                state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                state.presentation.canonical_products = []
+                state.catalog.product_ids = []
+                state.catalog.query_product_ids = []
+                state.retrieval.result_count = 0
+                state.retrieval.source = ComponentSource.ERROR
+                debug_meta["catalog_retrieval_blocked_reason"] = "unresolved_hard_constraint"
+                debug_meta["clarify_reason"] = state.decision.ambiguity_reason
+                debug_meta["clarify_missing_slots"] = list(dict.fromkeys(missing_slots))
+                debug_meta["semantic_hint_clarify_used"] = True
+                if focus:
+                    try:
+                        detail = replace(detail, clarify_focus=focus)
+                    except Exception:
+                        debug_meta["semantic_hint_clarify_focus"] = focus
+            if (
+                workflow == "catalog"
+                and unresolved_attributes
+                and bool(debug_meta.get("clarification_loop_stop"))
+            ):
+                debug_meta["clarification_loop_fallback_used"] = True
+                debug_meta["clarification_loop_fallback_policy"] = "broad_safe_results"
+            if (
+                workflow == "catalog"
+                and not state.decision.ambiguity_reason
                 and not catalog_pagination_requested
                 and not context_price_followup_possible
                 and not context_related_followup_possible
@@ -254,6 +296,7 @@ class ComponentPipeline(
                 debug_meta["clarify_reason"] = state.decision.ambiguity_reason
             if (
                 workflow == "catalog"
+                and not state.decision.ambiguity_reason
                 and not catalog_pagination_requested
                 and detail_parse_failed
                 and not store_overview_request
@@ -271,6 +314,7 @@ class ComponentPipeline(
                 debug_meta["clarify_reason"] = state.decision.ambiguity_reason
             if (
                 not catalog_pagination_requested
+                and not state.decision.ambiguity_reason
                 and not dict(getattr(detail, "attribute_filters", {}) or {})
                 and ambiguity_blocks_retrieval(getattr(detail, "clarify_focus", ""))
             ):

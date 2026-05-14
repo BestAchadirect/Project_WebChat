@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import re
 from typing import Any, Dict, Sequence
 
 from app.core.config import settings
@@ -267,6 +268,98 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             return bool(hints.intersection({"cheapest", "lower price", "cheaper", "lowest price", "budget"}))
 
     @staticmethod
+    def _referenced_product_index(*, text: str) -> int | None:
+            text_norm = normalize_user_text(text)
+            if re.search(r"\b(first|1st)\s+(?:one|item|product)\b", text_norm):
+                return 0
+            if re.search(r"\b(second|2nd)\s+(?:one|item|product)\b", text_norm):
+                return 1
+            if re.search(r"\b(third|3rd)\s+(?:one|item|product)\b", text_norm):
+                return 2
+            return None
+
+    @staticmethod
+    def _requested_context_detail_fields(*, text: str, detail: Any) -> list[str]:
+            fields = [
+                str(item or "").strip().lower()
+                for item in list(getattr(detail, "requested_fields", []) or [])
+                if str(item or "").strip()
+            ]
+            text_norm = normalize_user_text(text)
+            if any(term in text_norm for term in ("price", "cost", "how much")) and "price" not in fields:
+                fields.append("price")
+            if any(term in text_norm for term in ("stock", "available", "availability", "in stock")) and "stock" not in fields:
+                fields.append("stock")
+            return fields
+
+    async def _handle_context_detail_reference_followup(
+            self,
+            *,
+            state: PipelineWorkflowState,
+            detail: Any,
+            text: str,
+            debug_meta: Dict[str, Any],
+            spans: Dict[str, float],
+        ) -> bool:
+            fields = self._requested_context_detail_fields(text=text, detail=detail)
+            if not fields:
+                return False
+            product_ids = [
+                str(item or "").strip()
+                for item in list(debug_meta.get("conversation_last_product_ids") or [])
+                if str(item or "").strip()
+            ]
+            if not product_ids:
+                return False
+            index = self._referenced_product_index(text=text)
+            if index is None:
+                if len(product_ids) != 1:
+                    return False
+                index = 0
+            if index < 0 or index >= len(product_ids):
+                return False
+
+            selected_id = product_ids[index]
+            component_types = [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_DETAIL]
+            products, _resolver_meta = await self._resolve_products_with_metrics(
+                product_ids=[selected_id],
+                component_types=component_types,
+                spans=spans,
+                debug_meta=debug_meta,
+            )
+            products = [product for product in list(products or []) if product is not None]
+            if not products:
+                return False
+            product = products[0]
+            title = str(getattr(product, "title", "") or getattr(product, "name", "") or getattr(product, "sku", "") or "that item").strip()
+            reply_parts: list[str] = []
+            if "price" in fields:
+                try:
+                    price = float(getattr(product, "price", 0.0) or 0.0)
+                    currency = str(getattr(product, "currency", "") or "USD").strip() or "USD"
+                    reply_parts.append(f"{title} is {price:.2f} {currency}.")
+                except Exception:
+                    reply_parts.append(f"I found {title}, but I couldn't confirm the price from the catalog data.")
+            if "stock" in fields:
+                stock = str(getattr(product, "stock_status", "") or "").strip()
+                if stock:
+                    reply_parts.append(f"Stock status: {stock}.")
+            reply_text = " ".join(reply_parts).strip() or f"I found {title}."
+
+            state.presentation.selected_components = component_types
+            state.presentation.canonical_products = [product]
+            state.catalog.product_ids = [selected_id]
+            state.catalog.query_product_ids = [selected_id]
+            state.retrieval.result_count = 1
+            state.retrieval.source = ComponentSource.SQL
+            state.catalog.pagination_has_more = False
+            debug_meta["context_detail_followup_used"] = True
+            debug_meta["context_detail_followup_index"] = int(index)
+            debug_meta["detail_reply_text"] = reply_text
+            debug_meta["detail_carousel_msg"] = "I included the referenced product below."
+            return True
+
+    @staticmethod
     def _looks_like_compare_request(*, text: str, unique_sku_tokens: Sequence[str]) -> bool:
             return routing_signals.looks_like_compare_request(text=text, sku_tokens=unique_sku_tokens)
 
@@ -501,6 +594,11 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                 debug_meta["grounding_status"] = decision.status
                 debug_meta["grounding_safe_action"] = decision.safe_customer_action
                 debug_meta["grounding_reasons"] = list(decision.reasons)
+                debug_meta.setdefault(
+                    "detail_reply_text",
+                    "I couldn't find an exact match, but here are the closest alternatives I found.",
+                )
+                debug_meta.setdefault("detail_carousel_msg", "Closest alternatives are shown below.")
                 return
             decision = evaluate_catalog_grounding(
                 plan=plan,
@@ -549,7 +647,7 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                     debug_meta["grounding_blocked_response"] = False
                     debug_meta["catalog_close_match_used"] = True
                     debug_meta["catalog_close_match_count"] = len(close_products)
-                    debug_meta["detail_reply_text"] = "I couldn't find an exact match, but here are similar products you can might like."
+                    debug_meta["detail_reply_text"] = "I couldn't find an exact match, but here are similar products you might like."
                     debug_meta["detail_carousel_msg"] = "Similar products are shown below."
                     return
                 state.decision.ambiguity_reason = reason
@@ -717,6 +815,15 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                 state=state,
                 text=text,
                 unique_sku_tokens=unique_sku_tokens,
+                debug_meta=debug_meta,
+                spans=spans,
+            ):
+                return
+
+            if await self._handle_context_detail_reference_followup(
+                state=state,
+                detail=detail,
+                text=text,
                 debug_meta=debug_meta,
                 spans=spans,
             ):

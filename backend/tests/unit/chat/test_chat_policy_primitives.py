@@ -98,13 +98,23 @@ def test_split_hard_and_soft_filters_uses_shared_policy_keys() -> None:
         "gauge": "14g",
         "feature": "PVD Plated",
         "presentation_type": "Sold by Pack",
+        "material": "titanium",
     }
     assert soft_filters == {
-        "material": "titanium",
         "color": "opal",
         "theme": "skulls",
         "source_raw_sku": "ABC-123",
     }
+
+
+def test_split_hard_and_soft_filters_honors_required_strictness() -> None:
+    hard_filters, soft_filters = split_hard_and_soft_filters(
+        attribute_filters={"color": "black", "theme": "gothic"},
+        strictness={"color": "required", "theme": "preferred"},
+    )
+
+    assert hard_filters == {"color": "black"}
+    assert soft_filters == {"theme": "gothic"}
 
 
 def test_resolve_attribute_conflicts_prefers_specific_filters() -> None:
@@ -128,7 +138,7 @@ def test_resolve_attribute_conflicts_prefers_specific_filters() -> None:
 
 
 def test_allowed_product_filters_remain_stable() -> None:
-    assert {"material", "jewelry_type", "color", "presentation_type", "body_part", "theme", "feature"}.issubset(ALLOWED_PRODUCT_FILTERS)
+    assert {"material", "jewelry_type", "color", "presentation_type", "body_location", "theme", "feature"}.issubset(ALLOWED_PRODUCT_FILTERS)
 
 
 def test_normalize_filter_map_applies_aliases_and_allowlist() -> None:
@@ -155,7 +165,7 @@ def test_normalize_filter_map_applies_aliases_and_allowlist() -> None:
         "material": "implant grade titanium",
         "threading": "internally threaded",
         "presentation_type": "sold by pack",
-        "body_part": "upper lip / monroe",
+        "body_location": "upper lip / monroe",
         "feature": "pvd plated",
     }
 

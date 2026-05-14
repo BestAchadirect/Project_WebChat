@@ -56,11 +56,9 @@ def _uses_response_intent_contract(understanding: UnderstandingResult) -> bool:
     debug = dict(getattr(understanding, "debug", {}) or {})
     intent = str(getattr(understanding, "intent", "") or "").strip().lower()
     response_policy = str(getattr(understanding, "response_policy", "") or "").strip().lower()
-    workflow_hypothesis = str(getattr(understanding, "workflow_hypothesis", "") or "").strip().lower()
     return bool(
         debug.get("understanding_intent")
         or intent in {"product_information", "knowledge_policy", "general_talking", "off_topic"}
-        or workflow_hypothesis
         or response_policy
         not in {
             "",
@@ -134,6 +132,7 @@ def _is_unscoped_general_task(understanding: UnderstandingResult) -> bool:
 def _derive_internal_workflow(understanding: UnderstandingResult) -> str:
     if not str(understanding.normalized_text or "").strip():
         return "clarify"
+    legacy_workflow = str(getattr(understanding, "workflow_hypothesis", "") or "").strip().lower()
     compare_request = routing_signals.looks_like_compare_request(
         text=str(understanding.normalized_text or ""),
         sku_tokens=understanding.sku_tokens or [],
@@ -184,15 +183,17 @@ def _derive_internal_workflow(understanding: UnderstandingResult) -> str:
         if legacy_workflow in {"company_info", "policy_info", "mixed", "smalltalk", "off_topic", "catalog_search", "product_detail"}:
             return legacy_workflow
         return "clarify"
+    if legacy_workflow in {"company_info", "policy_info", "mixed", "smalltalk", "general_talking", "off_topic", "catalog_search", "product_detail"}:
+        return legacy_workflow
     return "clarify"
 
 
 def _derive_public_workflow(understanding: UnderstandingResult) -> str:
     if not str(understanding.normalized_text or "").strip():
         return "fallback"
+    legacy_workflow = str(getattr(understanding, "workflow_hypothesis", "") or "").strip().lower()
     if _uses_response_intent_contract(understanding):
         intent = str(getattr(understanding, "intent", "") or "").strip().lower()
-        legacy_workflow = str(getattr(understanding, "workflow_hypothesis", "") or "").strip().lower()
         response_policy = str(getattr(understanding, "response_policy", "") or "").strip().lower()
         if intent == "product_information":
             if bool(understanding.needs_products):
@@ -232,6 +233,14 @@ def _derive_public_workflow(understanding: UnderstandingResult) -> str:
         if legacy_workflow == "off_topic":
             return "off_topic"
         return "fallback"
+    if legacy_workflow in {"company_info", "policy_info"}:
+        return "knowledge"
+    if legacy_workflow in {"mixed", "catalog_search", "product_detail"}:
+        return "catalog"
+    if legacy_workflow in {"smalltalk", "general_talking"}:
+        return "general_talking"
+    if legacy_workflow == "off_topic":
+        return "off_topic"
     return "fallback"
 
 

@@ -90,6 +90,8 @@ def normalize_attribute_value(
 ) -> str:
     del alias_map
     clean_key = canonicalize_filter_key(key)
+    if isinstance(value, (list, tuple, set)) and clean_key != "category":
+        value = next((item for item in list(value) if normalize_text(item)), "")
     text = normalize_text(value)
     if not clean_key or not text:
         return ""

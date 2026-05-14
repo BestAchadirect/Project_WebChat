@@ -646,9 +646,9 @@ def _allowed_soft_attributes(
     declared = _canonical_attribute_names(active_rules.allowed_attribute_filters)
     searchable = _canonical_attribute_names(searchable_attribute_names)
     if searchable:
-        return sorted(searchable.difference(HARD_FILTER_KEYS))
+        return sorted(searchable)
     if declared:
-        return sorted(declared.difference(HARD_FILTER_KEYS))
+        return sorted(declared)
     defaults = _canonical_attribute_names(DEFAULT_SOFT_ATTRIBUTE_KEYS)
     return sorted(defaults)
 

@@ -14,7 +14,7 @@ from app.schemas.chat import (
     KnowledgeSource,
     ProductCard,
 )
-from app.services.chat.runtime import conversation_state
+from app.services.chat.runtime import clarification_state, conversation_state
 from app.services.chat.presentation import (
     clarify_policy,
     component_contract_builder,
@@ -770,6 +770,47 @@ class PipelinePresentationMixin:
                     debug_meta["pending_task_stored"] = bool(pending_task)
                     debug_meta["pending_task_type"] = str(pending_task.get("task_type") or "")
                     debug_meta["pending_task_missing_slot"] = str(pending_task.get("missing_slot") or "")
+                if ComponentType.CLARIFY in selected_components:
+                    reason = str(state.decision.ambiguity_reason or debug_meta.get("clarify_reason") or "clarify").strip()
+                    missing_slots = list(debug_meta.get("clarify_missing_slots") or [])
+                    if not missing_slots:
+                        missing_slot = str(getattr(state.decision, "missing_slot", "") or "").strip()
+                        if missing_slot:
+                            missing_slots = [missing_slot]
+                    task_id = str(debug_meta.get("clarification_task_id") or "").strip()
+                    if not task_id:
+                        task_id = clarification_state.build_task_id(
+                            intent=str(getattr(state.decision, "intent", "") or workflow or "catalog"),
+                            missing_slots=missing_slots,
+                            semantic_query=str(debug_meta.get("query_summary") or text or ""),
+                            hard_constraints=dict(getattr(detail, "attribute_filters", {}) or {}),
+                        )
+                    current_clarification = conversation_state.load_clarification_state(state_working)
+                    updated_clarification = clarification_state.record_clarification(
+                        current_clarification,
+                        task_id=task_id,
+                        reason=reason,
+                        missing_slots=missing_slots,
+                    )
+                    state_working = conversation_state.apply_clarification_state_update(
+                        state_working,
+                        value=updated_clarification,
+                    )
+                    debug_meta["clarification_task_id"] = task_id
+                    debug_meta["clarification_loop_count"] = int(updated_clarification.get("clarification_count") or 0)
+                    debug_meta["clarification_state_stored"] = True
+                elif bool(debug_meta.get("pending_task_resumed")):
+                    current_clarification = conversation_state.load_clarification_state(state_working)
+                    updated_clarification = clarification_state.record_answer_merged(
+                        current_clarification,
+                        user_answer=text,
+                    )
+                    if updated_clarification:
+                        state_working = conversation_state.apply_clarification_state_update(
+                            state_working,
+                            value=updated_clarification,
+                        )
+                        debug_meta["clarification_answer_merged"] = True
                 response_cards = component_contract.product_cards_from_response(response)
                 state_product_ids = conversation_state.product_ids_from_cards(response_cards)
                 state_product_skus = conversation_state.product_skus_from_cards(response_cards)

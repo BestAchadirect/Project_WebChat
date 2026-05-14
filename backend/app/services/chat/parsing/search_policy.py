@@ -24,6 +24,8 @@ ALLOWED_PRODUCT_FILTERS = frozenset(
 HARD_FILTER_KEYS = frozenset(
     {
         "body_location",
+        "jewelry_type",
+        "material",
         "gauge",
         "feature",
         "presentation_type",
@@ -34,6 +36,9 @@ HARD_FILTER_KEYS = frozenset(
         "height",
         "ring_size",
         "pincher_size",
+        "min_price",
+        "max_price",
+        "stock_status",
     }
 )
 
@@ -52,15 +57,22 @@ def needs_body_part_suitability_clarification(text: str) -> bool:
 def split_hard_and_soft_filters(
     *,
     attribute_filters: Dict[str, str],
+    strictness: Mapping[str, Any] | None = None,
 ) -> Tuple[Dict[str, str], Dict[str, str]]:
     hard_filters: Dict[str, str] = {}
     soft_filters: Dict[str, str] = {}
+    strictness_map = {
+        canonicalize_filter_key(key): str(value or "").strip().lower()
+        for key, value in dict(strictness or {}).items()
+        if canonicalize_filter_key(key)
+    }
     for key, value in dict(attribute_filters or {}).items():
         clean_key = canonicalize_filter_key(key)
         clean_value = str(value or "").strip()
         if not clean_key or not clean_value:
             continue
-        if clean_key in HARD_FILTER_KEYS:
+        strictness_value = strictness_map.get(clean_key)
+        if strictness_value == "required" or clean_key in HARD_FILTER_KEYS:
             hard_filters[clean_key] = clean_value
         else:
             soft_filters[clean_key] = clean_value

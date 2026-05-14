@@ -69,6 +69,7 @@ class PipelineCatalogSearchMixin:
                 "semantic_hard_constraint_keys": [],
                 "semantic_hard_constraint_count": 0,
                 "semantic_hard_constraint_match_count": len(list(cards or [])),
+                "hard_gate_removed_count": 0,
                 "semantic_hard_constraint_rejection_reason": "",
             }
 
@@ -89,6 +90,7 @@ class PipelineCatalogSearchMixin:
             "semantic_hard_constraint_keys": list(clean_hard_filters.keys()),
             "semantic_hard_constraint_count": len(clean_hard_filters),
             "semantic_hard_constraint_match_count": len(matched_cards),
+            "hard_gate_removed_count": max(0, len(list(cards or [])) - len(matched_cards)),
             "semantic_hard_constraint_rejection_reason": rejection_reason,
         }
 
@@ -237,8 +239,11 @@ class PipelineCatalogSearchMixin:
         if not semantic_first_enabled:
             return False, [], None
 
+        plan = state.decision.search_plan
+        plan_strictness = dict(getattr(plan, "strictness", {}) or {}) if plan is not None else {}
         hard_filters, soft_filters = split_hard_and_soft_filters(
             attribute_filters=dict(detail.attribute_filters or {}),
+            strictness=plan_strictness,
         )
         semantic_hints = [
             str(item or "").strip()
@@ -258,10 +263,11 @@ class PipelineCatalogSearchMixin:
         debug_meta["lexical_search_used"] = False
         debug_meta["lexical_rescue_used"] = False
         debug_meta["lexical_result_count"] = 0
+        retrieval_query_text = str(getattr(plan, "semantic_query", "") or text or "").strip()
         state.catalog.query_cache_key = stable_cache_key(
             f"{getattr(settings, 'CHAT_REDIS_KEY_PREFIX', 'chat:components')}:query_ids",
             {
-                "q": normalized_text,
+                "q": normalize_user_text(retrieval_query_text) or normalized_text,
                 "locale": locale.lower(),
                 "sku": unique_sku_tokens[0].lower() if unique_sku_tokens else "",
                 "sku_list": [item.lower() for item in unique_sku_tokens[:5]],
@@ -356,7 +362,7 @@ class PipelineCatalogSearchMixin:
                 for attempt in range(retry_max + 1):
                     try:
                         embed_started = time.perf_counter()
-                        embedding = await llm_service.generate_embedding(text)
+                        embedding = await llm_service.generate_embedding(retrieval_query_text or text)
                         spans["vector_search_ms"] += (time.perf_counter() - embed_started) * 1000.0
                         query_embedding = list(embedding or [])
                         state.catalog.query_embedding = query_embedding
@@ -568,7 +574,7 @@ class PipelineCatalogSearchMixin:
                         had_vector_candidates = bool(semantic_cards or product_ids)
                         lexical_started = time.perf_counter()
                         lexical_result = await lexical_search(
-                            query_text=text,
+                            query_text=retrieval_query_text or text,
                             limit=result_fetch_limit,
                             candidate_limit=max(result_fetch_limit * 4, 36),
                         )
@@ -699,6 +705,7 @@ class PipelineCatalogSearchMixin:
         debug_meta["semantic_exact_lookup_used"] = semantic_exact_lookup_used
         debug_meta["semantic_search_error"] = embedding_error or ""
         debug_meta["semantic_result_source"] = retrieval_source.value
+        debug_meta["retrieval_source"] = retrieval_source.value
         debug_meta["match_tier"] = state.retrieval.outcome.match_tier
         debug_meta["retrieval_quality"] = state.retrieval.outcome.retrieval_quality
         debug_meta["retrieval_outcome"] = state.retrieval.outcome.to_debug_dict()
