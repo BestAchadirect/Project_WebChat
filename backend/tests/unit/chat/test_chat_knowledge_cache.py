@@ -573,6 +573,190 @@ async def test_knowledge_payload_falls_back_to_retrieved_sources_when_selector_f
 
 
 @pytest.mark.asyncio
+async def test_knowledge_payload_enriches_contact_source_for_return_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=SimpleNamespace(),
+    )
+    refund_source = KnowledgeSource(
+        source_id="refund-src",
+        chunk_id="refund-chunk",
+        title="Refund Policy",
+        content_snippet="Contact us within 30 days to obtain an RMA before returning the item.",
+        category="Refunds",
+        relevance=0.93,
+        url="https://example.com/refunds",
+        distance=0.07,
+    )
+    contact_source = KnowledgeSource(
+        source_id="contact-src",
+        chunk_id="contact-chunk",
+        title="How can I contact Acha?",
+        content_snippet="Email sales@achadirect.com or call +66 (0)2-629-5858.",
+        category="Contact",
+        relevance=0.96,
+        url="https://example.com/contact",
+        distance=0.04,
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_retrieve_knowledge_sources(**kwargs):
+        return [refund_source], ""
+
+    async def fake_plan_knowledge_retrieval(**kwargs):
+        return {
+            "query_text": "wrong item refund return replacement",
+            "topic": "refunds",
+            "must_tags": [],
+            "boost_tags": ["refunds"],
+            "required_evidence": ["refund eligibility", "rma"],
+            "forbidden_topics": [],
+            "store_overview_request": False,
+            "answer_style": {"max_sentences": 2},
+        }
+
+    async def fake_select_knowledge_sources_with_llm(**kwargs):
+        return [refund_source]
+
+    async def fake_retrieve_company_info_sources(**kwargs):
+        captured["contact_query_text"] = kwargs.get("query_text")
+        captured["contact_must_tags"] = list(kwargs.get("must_tags") or [])
+        return [contact_source]
+
+    async def fake_attempt_grounded_knowledge_answer(**kwargs):
+        captured["answer_source_ids"] = [
+            str(source.source_id or "") for source in list(kwargs.get("knowledge_sources", []) or [])
+        ]
+        return "Contact us at sales@achadirect.com or +66 (0)2-629-5858 for the RMA.", ""
+
+    monkeypatch.setattr(pipeline, "_retrieve_knowledge_sources", fake_retrieve_knowledge_sources)
+    monkeypatch.setattr(pipeline, "_plan_knowledge_retrieval", fake_plan_knowledge_retrieval)
+    monkeypatch.setattr(pipeline, "_select_knowledge_sources_with_llm", fake_select_knowledge_sources_with_llm)
+    monkeypatch.setattr(pipeline, "_retrieve_company_info_sources", fake_retrieve_company_info_sources)
+    monkeypatch.setattr(pipeline, "_attempt_grounded_knowledge_answer", fake_attempt_grounded_knowledge_answer)
+
+    debug_meta: dict[str, object] = {}
+    result = await pipeline._resolve_knowledge_payload(
+        text="the product i order is wrong can i send it back or get a refund",
+        locale="en-US",
+        run_id="run-refund-contact-dependency",
+        store_overview_request=False,
+        normalized_text="the product i order is wrong can i send it back or get a refund",
+        debug_meta=debug_meta,
+        spans={"vector_search_ms": 0.0, "db_product_lookup_ms": 0.0, "llm_answer_ms": 0.0},
+        external_call_counts={},
+    )
+
+    assert captured["contact_query_text"] == "customer support contact email phone showroom sales"
+    assert captured["contact_must_tags"] == ["contact"]
+    assert captured["answer_source_ids"] == ["refund-src", "contact-src"]
+    assert [source.source_id for source in result["knowledge_sources"]] == ["refund-src", "contact-src"]
+    assert result["knowledge_answer"].startswith("Contact us at sales@achadirect.com")
+    assert debug_meta["knowledge_contact_dependency_required"] is True
+    assert debug_meta["knowledge_contact_dependency_enriched"] is True
+    assert debug_meta["knowledge_contact_dependency_satisfied"] is True
+    assert debug_meta["knowledge_dependency_rules_required"] == ["contact_details"]
+    assert debug_meta["knowledge_dependency_rules_enriched"] == ["contact_details"]
+    assert debug_meta["knowledge_dependency_rules_satisfied"] == ["contact_details"]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_payload_enriches_showroom_source_for_visit_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=SimpleNamespace(),
+    )
+    visit_source = KnowledgeSource(
+        source_id="visit-src",
+        chunk_id="visit-chunk",
+        title="Can I visit your showroom?",
+        content_snippet="Please contact us before visiting our showroom.",
+        category="Showroom",
+        relevance=0.91,
+        url="https://example.com/showroom-visit",
+        distance=0.09,
+    )
+    showroom_source = KnowledgeSource(
+        source_id="showroom-src",
+        chunk_id="showroom-chunk",
+        title="Bangkok Showroom Address and Hours",
+        content_snippet="Our Bangkok showroom is open Monday to Saturday from 10 AM to 6 PM.",
+        category="Store Overview",
+        relevance=0.97,
+        url="https://example.com/showroom-hours",
+        distance=0.03,
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_retrieve_knowledge_sources(**kwargs):
+        return [visit_source], ""
+
+    async def fake_plan_knowledge_retrieval(**kwargs):
+        return {
+            "query_text": "can i visit your showroom and what are your opening hours",
+            "topic": "showroom hours",
+            "must_tags": [],
+            "boost_tags": ["showroom"],
+            "required_evidence": ["showroom hours"],
+            "forbidden_topics": [],
+            "store_overview_request": False,
+            "answer_style": {"max_sentences": 2},
+        }
+
+    async def fake_select_knowledge_sources_with_llm(**kwargs):
+        return [visit_source]
+
+    async def fake_retrieve_company_info_sources(**kwargs):
+        captured["showroom_query_text"] = kwargs.get("query_text")
+        captured["showroom_must_tags"] = list(kwargs.get("must_tags") or [])
+        return [showroom_source]
+
+    async def fake_attempt_grounded_knowledge_answer(**kwargs):
+        captured["answer_source_ids"] = [
+            str(source.source_id or "") for source in list(kwargs.get("knowledge_sources", []) or [])
+        ]
+        return "Our Bangkok showroom is open Monday to Saturday, 10 AM to 6 PM.", ""
+
+    monkeypatch.setattr(pipeline, "_retrieve_knowledge_sources", fake_retrieve_knowledge_sources)
+    monkeypatch.setattr(pipeline, "_plan_knowledge_retrieval", fake_plan_knowledge_retrieval)
+    monkeypatch.setattr(pipeline, "_select_knowledge_sources_with_llm", fake_select_knowledge_sources_with_llm)
+    monkeypatch.setattr(pipeline, "_retrieve_company_info_sources", fake_retrieve_company_info_sources)
+    monkeypatch.setattr(pipeline, "_attempt_grounded_knowledge_answer", fake_attempt_grounded_knowledge_answer)
+
+    debug_meta: dict[str, object] = {}
+    result = await pipeline._resolve_knowledge_payload(
+        text="can i visit your showroom and what are your opening hours",
+        locale="en-US",
+        run_id="run-showroom-dependency",
+        store_overview_request=False,
+        normalized_text="can i visit your showroom and what are your opening hours",
+        debug_meta=debug_meta,
+        spans={"vector_search_ms": 0.0, "db_product_lookup_ms": 0.0, "llm_answer_ms": 0.0},
+        external_call_counts={},
+    )
+
+    assert captured["showroom_query_text"] == "showroom address location opening hours visit phone email bangkok"
+    assert captured["showroom_must_tags"] == ["store_overview"]
+    assert captured["answer_source_ids"] == ["visit-src", "showroom-src"]
+    assert [source.source_id for source in result["knowledge_sources"]] == ["visit-src", "showroom-src"]
+    assert result["knowledge_answer"].startswith("Our Bangkok showroom is open")
+    assert debug_meta["knowledge_showroom_dependency_required"] is True
+    assert debug_meta["knowledge_showroom_dependency_enriched"] is True
+    assert debug_meta["knowledge_showroom_dependency_satisfied"] is True
+    assert debug_meta["knowledge_dependency_rules_required"] == ["showroom_details"]
+    assert debug_meta["knowledge_dependency_rules_enriched"] == ["showroom_details"]
+    assert debug_meta["knowledge_dependency_rules_satisfied"] == ["showroom_details"]
+
+
+@pytest.mark.asyncio
 async def test_generic_knowledge_selector_uses_llm_selected_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -691,6 +875,15 @@ async def test_knowledge_answer_rejects_unsupported_factual_claims(
     assert debug_meta["component_knowledge_answer_rejection_reason"] == "unsupported_factual_claim"
     unsupported = debug_meta["component_knowledge_answer_unsupported_facts"]
     assert "email:sales@company.com" in unsupported
+
+
+def test_knowledge_answer_rewrites_internal_context_wording() -> None:
+    answer = ComponentPipeline._rewrite_internal_knowledge_phrasing(
+        "The available context does not list specific phone, email, or chat channels."
+    )
+
+    assert "available context" not in answer.lower()
+    assert "verified phone number" in answer.lower()
 
 
 def test_knowledge_fact_validator_allows_supported_facts() -> None:

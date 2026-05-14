@@ -12,7 +12,11 @@ import app.services.chat.runtime.alias_cache as alias_cache
 import app.services.chat.parsing.parser_rule_cache as parser_rule_cache
 import app.services.chat.routing.routing_policy as routing_policy
 from app.services.chat.parsing.detail_query_parser import DetailQuery, DetailQueryParser
-from app.services.chat.parsing.llm_attribute_extractor import infer_detail_query
+from app.services.chat.parsing.llm_attribute_extractor import (
+    infer_detail_query,
+    is_browse_like_product_request,
+    should_demote_attribute_detail_to_browse,
+)
 from app.services.catalog.attributes_service import eav_service
 from app.services.chat.routing.decision_engine import build_decision_state
 from app.services.chat.routing.understanding import build_understanding_result
@@ -141,7 +145,30 @@ async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) ->
                 parser_rules=parser_rules,
                 searchable_attribute_names=searchable_attribute_names,
             )
-            if has_product_detail_signal and not detail.is_detail_request:
+            if should_demote_attribute_detail_to_browse(
+                user_text=text,
+                requested_fields=detail.requested_fields,
+                wants_image=detail.wants_image,
+                sku_tokens=sku_tokens,
+            ):
+                detail = DetailQuery(
+                    requested_fields=[],
+                    attribute_filters=dict(detail.attribute_filters or {}),
+                    wants_image=False,
+                    is_detail_request=False,
+                    semantic_hints=list(detail.semantic_hints or []),
+                    unknown_terms=list(getattr(detail, "unknown_terms", []) or []),
+                    clarify_focus=str(detail.clarify_focus or ""),
+                    parse_failed=bool(getattr(detail, "parse_failed", False)),
+                    parse_error=str(getattr(detail, "parse_error", "") or ""),
+                    extraction_debug=dict(getattr(detail, "extraction_debug", {}) or {}),
+                )
+                debug_meta["llm_detail_query_demoted_to_browse"] = True
+            if (
+                has_product_detail_signal
+                and not detail.is_detail_request
+                and not is_browse_like_product_request(user_text=text, sku_tokens=sku_tokens)
+            ):
                 detail = DetailQuery(
                     requested_fields=list(detail.requested_fields or ["attributes"]),
                     attribute_filters=dict(detail.attribute_filters or {}),

@@ -981,6 +981,67 @@ async def test_infer_chat_interpretation_marks_product_detail_when_sku_present(
     assert result.debug["llm_chat_interpretation_internal_workflow"] == "product_detail"
 
 
+def test_attribute_detail_demote_policy_keeps_browse_queries_in_catalog_mode() -> None:
+    assert extractor_module.should_demote_attribute_detail_to_browse(
+        user_text="Can i see opal color",
+        requested_fields=["attributes"],
+        wants_image=False,
+        sku_tokens=[],
+    )
+    assert not extractor_module.should_demote_attribute_detail_to_browse(
+        user_text="Can i see sample images of titanium labrets?",
+        requested_fields=["image"],
+        wants_image=True,
+        sku_tokens=[],
+    )
+    assert not extractor_module.should_demote_attribute_detail_to_browse(
+        user_text="Can I see DMBJ38?",
+        requested_fields=["attributes"],
+        wants_image=False,
+        sku_tokens=["DMBJ38"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_infer_chat_interpretation_demotes_browse_attribute_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate_chat_json(*, messages, model, temperature, max_tokens, usage_kind, **extra):
+        if usage_kind == "chat_understanding":
+            return _understanding_payload(
+                "product_detail",
+                reason="browse opal color products",
+                confidence=0.92,
+                needs_products=True,
+            )
+        if usage_kind == "chat_detail_query_inference":
+            return {
+                "requested_fields": ["attributes"],
+                "attribute_filters": {"category": "Opal Body Jewelry"},
+                "wants_image": False,
+                "semantic_hints": [],
+                "clarify_focus": "",
+                "confidence": 0.9,
+            }
+        raise AssertionError(f"unexpected usage_kind: {usage_kind}")
+
+    monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+
+    result = await infer_chat_interpretation(
+        user_text="Can i see opal color",
+        locale="en-US",
+        channel="widget",
+        alias_map={},
+        parser_rules=_rules(),
+        sku_tokens=[],
+    )
+
+    assert result.execution_decision.route_decision.workflow == "catalog"
+    assert result.detail.requested_fields == []
+    assert result.detail.attribute_filters == {"category": "opal body jewelry"}
+    assert result.debug["llm_detail_query_demoted_to_browse"] is True
+
+
 @pytest.mark.asyncio
 async def test_classify_chat_surface_intent_uses_entity_hints_over_legacy_workflow_name(
     monkeypatch: pytest.MonkeyPatch,

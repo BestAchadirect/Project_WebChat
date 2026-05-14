@@ -1,4 +1,4 @@
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from uuid import UUID
 import hashlib
 
@@ -17,6 +17,7 @@ from app.schemas.training import (
     BulkChunkIds, BulkOperationResponse,
     SimilarityTestRequest, SimilarityTestResponse, SimilarityResult
 )
+from app.services.chat.observability.regression_case_templates import build_review_bundle_from_qa_log
 from app.services.embedding import EmbeddingService
 from app.services.chat.service import ChatService
 from app.core.config import settings
@@ -34,6 +35,10 @@ async def list_qa_logs(
     page_size: int = Query(20, alias="pageSize", ge=1, le=9999),
     status: Optional[str] = None,
     channel: Optional[str] = None,
+    workflow: Optional[str] = Query(None),
+    grounding_status: Optional[str] = Query(None, alias="groundingStatus"),
+    failure_bucket: Optional[str] = Query(None, alias="failureBucket"),
+    search: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db)
 ):
     if "limit" in request.query_params or "offset" in request.query_params:
@@ -56,6 +61,36 @@ async def list_qa_logs(
             else:
                 query = query.where(QALog.channel == channel_value)
                 count_query = count_query.where(QALog.channel == channel_value)
+    if workflow:
+        workflow_value = workflow.strip().lower()
+        if workflow_value:
+            workflow_expr = func.lower(
+                func.coalesce(QALog.token_usage["chat_metrics"]["workflow"].astext, "")
+            )
+            query = query.where(workflow_expr == workflow_value)
+            count_query = count_query.where(workflow_expr == workflow_value)
+    if grounding_status:
+        grounding_value = grounding_status.strip().lower()
+        if grounding_value:
+            grounding_expr = func.lower(
+                func.coalesce(QALog.token_usage["chat_metrics"]["grounding_status"].astext, "")
+            )
+            query = query.where(grounding_expr == grounding_value)
+            count_query = count_query.where(grounding_expr == grounding_value)
+    if failure_bucket:
+        failure_value = failure_bucket.strip().lower()
+        if failure_value:
+            failure_expr = func.lower(
+                func.coalesce(QALog.token_usage["chat_metrics"]["failure_bucket"].astext, "")
+            )
+            query = query.where(failure_expr == failure_value)
+            count_query = count_query.where(failure_expr == failure_value)
+    if search:
+        search_value = search.strip()
+        if search_value:
+            search_like = f"%{search_value}%"
+            query = query.where(or_(QALog.question.ilike(search_like), QALog.answer.ilike(search_like)))
+            count_query = count_query.where(or_(QALog.question.ilike(search_like), QALog.answer.ilike(search_like)))
 
     total = int((await db.execute(count_query)).scalar() or 0)
     safe_page, total_pages, offset = normalize_pagination(
@@ -73,6 +108,18 @@ async def list_qa_logs(
         pageSize=page_size,
         totalPages=total_pages,
     )
+
+
+@qa_router.get("/qa-logs/{qa_log_id}/review-bundle", response_model=Dict[str, Any])
+async def get_qa_log_review_bundle(
+    qa_log_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    result = await db.execute(select(QALog).where(QALog.id == qa_log_id))
+    qa_log = result.scalar_one_or_none()
+    if qa_log is None:
+        raise HTTPException(status_code=404, detail="QA log not found")
+    return build_review_bundle_from_qa_log(qa_log)
 
 
 @qa_router.post("/test-chat", response_model=ChatResponse)

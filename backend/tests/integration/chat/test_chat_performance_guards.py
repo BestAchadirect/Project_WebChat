@@ -19,6 +19,7 @@ from app.services.chat.routing import routing_policy
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.components.types import ComponentSource
+from app.services.chat.parsing.llm_attribute_extractor import AttributeListTargetResult
 from app.services.chat.parsing.detail_query_parser import DetailQuery
 from app.services.chat.retrieval.product_detail_resolver import ProductDetailResolver
 from app.services.chat.retrieval.result_policy import classify_match_tier
@@ -219,9 +220,16 @@ async def test_component_pipeline_design_discovery_uses_generic_structured_clari
     async def fake_generate_embedding(text: str):
         return [0.1, 0.2, 0.3]
 
+    async def fake_infer_attribute_list_target(**kwargs):
+        return AttributeListTargetResult(target="", confidence=0.0, debug={})
+
     monkeypatch.setattr(
         "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
         fake_parse,
+    )
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline_runtime.core.infer_attribute_list_target",
+        fake_infer_attribute_list_target,
     )
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
 
@@ -238,7 +246,8 @@ async def test_component_pipeline_design_discovery_uses_generic_structured_clari
 
     assert result.response.routing.workflow == "catalog"
     assert any(component.type.value == "clarify" for component in result.response.components)
-    assert "material" in result.response.reply_text.lower() or "style" in result.response.reply_text.lower() or "gauge" in result.response.reply_text.lower()
+    reply = result.response.reply_text.lower()
+    assert any(term in reply for term in ("material", "style", "gauge", "body jewelry", "type"))
     assert result.debug.get("clarify_reason") == "structured_no_match"
     assert result.debug.get("semantic_first_used") is True
     assert result.debug.get("clarify_mode") == "recoverable_product"

@@ -758,6 +758,70 @@ async def test_process_chat_routes_product_correction_over_sterilization_policy(
 
 
 @pytest.mark.asyncio
+async def test_process_chat_demotes_browse_attribute_detail_to_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_infer_detail_query(**kwargs):
+        return SimpleNamespace(
+            requested_fields=["attributes"],
+            attribute_filters={"category": "Opal Body Jewelry"},
+            wants_image=False,
+            semantic_hints=[],
+            unknown_terms=[],
+            clarify_focus="",
+            confidence=0.9,
+            llm_call_count=0,
+            debug={},
+        )
+
+    async def fake_component_pipeline(self, *, request, conversation_id, run_id, **kwargs):
+        detail_override = kwargs.get("detail_override")
+        assert detail_override is not None
+        assert list(getattr(detail_override, "requested_fields", []) or []) == []
+        assert bool(getattr(detail_override, "is_detail_request", False)) is False
+        assert dict(getattr(detail_override, "attribute_filters", {}) or {}) == {"category": "opal body jewelry"}
+        return build_component_pipeline_result(
+            request=request,
+            conversation_id=conversation_id,
+            reply_text="component catalog browse response",
+            response_workflow="catalog",
+            source="sql",
+        )
+
+    patch_chat_service_lifecycle(monkeypatch)
+    _patch_runtime_understanding(
+        monkeypatch,
+        _understanding_result(
+            text="Can i see opal color",
+            workflow="product_detail",
+            reason="browse opal color products",
+            confidence=0.92,
+            needs_products=True,
+            entity_hints={
+                "has_product_signal": True,
+                "has_product_detail_signal": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)
+    monkeypatch.setattr(
+        "app.services.chat.runtime.unified_chat_runtime.infer_detail_query",
+        fake_infer_detail_query,
+    )
+    monkeypatch.setattr(ChatService, "_run_component_pipeline", fake_component_pipeline)
+
+    service = ChatService(db=object())
+    response = await service.process_chat(
+        ChatRequest(user_id="guest-opal-browse", message="Can i see opal color", locale="en-US"),
+        channel="widget",
+    )
+
+    assert response.reply_text == "component catalog browse response"
+    assert response.routing.workflow == "catalog"
+    assert response.debug.get("llm_detail_query_demoted_to_browse") is True
+
+
+@pytest.mark.asyncio
 async def test_process_chat_first_message_without_context_requests_clarification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

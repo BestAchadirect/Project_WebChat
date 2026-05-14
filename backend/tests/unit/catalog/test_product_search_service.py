@@ -284,6 +284,49 @@ async def test_structured_count_uses_eav_only(monkeypatch: pytest.MonkeyPatch) -
     assert len(db.executed) == 1
 
 
+@pytest.mark.asyncio
+async def test_vector_search_pushes_hard_filters_into_sql(monkeypatch: pytest.MonkeyPatch) -> None:
+    db = _QueueDB([_FakeResult(rows=[])])
+    service = CatalogProductSearchService(db=db)
+
+    async def fake_definitions_by_name(*args, **kwargs):
+        return {"material": SimpleNamespace(id=10)}
+
+    monkeypatch.setattr(eav_service, "get_definitions_by_name", fake_definitions_by_name)
+
+    result = await service.vector_search(
+        query_embedding=[0.1, 0.2],
+        limit=5,
+        attribute_filters={"material": "steel"},
+    )
+
+    assert result.cards == []
+    assert service.last_meta["retrieval_filter_pushdown_keys"] == ["material"]
+    assert service.last_meta["retrieval_filter_pushdown_slot_count"] == 1
+    sql_text = str(db.executed[0]).lower()
+    assert "exists" in sql_text
+    assert "product_attribute_values.attribute_id" in sql_text
+
+
+@pytest.mark.asyncio
+async def test_lexical_search_pushes_direct_filters_into_sql() -> None:
+    db = _QueueDB([_FakeResult(rows=[])])
+    service = CatalogProductSearchService(db=db)
+
+    result = await service.lexical_search(
+        query_text="x",
+        limit=5,
+        attribute_filters={"max_price": "50", "stock_status": "in_stock"},
+    )
+
+    assert result.cards == []
+    assert service.last_meta["retrieval_filter_pushdown_keys"] == ["max_price", "stock_status"]
+    assert service.last_meta["retrieval_filter_pushdown_direct_count"] == 2
+    sql_text = str(db.executed[0]).lower()
+    assert "products.price <=" in sql_text
+    assert "products.stock_status" in sql_text
+
+
 def test_catalog_eav_partial_match_keys_use_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "CATALOG_EAV_PARTIAL_MATCH_KEYS", "material,finish")
 

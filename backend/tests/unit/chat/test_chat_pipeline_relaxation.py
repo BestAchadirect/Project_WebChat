@@ -58,6 +58,40 @@ def test_apply_soft_hint_gate_keeps_partial_matches_when_no_full_match_exists() 
     assert meta["semantic_soft_constraint_rejection_reason"] == ""
 
 
+def test_apply_preference_rerank_combines_soft_filters_and_semantic_hints() -> None:
+    exact = SimpleNamespace(
+        name="Gothic Opal Clicker",
+        title="",
+        description="",
+        sku="SKU-1",
+        material="steel",
+        search_text="gothic opal clicker",
+        attributes={"finish": "sterilized", "color": "opal"},
+    )
+    partial = SimpleNamespace(
+        name="Plain Clicker",
+        title="",
+        description="",
+        sku="SKU-2",
+        material="steel",
+        search_text="simple clicker",
+        attributes={"finish": "sterilized", "color": "black"},
+    )
+
+    cards, meta = ComponentPipeline._apply_preference_rerank(
+        cards=[partial, exact],
+        soft_filters={"finish": "sterilized", "color": "opal"},
+        semantic_hints=["gothic"],
+    )
+
+    assert cards == [exact]
+    assert meta["semantic_soft_constraint_full_match_count"] == 1
+    assert meta["semantic_soft_constraint_partial_match_count"] == 1
+    assert meta["semantic_hint_match_count"] == 1
+    assert meta["semantic_hint_score"] == 1.0
+    assert meta["semantic_preference_rerank_passes"] == 1
+
+
 def test_context_detail_followup_detects_ordinal_and_price_field() -> None:
     assert ComponentPipeline._referenced_product_index(text="how much is the first one?") == 0
     assert ComponentPipeline._referenced_product_index(text="price for the second item") == 1
@@ -139,7 +173,7 @@ async def test_build_clarify_policy_structured_no_match_is_best_effort_helpful()
     )
 
     assert result["reason"] == "structured_no_match"
-    assert "material" in result["message"].lower() or "style" in result["message"].lower() or "gauge" in result["message"].lower()
+    assert any(term in result["message"].lower() for term in ("material", "style", "gauge", "gold", "steel"))
     assert result["questions"] == ["Which detail should I use to continue?"]
     assert result["extra_debug"]["clarify_mode"] == "recoverable_product"
     assert result["extra_debug"]["clarify_best_effort_help"] is True

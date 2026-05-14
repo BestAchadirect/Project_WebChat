@@ -290,6 +290,8 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                 fields.append("price")
             if any(term in text_norm for term in ("stock", "available", "availability", "in stock")) and "stock" not in fields:
                 fields.append("stock")
+            if any(term in text_norm for term in ("details", "tell me about", "what size", "what material", "made in", "origin")) and "attributes" not in fields:
+                fields.append("attributes")
             return fields
 
     async def _handle_context_detail_reference_followup(
@@ -304,20 +306,29 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             fields = self._requested_context_detail_fields(text=text, detail=detail)
             if not fields:
                 return False
-            product_ids = [
-                str(item or "").strip()
-                for item in list(debug_meta.get("conversation_last_product_ids") or [])
-                if str(item or "").strip()
-            ]
-            if not product_ids:
-                return False
-            index = self._referenced_product_index(text=text)
-            if index is None:
-                if len(product_ids) != 1:
-                    return False
+            active_product = dict(debug_meta.get("context_active_product") or {})
+            active_product_id = str(active_product.get("product_id") or "").strip()
+            if (
+                active_product_id
+                and float(debug_meta.get("context_confidence") or 0.0) >= 0.8
+            ):
+                product_ids = [active_product_id]
                 index = 0
-            if index < 0 or index >= len(product_ids):
-                return False
+            else:
+                product_ids = [
+                    str(item or "").strip()
+                    for item in list(debug_meta.get("conversation_last_product_ids") or [])
+                    if str(item or "").strip()
+                ]
+                if not product_ids:
+                    return False
+                index = self._referenced_product_index(text=text)
+                if index is None:
+                    if len(product_ids) != 1:
+                        return False
+                    index = 0
+                if index < 0 or index >= len(product_ids):
+                    return False
 
             selected_id = product_ids[index]
             component_types = [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_DETAIL]
@@ -342,8 +353,25 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                     reply_parts.append(f"I found {title}, but I couldn't confirm the price from the catalog data.")
             if "stock" in fields:
                 stock = str(getattr(product, "stock_status", "") or "").strip()
+                if not stock and getattr(product, "in_stock", None) is not None:
+                    stock = "in_stock" if bool(getattr(product, "in_stock", False)) else "out_of_stock"
                 if stock:
                     reply_parts.append(f"Stock status: {stock}.")
+            if "attributes" in fields:
+                attrs = getattr(product, "attributes", {}) or {}
+                if isinstance(attrs, dict) and attrs:
+                    material = str(attrs.get("material") or getattr(product, "material", "") or "").strip()
+                    gauge = str(attrs.get("gauge") or getattr(product, "gauge", "") or "").strip()
+                    size = str(attrs.get("length") or attrs.get("size") or attrs.get("outer_diameter") or "").strip()
+                    details = []
+                    if material:
+                        details.append(f"material: {material}")
+                    if gauge:
+                        details.append(f"gauge: {gauge}")
+                    if size:
+                        details.append(f"size: {size}")
+                    if details:
+                        reply_parts.append(f"{title} details: {', '.join(details)}.")
             reply_text = " ".join(reply_parts).strip() or f"I found {title}."
 
             state.presentation.selected_components = component_types

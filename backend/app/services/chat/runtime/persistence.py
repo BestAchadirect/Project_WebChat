@@ -79,6 +79,7 @@ async def finalize_response(
 ) -> ChatResponse:
     response.components = [sanitize_chat_component(component) for component in list(response.components or [])]
     chat_metrics = qa_metrics.build_chat_qa_metrics(
+        conversation_id=conversation_id,
         user_text=user_text,
         response=response,
         channel=channel,

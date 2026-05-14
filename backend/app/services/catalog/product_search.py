@@ -71,6 +71,11 @@ class CatalogProductSearchService:
         }
         self.last_meta: Dict[str, Any] = {
             "structured_query_cache_hit": False,
+            "retrieval_filter_pushdown_keys": [],
+            "retrieval_filter_pushdown_count": 0,
+            "retrieval_filter_pushdown_direct_count": 0,
+            "retrieval_filter_pushdown_eav_count": 0,
+            "retrieval_filter_pushdown_slot_count": 0,
         }
         self._structured_cache_hits = 0
         self._structured_cache_misses = 0
@@ -84,6 +89,11 @@ class CatalogProductSearchService:
         }
         self.last_meta = {
             "structured_query_cache_hit": False,
+            "retrieval_filter_pushdown_keys": [],
+            "retrieval_filter_pushdown_count": 0,
+            "retrieval_filter_pushdown_direct_count": 0,
+            "retrieval_filter_pushdown_eav_count": 0,
+            "retrieval_filter_pushdown_slot_count": 0,
         }
 
     def _add_metric(self, key: str, elapsed_ms: float) -> None:
@@ -200,6 +210,97 @@ class CatalogProductSearchService:
             )
             .exists()
         )
+
+    @staticmethod
+    def _normalize_stock_status_filter(value: str) -> Optional[StockStatus]:
+        normalized = str(value or "").strip().lower().replace("stockstatus.", "")
+        normalized = normalized.replace("-", "_").replace(" ", "_")
+        if normalized == "instock":
+            normalized = "in_stock"
+        if normalized == "outofstock":
+            normalized = "out_of_stock"
+        if normalized == StockStatus.in_stock.value:
+            return StockStatus.in_stock
+        if normalized == StockStatus.out_of_stock.value:
+            return StockStatus.out_of_stock
+        return None
+
+    @classmethod
+    def _direct_filter_condition(cls, *, key: str, expected_norm: str):
+        if not expected_norm:
+            return None
+        if key == "sku":
+            return func.lower(Product.sku) == expected_norm
+        if key == "name":
+            return cls._like_condition(Product.master_code, expected_norm)
+        if key == "stock_status":
+            stock_status = cls._normalize_stock_status_filter(expected_norm)
+            if stock_status is None:
+                return None
+            return Product.stock_status == stock_status
+        if key == "min_price":
+            try:
+                return Product.price >= float(str(expected_norm).replace("$", "").strip())
+            except Exception:
+                return None
+        if key == "max_price":
+            try:
+                return Product.price <= float(str(expected_norm).replace("$", "").strip())
+            except Exception:
+                return None
+        return None
+
+    async def _prepare_retrieval_filter_pushdown(
+        self,
+        *,
+        attribute_filters: Optional[Dict[str, str]],
+    ) -> Tuple[List[Any], List[_AttributeFilterSlot]]:
+        clean_filters = self._normalize_filter_map(attribute_filters)
+        if not clean_filters:
+            self.last_meta.update(
+                {
+                    "retrieval_filter_pushdown_keys": [],
+                    "retrieval_filter_pushdown_count": 0,
+                    "retrieval_filter_pushdown_direct_count": 0,
+                    "retrieval_filter_pushdown_eav_count": 0,
+                    "retrieval_filter_pushdown_slot_count": 0,
+                }
+            )
+            return [], []
+
+        direct_conditions: List[Any] = []
+        direct_keys: List[str] = []
+        eav_filters: Dict[str, str] = {}
+        for key, raw_value in clean_filters.items():
+            expected_norm = self._normalize_filter_value(raw_value)
+            condition = self._direct_filter_condition(key=key, expected_norm=expected_norm)
+            if condition is not None:
+                direct_conditions.append(condition)
+                direct_keys.append(key)
+                continue
+            eav_filters[key] = raw_value
+
+        filter_slots: List[_AttributeFilterSlot] = []
+        if eav_filters:
+            definitions = await eav_service.get_definitions_by_name(self.db, list(eav_filters.keys()))
+            if definitions:
+                filter_slots = self._attribute_filter_slots(
+                    definitions=definitions,
+                    clean_filters=eav_filters,
+                )
+
+        eav_keys = sorted({slot.key for slot in filter_slots})
+        pushdown_keys = sorted(dict.fromkeys(direct_keys + eav_keys))
+        self.last_meta.update(
+            {
+                "retrieval_filter_pushdown_keys": pushdown_keys,
+                "retrieval_filter_pushdown_count": len(pushdown_keys),
+                "retrieval_filter_pushdown_direct_count": len(direct_keys),
+                "retrieval_filter_pushdown_eav_count": len(eav_keys),
+                "retrieval_filter_pushdown_slot_count": len(filter_slots),
+            }
+        )
+        return direct_conditions, filter_slots
 
     @staticmethod
     def _master_partition_expr():
@@ -442,6 +543,7 @@ class CatalogProductSearchService:
         limit: int = 10,
         candidate_limit: Optional[int] = None,
         candidate_multiplier: int = 3,
+        attribute_filters: Optional[Dict[str, str]] = None,
     ) -> ProductSearchResult:
         self._reset_metrics()
         distance_col = ProductEmbedding.embedding.cosine_distance(query_embedding).label("distance")
@@ -449,6 +551,9 @@ class CatalogProductSearchService:
         cap = max(limit, candidate_limit or 0)
         if cap <= 0:
             cap = max(limit, min(60, limit * max(1, candidate_multiplier)))
+        direct_conditions, filter_slots = await self._prepare_retrieval_filter_pushdown(
+            attribute_filters=attribute_filters,
+        )
 
         subq = (
             select(
@@ -458,10 +563,12 @@ class CatalogProductSearchService:
             .join(Product, Product.id == ProductEmbedding.product_id)
             .where(Product.is_active.is_(True))
             .where(ProductEmbedding.model == model)
-            .order_by(distance_col)
-            .limit(cap)
-            .subquery()
         )
+        for condition in direct_conditions:
+            subq = subq.where(condition)
+        for slot in filter_slots:
+            subq = subq.where(self._attribute_slot_exists(slot))
+        subq = subq.order_by(distance_col).limit(cap).subquery()
         stmt = (
             select(Product, subq.c.distance)
             .join(subq, Product.id == subq.c.product_id)
@@ -589,6 +696,7 @@ class CatalogProductSearchService:
         query_text: str,
         limit: int = 10,
         candidate_limit: Optional[int] = None,
+        attribute_filters: Optional[Dict[str, str]] = None,
     ) -> ProductSearchResult:
         self._reset_metrics()
         normalized_query = normalize_text(query_text)
@@ -598,6 +706,9 @@ class CatalogProductSearchService:
         cap = max(limit, candidate_limit or 0)
         if cap <= 0:
             cap = max(limit, min(60, limit * 4))
+        direct_conditions, filter_slots = await self._prepare_retrieval_filter_pushdown(
+            attribute_filters=attribute_filters,
+        )
 
         document_text = func.concat_ws(
             " ",
@@ -617,12 +728,15 @@ class CatalogProductSearchService:
             select(Product, rank)
             .where(Product.is_active.is_(True))
             .where(document.op("@@")(query))
-            .order_by(
-                case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
-                rank.desc(),
-            )
-            .limit(cap)
         )
+        for condition in direct_conditions:
+            stmt = stmt.where(condition)
+        for slot in filter_slots:
+            stmt = stmt.where(self._attribute_slot_exists(slot))
+        stmt = stmt.order_by(
+            case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
+            rank.desc(),
+        ).limit(cap)
 
         lexical_started = time.perf_counter()
         result = await self.db.execute(stmt)
@@ -640,12 +754,15 @@ class CatalogProductSearchService:
                     select(Product, fallback_rank)
                     .where(Product.is_active.is_(True))
                     .where(fallback_rank > 0)
-                    .order_by(
-                        case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
-                        fallback_rank.desc(),
-                    )
-                    .limit(cap)
                 )
+                for condition in direct_conditions:
+                    fallback_stmt = fallback_stmt.where(condition)
+                for slot in filter_slots:
+                    fallback_stmt = fallback_stmt.where(self._attribute_slot_exists(slot))
+                fallback_stmt = fallback_stmt.order_by(
+                    case((Product.stock_status == StockStatus.in_stock, 0), else_=1),
+                    fallback_rank.desc(),
+                ).limit(cap)
                 fallback_started = time.perf_counter()
                 fallback_result = await self.db.execute(fallback_stmt)
                 rows = fallback_result.all()

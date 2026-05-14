@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import re
 import logging
@@ -24,7 +25,24 @@ from app.services.chat.text_normalization import normalize_user_text
 
 logger = logging.getLogger(__name__)
 
-KNOWLEDGE_ANSWER_CACHE_VERSION = 2
+KNOWLEDGE_ANSWER_CACHE_VERSION = 4
+
+
+@dataclass(frozen=True)
+class KnowledgeAnswerDependencyRule:
+    key: str
+    retrieval_scope: str
+    retrieval_query: str
+    query_markers: tuple[str, ...] = ()
+    topic_markers: tuple[str, ...] = ()
+    evidence_markers: tuple[str, ...] = ()
+    title_category_markers: tuple[str, ...] = ()
+    detail_markers: tuple[str, ...] = ()
+    detail_patterns: tuple[str, ...] = ()
+    must_tags: tuple[str, ...] = ()
+    boost_tags: tuple[str, ...] = ()
+    limit: int = 3
+    debug_key: str = ""
 
 
 class PipelineWorkflowKnowledgeMixin:
@@ -36,6 +54,93 @@ class PipelineWorkflowKnowledgeMixin:
     }
     _COMPANY_INFO_PLAN_CACHE_VERSION = 1
     _COMPANY_INFO_SELECTOR_CACHE_VERSION = 1
+    _KNOWLEDGE_ANSWER_DEPENDENCY_RULES = (
+        KnowledgeAnswerDependencyRule(
+            key="contact_details",
+            debug_key="contact_dependency",
+            retrieval_scope="company_info",
+            retrieval_query="customer support contact email phone showroom sales",
+            query_markers=(
+                "refund",
+                "return",
+                "exchange",
+                "replacement",
+                "replace",
+                "wrong item",
+                "wrong product",
+                "wrong order",
+                "damaged",
+                "defective",
+                "rma",
+            ),
+            topic_markers=("refund", "refunds", "return", "returns", "support"),
+            evidence_markers=(
+                "contact us",
+                "contact support",
+                "customer service",
+                "sales team",
+                "support team",
+                "email us",
+                "call us",
+                "phone",
+                "email",
+                "rma",
+            ),
+            title_category_markers=(
+                "contact",
+                "support",
+                "customer service",
+                "sales",
+            ),
+            detail_markers=("phone", "email", "whatsapp", "showroom"),
+            detail_patterns=(
+                r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+                r"(?<!\w)(?:\+\d[\d\s().-]{6,}\d|\d[\d\s().-]{7,}\d)(?!\w)",
+            ),
+            must_tags=("contact",),
+            boost_tags=("contact", "support", "sales"),
+        ),
+        KnowledgeAnswerDependencyRule(
+            key="showroom_details",
+            debug_key="showroom_dependency",
+            retrieval_scope="company_info",
+            retrieval_query="showroom address location opening hours visit phone email bangkok",
+            query_markers=(
+                "showroom",
+                "show room",
+                "location",
+                "address",
+                "opening hours",
+                "opening hour",
+                "open",
+                "hours",
+                "visit",
+                "where are you",
+            ),
+            topic_markers=("showroom", "location", "address", "hours", "store overview"),
+            evidence_markers=("showroom", "visit", "location", "address", "open", "hours"),
+            title_category_markers=("address", "location", "hours"),
+            detail_markers=(
+                "address",
+                "open",
+                "hours",
+                "bangkok",
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday",
+            ),
+            detail_patterns=(
+                r"(?i)\b(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b",
+                r"(?i)\b\d{1,2}(?::\d{2})?\s?(?:am|pm)\b",
+            ),
+            must_tags=("store_overview",),
+            boost_tags=("showroom", "location", "address", "contact"),
+        ),
+    )
 
     @staticmethod
     def _apply_knowledge_ambiguity_state(
@@ -657,6 +762,274 @@ class PipelineWorkflowKnowledgeMixin:
             )
             return top_knowledge_relevance, knowledge_sources_weak
 
+    @classmethod
+    def _knowledge_source_text(cls, source: KnowledgeSource) -> str:
+            return normalize_user_text(
+                " ".join(
+                    [
+                        str(getattr(source, "title", "") or ""),
+                        str(getattr(source, "category", "") or ""),
+                        str(getattr(source, "summary", "") or ""),
+                        str(getattr(source, "content_snippet", "") or ""),
+                    ]
+                )
+            )
+
+    @classmethod
+    def _knowledge_dependency_debug_prefix(cls, rule: KnowledgeAnswerDependencyRule) -> str:
+            debug_key = str(rule.debug_key or rule.key or "dependency").strip().lower()
+            debug_key = re.sub(r"[^a-z0-9_]+", "_", debug_key).strip("_") or "dependency"
+            return f"knowledge_{debug_key}"
+
+    @staticmethod
+    def _knowledge_source_dedupe_key(source: KnowledgeSource) -> str:
+            source_id = str(getattr(source, "source_id", "") or getattr(source, "chunk_id", "") or "").strip()
+            return source_id.lower() if source_id else str(id(source))
+
+    @classmethod
+    def _dedupe_knowledge_sources(
+            cls,
+            *,
+            sources: Sequence[KnowledgeSource],
+        ) -> list[KnowledgeSource]:
+            deduped: list[KnowledgeSource] = []
+            seen_ids: set[str] = set()
+            for source in list(sources or []):
+                dedupe_key = cls._knowledge_source_dedupe_key(source)
+                if dedupe_key in seen_ids:
+                    continue
+                seen_ids.add(dedupe_key)
+                deduped.append(source)
+            return deduped
+
+    @classmethod
+    def _knowledge_source_satisfies_dependency(
+            cls,
+            *,
+            source: KnowledgeSource,
+            rule: KnowledgeAnswerDependencyRule,
+        ) -> bool:
+            title_category = normalize_user_text(
+                " ".join(
+                    [
+                        str(getattr(source, "title", "") or ""),
+                        str(getattr(source, "category", "") or ""),
+                    ]
+                )
+            )
+            detail_text_raw = " ".join(
+                [
+                    str(getattr(source, "summary", "") or ""),
+                    str(getattr(source, "content_snippet", "") or ""),
+                ]
+            )
+            detail_text = normalize_user_text(detail_text_raw)
+            if not title_category and not detail_text:
+                return False
+            if any(marker in title_category for marker in tuple(rule.title_category_markers or ())):
+                return True
+            if any(marker in detail_text for marker in tuple(rule.detail_markers or ())):
+                return True
+            return any(re.search(pattern, detail_text_raw) for pattern in tuple(rule.detail_patterns or ()))
+
+    @classmethod
+    def _knowledge_requires_dependency(
+            cls,
+            *,
+            rule: KnowledgeAnswerDependencyRule,
+            user_text: str,
+            topic: str,
+            selected_sources: Sequence[KnowledgeSource],
+        ) -> bool:
+            normalized_user = normalize_user_text(user_text)
+            topic_norm = normalize_user_text(topic)
+            query_signal = any(marker in normalized_user for marker in tuple(rule.query_markers or ()))
+            topic_signal = any(marker in topic_norm for marker in tuple(rule.topic_markers or ()))
+            if not query_signal and not topic_signal:
+                return False
+            evidence_markers = tuple(rule.evidence_markers or ())
+            if not evidence_markers:
+                return True
+            evidence_haystack = normalize_user_text(
+                " ".join(cls._knowledge_source_text(source) for source in list(selected_sources or []))
+            )
+            if not evidence_haystack:
+                return False
+            return any(marker in evidence_haystack for marker in evidence_markers)
+
+    @classmethod
+    def _merge_knowledge_dependency_sources(
+            cls,
+            *,
+            rule: KnowledgeAnswerDependencyRule,
+            primary_sources: Sequence[KnowledgeSource],
+            dependency_sources: Sequence[KnowledgeSource],
+            limit: int = 3,
+        ) -> tuple[list[KnowledgeSource], bool]:
+            max_items = max(1, int(limit))
+            deduped_primary = cls._dedupe_knowledge_sources(sources=primary_sources)
+            if any(
+                cls._knowledge_source_satisfies_dependency(source=source, rule=rule)
+                for source in deduped_primary
+            ):
+                return deduped_primary[:max_items], False
+
+            seen_ids = {cls._knowledge_source_dedupe_key(source) for source in deduped_primary}
+            chosen_source: KnowledgeSource | None = None
+            for source in list(dependency_sources or []):
+                dedupe_key = cls._knowledge_source_dedupe_key(source)
+                if dedupe_key in seen_ids:
+                    continue
+                if not cls._knowledge_source_satisfies_dependency(source=source, rule=rule):
+                    continue
+                chosen_source = source
+                break
+            if chosen_source is None:
+                return deduped_primary[:max_items], False
+
+            if max_items <= 1:
+                return [chosen_source], True
+
+            merged = list(deduped_primary[: max_items - 1])
+            merged.append(chosen_source)
+            for source in deduped_primary[max_items - 1:]:
+                if len(merged) >= max_items:
+                    break
+                merged.append(source)
+            return merged[:max_items], True
+
+    async def _retrieve_knowledge_dependency_sources(
+            self,
+            *,
+            rule: KnowledgeAnswerDependencyRule,
+            locale: str,
+            run_id: str,
+            store_overview_request: bool,
+            debug_meta: Dict[str, Any],
+            spans: Dict[str, float],
+            external_call_counts: Dict[str, int],
+        ) -> list[KnowledgeSource]:
+            del locale
+            if rule.retrieval_scope != "company_info":
+                return []
+            return await self._retrieve_company_info_sources(
+                query_text=str(rule.retrieval_query or "").strip(),
+                must_tags=list(rule.must_tags or []),
+                boost_tags=list(rule.boost_tags or []),
+                limit=max(1, int(rule.limit)),
+                store_overview_request=store_overview_request,
+                run_id=run_id,
+                debug_meta=debug_meta,
+                spans=spans,
+                external_call_counts=external_call_counts,
+            )
+
+    async def _enrich_knowledge_sources_with_dependencies(
+            self,
+            *,
+            user_text: str,
+            topic: str,
+            selected_sources: Sequence[KnowledgeSource],
+            locale: str,
+            run_id: str,
+            store_overview_request: bool,
+            debug_meta: Dict[str, Any],
+            spans: Dict[str, float],
+            external_call_counts: Dict[str, int],
+        ) -> list[KnowledgeSource]:
+            base_sources = self._dedupe_knowledge_sources(sources=selected_sources)
+            required_rules: list[str] = []
+            satisfied_rules: list[str] = []
+            enriched_rules: list[str] = []
+            rule_results: Dict[str, Dict[str, Any]] = {}
+
+            for rule in self._KNOWLEDGE_ANSWER_DEPENDENCY_RULES:
+                debug_prefix = self._knowledge_dependency_debug_prefix(rule)
+                required = self._knowledge_requires_dependency(
+                    rule=rule,
+                    user_text=user_text,
+                    topic=topic,
+                    selected_sources=base_sources,
+                )
+                debug_meta[f"{debug_prefix}_required"] = bool(required)
+                if not required:
+                    continue
+                required_rules.append(rule.key)
+
+                if any(
+                    self._knowledge_source_satisfies_dependency(source=source, rule=rule)
+                    for source in base_sources
+                ):
+                    debug_meta[f"{debug_prefix}_satisfied"] = True
+                    debug_meta[f"{debug_prefix}_enriched"] = False
+                    satisfied_rules.append(rule.key)
+                    rule_results[rule.key] = {"satisfied": True, "enriched": False}
+                    continue
+
+                retrieval_debug: Dict[str, Any] = {}
+                try:
+                    dependency_sources = await self._retrieve_knowledge_dependency_sources(
+                        rule=rule,
+                        locale=locale,
+                        run_id=run_id,
+                        store_overview_request=store_overview_request,
+                        debug_meta=retrieval_debug,
+                        spans=spans,
+                        external_call_counts=external_call_counts,
+                    )
+                except Exception as exc:
+                    debug_meta[f"{debug_prefix}_error"] = str(exc)
+                    debug_meta[f"{debug_prefix}_satisfied"] = False
+                    debug_meta[f"{debug_prefix}_enriched"] = False
+                    rule_results[rule.key] = {
+                        "satisfied": False,
+                        "enriched": False,
+                        "error": str(exc),
+                    }
+                    continue
+
+                merged_sources, enriched = self._merge_knowledge_dependency_sources(
+                    rule=rule,
+                    primary_sources=base_sources,
+                    dependency_sources=dependency_sources,
+                    limit=max(1, int(rule.limit)),
+                )
+                base_sources = merged_sources
+                satisfied = any(
+                    self._knowledge_source_satisfies_dependency(source=source, rule=rule)
+                    for source in merged_sources
+                )
+                debug_meta[f"{debug_prefix}_candidate_count"] = len(list(dependency_sources or []))
+                debug_meta[f"{debug_prefix}_candidate_titles"] = [
+                    str(getattr(source, "title", "") or "").strip()
+                    for source in list(dependency_sources or [])
+                    if str(getattr(source, "title", "") or "").strip()
+                ][:3]
+                debug_meta[f"{debug_prefix}_enriched"] = bool(enriched)
+                debug_meta[f"{debug_prefix}_satisfied"] = bool(satisfied)
+                if retrieval_debug:
+                    debug_meta[f"{debug_prefix}_debug"] = {
+                        key: value
+                        for key, value in retrieval_debug.items()
+                        if key.startswith("component_company_info_")
+                    }
+                if satisfied:
+                    satisfied_rules.append(rule.key)
+                if enriched:
+                    enriched_rules.append(rule.key)
+                rule_results[rule.key] = {
+                    "satisfied": bool(satisfied),
+                    "enriched": bool(enriched),
+                    "candidate_count": len(list(dependency_sources or [])),
+                }
+
+            debug_meta["knowledge_dependency_rules_required"] = list(required_rules)
+            debug_meta["knowledge_dependency_rules_satisfied"] = list(satisfied_rules)
+            debug_meta["knowledge_dependency_rules_enriched"] = list(enriched_rules)
+            if rule_results:
+                debug_meta["knowledge_dependency_rule_results"] = dict(rule_results)
+            return base_sources
+
     async def _attempt_grounded_knowledge_answer(
             self,
             *,
@@ -834,6 +1207,17 @@ class PipelineWorkflowKnowledgeMixin:
                     candidates=knowledge_sources,
                     limit=3,
                 )
+            selected_sources = await self._enrich_knowledge_sources_with_dependencies(
+                user_text=text,
+                topic=str(profile.get("topic") or ""),
+                selected_sources=selected_sources,
+                locale=locale,
+                run_id=run_id,
+                store_overview_request=effective_store_overview_request,
+                debug_meta=debug_meta,
+                spans=spans,
+                external_call_counts=external_call_counts,
+            )
             debug_meta["knowledge_source_count_before_selector"] = len(list(knowledge_sources or []))
             debug_meta["knowledge_source_count_after_selector"] = len(list(selected_sources or []))
             debug_meta["knowledge_sources_weak"] = knowledge_sources_weak

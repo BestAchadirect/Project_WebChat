@@ -814,6 +814,55 @@ class PipelinePresentationMixin:
                 response_cards = component_contract.product_cards_from_response(response)
                 state_product_ids = conversation_state.product_ids_from_cards(response_cards)
                 state_product_skus = conversation_state.product_skus_from_cards(response_cards)
+                displayed_products = conversation_state.displayed_products_from_cards(response_cards)
+                active_product_update = None
+                context_active_product = dict(debug_meta.get("context_active_product") or {})
+                if (
+                    context_active_product
+                    and float(debug_meta.get("context_confidence") or 0.0) >= 0.8
+                ):
+                    active_product_update = dict(context_active_product)
+                    if displayed_products and not str(active_product_update.get("product_id") or "").strip():
+                        for displayed in displayed_products:
+                            sku = str(displayed.get("sku") or "").strip().lower()
+                            master_code = str(displayed.get("master_code") or "").strip().lower()
+                            active_sku = str(active_product_update.get("sku") or "").strip().lower()
+                            active_master = str(active_product_update.get("master_code") or "").strip().lower()
+                            if (
+                                (active_sku and active_sku in {sku, master_code})
+                                or (active_master and active_master in {sku, master_code})
+                            ):
+                                matched_card = next(
+                                    (
+                                        card
+                                        for card in response_cards
+                                        if str(getattr(card, "sku", "") or "").strip().lower() in {sku, master_code}
+                                        or str(getattr(card, "id", "") or "").strip()
+                                        == str(displayed.get("product_id") or "").strip()
+                                    ),
+                                    None,
+                                )
+                                if matched_card is None:
+                                    continue
+                                active_product_update = conversation_state.active_product_from_card(
+                                    matched_card,
+                                    source=str(context_active_product.get("source") or "explicit_sku"),
+                                    confidence=float(context_active_product.get("confidence") or debug_meta.get("context_confidence") or 0.95),
+                                )
+                                break
+                elif len(response_cards) == 1 and bool(getattr(detail, "is_detail_request", False)):
+                    active_product_update = conversation_state.active_product_from_card(
+                        response_cards[0],
+                        source="single_result",
+                        confidence=0.85,
+                    )
+                elif str(debug_meta.get("context_reset_reason") or "").strip():
+                    active_product_update = {}
+                if displayed_products:
+                    debug_meta["displayed_products_saved_count"] = len(displayed_products)
+                if active_product_update is not None:
+                    debug_meta["active_product_updated"] = bool(active_product_update)
+                    debug_meta["active_product_source"] = str((active_product_update or {}).get("source") or "")
                 inventory_claim = {
                     "sku": str(debug_meta.get("inventory_verified_sku") or ""),
                     "stock_status": str(debug_meta.get("inventory_verified_status") or ""),
@@ -847,6 +896,8 @@ class PipelinePresentationMixin:
                     product_skus=state_product_skus,
                     answer_source_ids=[str(source.source_id or "") for source in knowledge_sources if str(source.source_id or "").strip()],
                     inventory_claim=inventory_claim,
+                    active_product=active_product_update,
+                    displayed_products=displayed_products if displayed_products or workflow == "catalog" else None,
                     tone_recent=list(tone_state.get("recent") or []),
                 )
                 conversation_state_payload = dict(state_working)

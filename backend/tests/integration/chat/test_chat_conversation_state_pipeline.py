@@ -576,3 +576,133 @@ async def test_component_pipeline_merges_prior_anchor_for_attribute_follow_up(
         "material": "gold",
         "jewelry_type": "labret",
     }
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_active_product_answers_stock_follow_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True)
+    product = canonical_product(
+        sku="DMBJ38",
+        name="Steel Labret",
+        attributes={"master_code": "DMBJ38", "material": "steel", "jewelry_type": "labret"},
+    )
+
+    class CatalogStub:
+        async def structured_search(self, **kwargs):
+            raise AssertionError("active product detail follow-up should not run catalog search")
+
+        async def structured_count(self, **kwargs):
+            return 1
+
+        async def vector_search(self, **kwargs):
+            raise AssertionError("active product detail follow-up should not run vector search")
+
+    pipeline = ComponentPipeline(
+        db=ConversationStateDB(
+            {
+                "version": conversation_state.CONVERSATION_STATE_VERSION,
+                "last_attribute_filters": {"material": "steel", "jewelry_type": "labret"},
+                "active_product": {
+                    "product_id": str(product.product_id),
+                    "sku": "DMBJ38",
+                    "master_code": "DMBJ38",
+                    "name": "Steel Labret",
+                    "source": "position_reference",
+                    "confidence": 0.9,
+                    "created_at": conversation_state.utc_timestamp(),
+                    "updated_at": conversation_state.utc_timestamp(),
+                },
+                "displayed_products": [
+                    {
+                        "position": 1,
+                        "product_id": str(product.product_id),
+                        "sku": "DMBJ38",
+                        "master_code": "DMBJ38",
+                        "name": "Steel Labret",
+                    }
+                ],
+            }
+        ),
+        catalog_search=CatalogStub(),
+        knowledge_retrieval=KnowledgeStub(),
+        redis_cache=RedisStub(),
+    )
+
+    async def fake_resolve(*, product_ids, component_types, redis_cache):
+        assert product_ids == [str(product.product_id)]
+        return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Is it in stock?", locale="en-US"),
+        conversation_id=77,
+        run_id="run-active-stock",
+        route_decision_override=_workflow_decision(),
+        detail_override=DetailQuery(
+            requested_fields=["stock"],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=True,
+        ),
+    )
+
+    assert result.debug.get("context_used") is True
+    assert result.debug.get("context_resolved_intent") == "inventory_check"
+    assert result.debug.get("context_detail_followup_used") is True
+    assert "stock" in result.response.reply_text.lower()
+    assert result.conversation_state is not None
+    assert result.conversation_state["active_product"]["sku"] == "DMBJ38"
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_ambiguous_product_pronoun_clarifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True)
+
+    class CatalogStub:
+        async def structured_search(self, **kwargs):
+            raise AssertionError("ambiguous product pronoun should not search")
+
+        async def structured_count(self, **kwargs):
+            return 0
+
+        async def vector_search(self, **kwargs):
+            raise AssertionError("ambiguous product pronoun should not vector search")
+
+    pipeline = ComponentPipeline(
+        db=ConversationStateDB(
+            {
+                "version": conversation_state.CONVERSATION_STATE_VERSION,
+                "last_product_ids": ["p1", "p2"],
+                "displayed_products": [
+                    {"position": 1, "product_id": "p1", "sku": "A1", "master_code": "A1", "name": "First Item"},
+                    {"position": 2, "product_id": "p2", "sku": "B2", "master_code": "B2", "name": "Second Item"},
+                ],
+            }
+        ),
+        catalog_search=CatalogStub(),
+        knowledge_retrieval=KnowledgeStub(),
+        redis_cache=RedisStub(),
+    )
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Is it in stock?", locale="en-US"),
+        conversation_id=77,
+        run_id="run-ambiguous-pronoun",
+        route_decision_override=_workflow_decision(),
+        detail_override=DetailQuery(
+            requested_fields=["stock"],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=True,
+            clarify_focus="",
+        ),
+    )
+
+    assert result.debug.get("context_requires_clarification") is True
+    assert result.debug.get("clarify_reason") == "context_needs_clarification"
+    assert any(component.type.value == "clarify" for component in result.response.components)

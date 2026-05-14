@@ -30,6 +30,8 @@ def test_load_state_normalizes_and_preserves_unknown_keys() -> None:
     assert state["last_product_skus"] == []
     assert state["last_answer_source_ids"] == []
     assert state["last_inventory_claim"] == {"sku": "", "stock_status": "", "last_stock_sync_at": ""}
+    assert state["active_product"] == {}
+    assert state["displayed_products"] == []
     assert state["tone_recent"] == [{"key": "clarify:routing_fallback", "style": "direct", "variant_id": 2}]
     assert state["extra_field"] == {"keep": True}
 
@@ -43,6 +45,8 @@ def test_load_state_v1_payload_backfills_new_fields() -> None:
     assert state["last_product_skus"] == []
     assert state["last_answer_source_ids"] == []
     assert state["last_inventory_claim"] == {"sku": "", "stock_status": "", "last_stock_sync_at": ""}
+    assert state["active_product"] == {}
+    assert state["displayed_products"] == []
 
 def test_apply_response_update_persists_clean_tone_recent() -> None:
     state = conversation_state.apply_response_update(
@@ -74,6 +78,25 @@ def test_apply_updates_store_extended_context_fields() -> None:
         query_product_ids=["query-1", "query-2"],
         answer_source_ids=["kb-1", "kb-1", "kb-2"],
         inventory_claim={"sku": "SKU-1", "stock_status": "IN_STOCK", "last_stock_sync_at": "2026-03-12T00:00:00Z"},
+        active_product={
+            "product_id": "id-1",
+            "sku": "SKU-1",
+            "master_code": "SKU-1",
+            "name": "Titanium Labret",
+            "source": "single_result",
+            "confidence": 0.85,
+            "created_at": "2026-03-12T00:00:00Z",
+            "updated_at": "2026-03-12T00:00:00Z",
+        },
+        displayed_products=[
+            {
+                "position": 1,
+                "product_id": "id-1",
+                "sku": "SKU-1",
+                "master_code": "SKU-1",
+                "name": "Titanium Labret",
+            }
+        ],
     )
 
     assert state["last_product_skus"] == ["sku-1", "sku-2"]
@@ -84,6 +107,9 @@ def test_apply_updates_store_extended_context_fields() -> None:
         "stock_status": "in_stock",
         "last_stock_sync_at": "2026-03-12T00:00:00Z",
     }
+    assert state["active_product"]["product_id"] == "id-1"
+    assert state["active_product"]["source"] == "single_result"
+    assert state["displayed_products"][0]["position"] == 1
 
 
 def test_split_state_round_trips_memory_and_continuation_fields() -> None:

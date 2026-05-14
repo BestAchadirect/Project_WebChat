@@ -6,12 +6,13 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from app.services.chat.runtime import clarification_state
 
-CONVERSATION_STATE_VERSION = 5
+CONVERSATION_STATE_VERSION = 6
 MAX_PRODUCT_IDS = 10
 MAX_PRODUCT_SKUS = 10
 MAX_SOURCE_IDS = 10
 MAX_TONE_RECENT = 8
 MAX_PENDING_TASK_TURNS = 2
+MAX_DISPLAYED_PRODUCTS = 10
 
 
 def _default_state() -> Dict[str, Any]:
@@ -39,6 +40,8 @@ def _default_state() -> Dict[str, Any]:
         },
         "pending_task": {},
         "clarification_state": {},
+        "active_product": {},
+        "displayed_products": [],
         "tone_recent": [],
         "updated_at": "",
     }
@@ -60,6 +63,8 @@ class ConversationMemoryState:
     last_inventory_claim: Dict[str, str] = field(default_factory=dict)
     pending_task: Dict[str, Any] = field(default_factory=dict)
     clarification_state: Dict[str, Any] = field(default_factory=dict)
+    active_product: Dict[str, Any] = field(default_factory=dict)
+    displayed_products: List[Dict[str, Any]] = field(default_factory=list)
     tone_recent: List[Dict[str, Any]] = field(default_factory=list)
     updated_at: str = ""
 
@@ -79,6 +84,8 @@ class ConversationMemoryState:
             "last_inventory_claim": dict(self.last_inventory_claim or {}),
             "pending_task": dict(self.pending_task or {}),
             "clarification_state": clarification_state.load(self.clarification_state),
+            "active_product": _clean_active_product(self.active_product),
+            "displayed_products": _clean_displayed_products(self.displayed_products),
             "tone_recent": list(self.tone_recent or []),
             "updated_at": self.updated_at,
         }
@@ -226,6 +233,82 @@ def _clean_inventory_claim(value: Any) -> Dict[str, str]:
     }
 
 
+def _clean_confidence(value: Any) -> float:
+    try:
+        confidence = float(value or 0.0)
+    except Exception:
+        confidence = 0.0
+    return max(0.0, min(1.0, confidence))
+
+
+def _clean_active_product(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    product_id = _clean_text(value.get("product_id"))
+    sku = _clean_text(value.get("sku"))
+    master_code = _clean_text(value.get("master_code"))
+    name = _clean_text(value.get("name"))
+    if not any((product_id, sku, master_code, name)):
+        return {}
+    source = _clean_text(value.get("source")).lower()
+    if source not in {
+        "explicit_sku",
+        "clicked_product",
+        "single_result",
+        "position_reference",
+        "inferred_followup",
+    }:
+        source = "inferred_followup"
+    return {
+        "product_id": product_id,
+        "sku": sku,
+        "master_code": master_code,
+        "name": name[:250],
+        "source": source,
+        "confidence": _clean_confidence(value.get("confidence")),
+        "created_at": _clean_text(value.get("created_at")),
+        "updated_at": _clean_text(value.get("updated_at")),
+    }
+
+
+def _clean_displayed_products(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    displayed: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            continue
+        try:
+            position = int(item.get("position") or index)
+        except Exception:
+            position = index
+        if position <= 0:
+            position = index
+        product_id = _clean_text(item.get("product_id") or item.get("id"))
+        sku = _clean_text(item.get("sku"))
+        master_code = _clean_text(item.get("master_code"))
+        name = _clean_text(item.get("name") or item.get("title"))
+        if not any((product_id, sku, master_code, name)):
+            continue
+        key = product_id or sku.lower() or master_code.lower() or name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        displayed.append(
+            {
+                "position": position,
+                "product_id": product_id,
+                "sku": sku,
+                "master_code": master_code,
+                "name": name[:250],
+            }
+        )
+        if len(displayed) >= MAX_DISPLAYED_PRODUCTS:
+            break
+    return displayed
+
+
 def _clean_pending_task(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -315,6 +398,8 @@ def load_state(raw: Any) -> Dict[str, Any]:
     normalized["last_inventory_claim"] = _clean_inventory_claim(raw.get("last_inventory_claim"))
     normalized["pending_task"] = _clean_pending_task(raw.get("pending_task"))
     normalized["clarification_state"] = clarification_state.load(raw.get("clarification_state"))
+    normalized["active_product"] = _clean_active_product(raw.get("active_product"))
+    normalized["displayed_products"] = _clean_displayed_products(raw.get("displayed_products"))
     normalized["tone_recent"] = _clean_tone_recent(raw.get("tone_recent"))
     normalized["updated_at"] = _clean_text(raw.get("updated_at"))
 
@@ -340,6 +425,8 @@ def load_memory_state(raw: Any) -> ConversationMemoryState:
         last_inventory_claim=_clean_inventory_claim(state.get("last_inventory_claim")),
         pending_task=_clean_pending_task(state.get("pending_task")),
         clarification_state=clarification_state.load(state.get("clarification_state")),
+        active_product=_clean_active_product(state.get("active_product")),
+        displayed_products=_clean_displayed_products(state.get("displayed_products")),
         tone_recent=_clean_tone_recent(state.get("tone_recent")),
         updated_at=_clean_text(state.get("updated_at")),
     )
@@ -394,6 +481,8 @@ def apply_workflow_update(
         last_inventory_claim=dict(memory.last_inventory_claim or {}),
         pending_task=dict(memory.pending_task or {}),
         clarification_state=dict(memory.clarification_state or {}),
+        active_product=dict(memory.active_product or {}),
+        displayed_products=list(memory.displayed_products or []),
         tone_recent=list(memory.tone_recent or []),
         updated_at=memory.updated_at,
     )
@@ -423,6 +512,8 @@ def apply_retrieval_update(
         last_inventory_claim=dict(memory.last_inventory_claim or {}),
         pending_task=dict(memory.pending_task or {}),
         clarification_state=dict(memory.clarification_state or {}),
+        active_product=dict(memory.active_product or {}),
+        displayed_products=list(memory.displayed_products or []),
         tone_recent=list(memory.tone_recent or []),
         updated_at=memory.updated_at,
     )
@@ -444,6 +535,8 @@ def apply_response_update(
     product_skus: Any = None,
     answer_source_ids: Any = None,
     inventory_claim: Any = None,
+    active_product: Any = None,
+    displayed_products: Any = None,
     tone_recent: Any = None,
     updated_at: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -463,6 +556,8 @@ def apply_response_update(
         last_inventory_claim=_clean_inventory_claim(inventory_claim) if inventory_claim is not None else dict(memory.last_inventory_claim or {}),
         pending_task=dict(memory.pending_task or {}),
         clarification_state=dict(memory.clarification_state or {}),
+        active_product=_clean_active_product(active_product) if active_product is not None else dict(memory.active_product or {}),
+        displayed_products=_clean_displayed_products(displayed_products) if displayed_products is not None else list(memory.displayed_products or []),
         tone_recent=_clean_tone_recent(tone_recent) if tone_recent is not None else list(memory.tone_recent or []),
         updated_at=_clean_text(updated_at) or utc_timestamp(),
     )
@@ -501,6 +596,8 @@ def apply_clarification_state_update(state: Any, *, value: Any) -> Dict[str, Any
         last_inventory_claim=dict(memory.last_inventory_claim or {}),
         pending_task=dict(memory.pending_task or {}),
         clarification_state=clarification_state.load(value),
+        active_product=dict(memory.active_product or {}),
+        displayed_products=list(memory.displayed_products or []),
         tone_recent=list(memory.tone_recent or []),
         updated_at=memory.updated_at,
     )
@@ -545,6 +642,8 @@ def apply_pending_task_update(state: Any, *, pending_task: Any) -> Dict[str, Any
         last_inventory_claim=dict(memory.last_inventory_claim or {}),
         pending_task=_clean_pending_task(pending_task),
         clarification_state=dict(memory.clarification_state or {}),
+        active_product=dict(memory.active_product or {}),
+        displayed_products=list(memory.displayed_products or []),
         tone_recent=list(memory.tone_recent or []),
         updated_at=memory.updated_at,
     )
@@ -594,3 +693,47 @@ def product_skus_from_cards(cards: Optional[Iterable[Any]]) -> List[str]:
         if len(skus) >= MAX_PRODUCT_SKUS:
             break
     return skus
+
+
+def displayed_products_from_cards(cards: Optional[Iterable[Any]]) -> List[Dict[str, Any]]:
+    displayed: List[Dict[str, Any]] = []
+    for index, card in enumerate(list(cards or []), start=1):
+        attrs = getattr(card, "attributes", {}) or {}
+        if not isinstance(attrs, dict):
+            attrs = {}
+        displayed.append(
+            {
+                "position": index,
+                "product_id": _clean_text(getattr(card, "id", None) or getattr(card, "product_id", None)),
+                "sku": _clean_text(getattr(card, "sku", None)),
+                "master_code": _clean_text(attrs.get("master_code") or getattr(card, "object_id", None)),
+                "name": _clean_text(getattr(card, "name", None) or getattr(card, "title", None)),
+            }
+        )
+    return _clean_displayed_products(displayed)
+
+
+def active_product_from_card(
+    card: Any,
+    *,
+    source: str,
+    confidence: float,
+    created_at: Optional[str] = None,
+    updated_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    attrs = getattr(card, "attributes", {}) or {}
+    if not isinstance(attrs, dict):
+        attrs = {}
+    timestamp = _clean_text(updated_at) or utc_timestamp()
+    return _clean_active_product(
+        {
+            "product_id": _clean_text(getattr(card, "id", None) or getattr(card, "product_id", None)),
+            "sku": _clean_text(getattr(card, "sku", None)),
+            "master_code": _clean_text(attrs.get("master_code") or getattr(card, "object_id", None)),
+            "name": _clean_text(getattr(card, "name", None) or getattr(card, "title", None)),
+            "source": source,
+            "confidence": confidence,
+            "created_at": _clean_text(created_at) or timestamp,
+            "updated_at": timestamp,
+        }
+    )

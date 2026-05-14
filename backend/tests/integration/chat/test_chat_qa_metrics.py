@@ -71,11 +71,13 @@ def test_build_chat_qa_metrics_extracts_turn_observability() -> None:
     )
 
     metrics = qa_metrics.build_chat_qa_metrics(
+        conversation_id=1,
         user_text="show titanium labrets",
         response=response,
         channel="widget",
     )
 
+    assert metrics["conversation_id"] == 1
     assert metrics["workflow"] == "catalog"
     assert metrics["response_workflow"] == "catalog"
     assert metrics["status"] == "success"
@@ -89,6 +91,9 @@ def test_build_chat_qa_metrics_extracts_turn_observability() -> None:
     assert metrics["grounding_status"] == "grounded"
     assert metrics["grounding_safe_action"] == "show_cards"
     assert metrics["grounding_reason_count"] == 1
+    assert metrics["failure_bucket"] == "other"
+    assert metrics["failure_analysis"]["bucket"] == "other"
+    assert metrics["failure_analysis"]["severity"] == "low"
 
 
 def test_summarize_chat_metrics_includes_conversation_state_diagnostics() -> None:
@@ -104,6 +109,7 @@ def test_summarize_chat_metrics_includes_conversation_state_diagnostics() -> Non
             "conversation_state_loaded_version": 3,
             "grounding_status": "grounded",
             "grounding_safe_action": "show_cards",
+            "failure_bucket": "other",
             "tone_repeat_hit": 1,
             "tone_filler_stripped": 0,
         },
@@ -118,6 +124,7 @@ def test_summarize_chat_metrics_includes_conversation_state_diagnostics() -> Non
             "conversation_state_loaded_version": 3,
             "grounding_status": "weak",
             "grounding_safe_action": "clarify",
+            "failure_analysis": {"bucket": "hard_constraint_no_match"},
             "tone_repeat_hit": 0,
             "tone_filler_stripped": 2,
         },
@@ -132,6 +139,7 @@ def test_summarize_chat_metrics_includes_conversation_state_diagnostics() -> Non
     assert summary["conversation_state_loaded_versions"] == {"3": 2}
     assert summary["by_grounding_status"] == {"grounded": 1, "weak": 1}
     assert summary["by_grounding_safe_action"] == {"clarify": 1, "show_cards": 1}
+    assert summary["by_failure_bucket"] == {"hard_constraint_no_match": 1, "other": 1}
     assert summary["tone_repeat_hit"] == 1
     assert summary["tone_filler_stripped"] == 2
 
@@ -162,5 +170,7 @@ async def test_finalize_response_persists_chat_metrics_in_token_usage() -> None:
     qa_log = next(obj for obj in db.added if getattr(obj, "__tablename__", "") == "qa_logs")
     assistant_msg = db.added[1]
     assert qa_log.token_usage["chat_metrics"]["status"] == "fallback"
+    assert qa_log.token_usage["chat_metrics"]["conversation_id"] == 1
     assert qa_log.token_usage["chat_metrics"]["workflow"] == "knowledge"
     assert qa_log.token_usage["chat_metrics"]["route"] == "fallback_component"
+    assert qa_log.token_usage["chat_metrics"]["failure_bucket"] == "other"

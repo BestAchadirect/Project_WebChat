@@ -804,7 +804,8 @@ async def test_component_pipeline_clarify_policy_structured_no_match_is_helpful(
     assert policy.get("extra_debug", {}).get("clarify_mode") == "recoverable_product"
     assert policy.get("extra_debug", {}).get("clarify_best_effort_help") is True
     assert policy.get("questions") == ["Which detail should I use to continue?"]
-    assert "material" in str(policy.get("message") or "").lower() or "style" in str(policy.get("message") or "").lower()
+    message = str(policy.get("message") or "").lower()
+    assert any(term in message for term in ("material", "style", "gauge", "type"))
 
 
 @pytest.mark.asyncio

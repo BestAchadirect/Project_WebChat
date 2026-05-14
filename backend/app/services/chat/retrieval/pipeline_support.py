@@ -321,6 +321,29 @@ class PipelineSupportMixin:
             polished = polished.rstrip(".!?")
             return f"{polished}." if polished else ""
 
+    @staticmethod
+    def _rewrite_internal_knowledge_phrasing(answer: str) -> str:
+            text = str(answer or "").strip()
+            if not text:
+                return ""
+            replacements = (
+                (
+                    r"(?i)the available context does not list specific phone, email, or chat channels\.?",
+                    "I do not have a verified phone number, email address, or chat channel in the current information.",
+                ),
+                (
+                    r"(?i)the available context does not confirm",
+                    "I do not have verified information that confirms",
+                ),
+                (
+                    r"(?i)the available context does not list",
+                    "I do not have verified",
+                ),
+            )
+            for pattern, replacement in replacements:
+                text = re.sub(pattern, replacement, text)
+            return text
+
     async def _knowledge_answer_once(
             self,
             *,
@@ -363,7 +386,7 @@ class PipelineSupportMixin:
                         "If the context is not enough, ask one short clarifying question instead of guessing. "
                         "For one-topic answers, use one short paragraph. "
                         "For multi-topic questions or answers that combine two or more distinct policy areas, use compact Markdown with bold section headings and 1-3 bullets per section. "
-                        "Use section labels from the user's requested topics. If evidence is missing for one requested topic, include a short section for that topic that says the available context does not confirm it. "
+                        "Use section labels from the user's requested topics. If evidence is missing for one requested topic, include a short section for that topic that says you do not have verified details for that part right now. "
                         "Do not return a long single paragraph for multi-topic answers. "
                         "Keep Markdown simple: bold headings and bullets only unless the user asks for another format. "
                         "Return JSON with a single key `reply`."
@@ -397,7 +420,7 @@ class PipelineSupportMixin:
                     sources=sources,
                 )
                 return answer, False
-            answer = str(data.get("reply", "") or "").strip()
+            answer = self._rewrite_internal_knowledge_phrasing(str(data.get("reply", "") or "").strip())
             unsupported_facts = self._unsupported_knowledge_facts(
                 answer=answer,
                 sources=sources,

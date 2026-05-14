@@ -24,12 +24,95 @@ export interface TokenUsageCall {
     cached_prompt_tokens?: number;
 }
 
+export interface ChatFailureAnalysis {
+    bucket: string;
+    confidence: number;
+    reason: string;
+    suggested_action: string;
+    severity: string;
+    signals: string[];
+}
+
+export interface ChatMetricsSummary {
+    conversation_id?: number | null;
+    question_length?: number;
+    workflow?: string | null;
+    response_workflow?: string | null;
+    route?: string | null;
+    status?: string | null;
+    channel?: string | null;
+    component_mode?: string | null;
+    retrieval_source?: string | null;
+    reply_mode?: string | null;
+    action_kind?: string | null;
+    action_completed?: boolean;
+    has_products?: boolean;
+    product_count?: number;
+    has_sources?: boolean;
+    source_count?: number;
+    follow_up_count?: number;
+    use_products?: boolean;
+    use_knowledge?: boolean;
+    is_policy_like?: boolean;
+    grounding_status?: string | null;
+    grounding_safe_action?: string | null;
+    grounding_reason_count?: number;
+    agentic_used_tools?: boolean;
+    conversation_state_written?: boolean;
+    conversation_state_enabled?: boolean;
+    conversation_state_filter_merge_applied?: boolean;
+    conversation_state_loaded_version?: number;
+    tone_repeat_hit?: number;
+    tone_filler_stripped?: number;
+    external_call_count?: number;
+    llm_call_count?: number;
+    latency_total_ms?: number;
+    failure_bucket?: string | null;
+    failure_confidence?: number;
+    failure_reason?: string | null;
+    failure_suggested_action?: string | null;
+    failure_severity?: string | null;
+    failure_signals?: string[];
+    failure_analysis?: ChatFailureAnalysis;
+}
+
 export interface TokenUsageSummary {
     total_prompt_tokens: number;
     total_completion_tokens: number;
     total_tokens: number;
     cached_prompt_tokens?: number;
     by_call: TokenUsageCall[];
+    chat_metrics?: ChatMetricsSummary;
+}
+
+export interface RegressionBundleTarget {
+    dataset: string;
+    reason: string;
+}
+
+export interface RegressionReviewBundle {
+    qa_log_id: string;
+    conversation_id?: number | null;
+    question: string;
+    answer: string;
+    status: string;
+    observed: {
+        workflow?: string;
+        route?: string;
+        grounding_status?: string;
+        grounding_safe_action?: string;
+        product_count?: number;
+        source_count?: number;
+        failure_bucket?: string;
+        failure_reason?: string;
+        failure_suggested_action?: string;
+        conversation_state_filter_merge_applied?: boolean;
+        llm_call_count?: number;
+    };
+    recommended_targets: RegressionBundleTarget[];
+    promotion_checklist: string[];
+    coverage_case_template: Record<string, unknown>;
+    response_contract_template: Record<string, unknown>;
 }
 
 export interface Product {
@@ -163,13 +246,26 @@ export const trainingApi = {
         pageSize?: number;
         status?: string;
         channel?: string;
+        workflow?: string;
+        groundingStatus?: string;
+        failureBucket?: string;
+        search?: string;
     }): Promise<QALogListResponse> {
         const searchParams = new URLSearchParams();
         searchParams.append('page', String(params?.page ?? 1));
         searchParams.append('pageSize', String(params?.pageSize ?? 20));
         if (params?.status) searchParams.append('status', params.status);
         if (params?.channel) searchParams.append('channel', params.channel);
+        if (params?.workflow) searchParams.append('workflow', params.workflow);
+        if (params?.groundingStatus) searchParams.append('groundingStatus', params.groundingStatus);
+        if (params?.failureBucket) searchParams.append('failureBucket', params.failureBucket);
+        if (params?.search) searchParams.append('search', params.search);
         const response = await apiClient.get(`/dashboard/qa/qa-logs?${searchParams.toString()}`);
+        return response.data;
+    },
+
+    async getReviewBundle(qaLogId: string): Promise<RegressionReviewBundle> {
+        const response = await apiClient.get(`/dashboard/qa/qa-logs/${encodeURIComponent(qaLogId)}/review-bundle`);
         return response.data;
     },
 };

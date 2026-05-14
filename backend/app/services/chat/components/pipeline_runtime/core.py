@@ -237,6 +237,32 @@ class ComponentPipeline(
             ]
             if (
                 workflow == "catalog"
+                and not state.decision.ambiguity_reason
+                and not catalog_pagination_requested
+                and bool(debug_meta.get("context_requires_clarification"))
+                and float(debug_meta.get("context_confidence") or 0.0) < 0.8
+            ):
+                state.decision.ambiguity_reason = "context_needs_clarification"
+                state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
+                state.presentation.canonical_products = []
+                state.catalog.product_ids = []
+                state.catalog.query_product_ids = []
+                state.retrieval.result_count = 0
+                state.retrieval.source = ComponentSource.ERROR
+                debug_meta["catalog_retrieval_blocked_reason"] = "context_resolution_clarify"
+                debug_meta["clarify_reason"] = state.decision.ambiguity_reason
+                focus = (
+                    "pagination"
+                    if str(debug_meta.get("context_resolved_intent") or "") == "pagination"
+                    else "product_anchor"
+                )
+                debug_meta["clarify_missing_slots"] = [focus]
+                try:
+                    detail = replace(detail, clarify_focus=focus)
+                except Exception:
+                    debug_meta["semantic_hint_clarify_focus"] = focus
+            if (
+                workflow == "catalog"
                 and unresolved_attributes
                 and not catalog_pagination_requested
                 and not bool(debug_meta.get("clarification_loop_stop"))

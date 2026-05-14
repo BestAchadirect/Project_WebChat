@@ -2,6 +2,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from app.schemas.chat import ChatResponse
 import app.services.chat.presentation.component_contract as component_contract
+from app.services.chat.observability.qa_failure_analysis import classify_failure
 
 
 def derive_response_status(*, response: ChatResponse) -> str:
@@ -20,6 +21,7 @@ def derive_response_status(*, response: ChatResponse) -> str:
 
 def build_chat_qa_metrics(
     *,
+    conversation_id: Optional[int],
     user_text: str,
     response: ChatResponse,
     channel: Optional[str],
@@ -48,11 +50,41 @@ def build_chat_qa_metrics(
     action_completed = bool(agentic.get("used_tools", False))
     response_products = component_contract.product_cards_from_response(response)
     response_follow_ups = component_contract.follow_up_questions_from_response(response)
+    failure_analysis = classify_failure(
+        user_text=user_text,
+        response=response,
+        chat_metrics={
+            "workflow": str(debug.get("workflow") or response_workflow or "").strip(),
+            "response_workflow": response_workflow,
+            "route": str(debug.get("workflow_path") or "").strip(),
+            "status": normalized_status,
+            "grounding_status": str(
+                grounding.get("status")
+                or knowledge_grounding.get("status")
+                or debug.get("grounding_status")
+                or debug.get("knowledge_grounding_status")
+                or ""
+            ).strip() or None,
+            "grounding_safe_action": str(
+                grounding.get("safe_customer_action")
+                or knowledge_grounding.get("safe_customer_action")
+                or debug.get("grounding_safe_action")
+                or debug.get("knowledge_grounding_safe_action")
+                or ""
+            ).strip() or None,
+            "product_count": len(list(response_products or [])),
+            "has_products": bool(response_products),
+            "conversation_state_filter_merge_applied": conversation_state_filter_merge_applied,
+        },
+    )
 
     if action_completed:
         action_kind = "agentic_tools"
 
-    return {
+    failure_payload = failure_analysis.to_dict()
+
+    metrics = {
+        "conversation_id": int(conversation_id) if conversation_id is not None else None,
         "question_length": len(str(user_text or "").strip()),
         "workflow": str(debug.get("workflow") or response_workflow or "").strip(),
         "response_workflow": response_workflow,
@@ -112,7 +144,15 @@ def build_chat_qa_metrics(
             debug.get("llm_call_count", getattr(meta, "llm_calls", 0) if meta is not None else 0) or 0
         ),
         "latency_total_ms": float(latency.get("total_ms", 0.0) or 0.0),
+        "failure_bucket": failure_payload["bucket"],
+        "failure_confidence": float(failure_payload["confidence"]),
+        "failure_reason": failure_payload["reason"],
+        "failure_suggested_action": failure_payload["suggested_action"],
+        "failure_severity": failure_payload["severity"],
+        "failure_signals": list(failure_payload["signals"]),
+        "failure_analysis": failure_payload,
     }
+    return metrics
 
 
 def merge_token_usage_with_metrics(
@@ -143,6 +183,7 @@ def summarize_chat_metrics(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     conversation_state_loaded_versions: Dict[str, int] = {}
     totals_by_grounding_status: Dict[str, int] = {}
     totals_by_grounding_action: Dict[str, int] = {}
+    totals_by_failure_bucket: Dict[str, int] = {}
     action_completed = 0
     tone_repeat_hits = 0
     tone_filler_stripped = 0
@@ -164,6 +205,13 @@ def summarize_chat_metrics(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         grounding_action = str(metrics.get("grounding_safe_action") or "").strip()
         if grounding_action:
             totals_by_grounding_action[grounding_action] = totals_by_grounding_action.get(grounding_action, 0) + 1
+        failure_bucket = str(
+            metrics.get("failure_bucket")
+            or (metrics.get("failure_analysis") or {}).get("bucket")
+            or ""
+        ).strip()
+        if failure_bucket:
+            totals_by_failure_bucket[failure_bucket] = totals_by_failure_bucket.get(failure_bucket, 0) + 1
         if bool(metrics.get("action_completed", False)):
             action_completed += 1
         if bool(metrics.get("conversation_state_enabled", False)):
@@ -189,6 +237,7 @@ def summarize_chat_metrics(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "by_action_kind": dict(sorted(totals_by_action.items())),
         "by_grounding_status": dict(sorted(totals_by_grounding_status.items())),
         "by_grounding_safe_action": dict(sorted(totals_by_grounding_action.items())),
+        "by_failure_bucket": dict(sorted(totals_by_failure_bucket.items())),
         "action_completed": action_completed,
         "conversation_state_enabled": conversation_state_enabled,
         "conversation_state_written": conversation_state_written,

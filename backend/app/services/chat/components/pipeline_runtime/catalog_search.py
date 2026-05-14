@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from typing import Any, Dict, List, Optional, Sequence
@@ -20,6 +21,20 @@ logger = logging.getLogger(__name__)
 
 
 class PipelineCatalogSearchMixin:
+    @staticmethod
+    def _supports_attribute_filter_pushdown(search_callable: Any) -> bool:
+        if not callable(search_callable):
+            return False
+        try:
+            signature = inspect.signature(search_callable)
+        except (TypeError, ValueError):
+            return False
+        parameters = signature.parameters.values()
+        return any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD or parameter.name == "attribute_filters"
+            for parameter in parameters
+        )
+
     @staticmethod
     def _is_precision_retrieval_request(*, detail: Any, unique_sku_tokens: Sequence[str]) -> bool:
         if bool(unique_sku_tokens):
@@ -101,50 +116,20 @@ class PipelineCatalogSearchMixin:
         cards: Sequence[Any],
         soft_filters: Dict[str, str],
     ) -> tuple[List[Any], Dict[str, Any]]:
-        clean_soft_filters = {
-            str(key).strip().lower(): str(value).strip()
-            for key, value in dict(soft_filters or {}).items()
-            if str(key).strip() and str(value).strip()
-        }
-        if not clean_soft_filters:
-            return list(cards or []), {
-                "semantic_soft_constraint_keys": [],
-                "semantic_soft_constraint_count": 0,
-                "semantic_soft_constraint_match_count": 0,
-                "semantic_soft_constraint_full_match_count": 0,
-                "semantic_soft_constraint_partial_match_count": 0,
-                "semantic_soft_constraint_rank_applied": False,
-                "semantic_soft_constraint_top_score": 0,
-                "semantic_soft_constraint_rejection_reason": "",
-            }
-
-        scored_cards: List[tuple[int, int, Any]] = []
-        full_match_count = 0
-        partial_match_count = 0
-        for index, card in enumerate(list(cards or [])):
-            match_count = sum(
-                1
-                for key, expected in clean_soft_filters.items()
-                if ProductDetailResolver._match_filter(card, key=key, expected=expected)
-            )
-            if match_count >= len(clean_soft_filters):
-                full_match_count += 1
-            elif match_count > 0:
-                partial_match_count += 1
-            scored_cards.append((match_count, index, card))
-
-        scored_cards.sort(key=lambda item: (-item[0], item[1]))
-        ranked_cards = [card for _score, _index, card in scored_cards]
-        top_score = scored_cards[0][0] if scored_cards else 0
+        ranked_cards, meta = cls._apply_preference_rerank(
+            cards=cards,
+            soft_filters=soft_filters,
+            semantic_hints=[],
+        )
         return ranked_cards, {
-            "semantic_soft_constraint_keys": list(clean_soft_filters.keys()),
-            "semantic_soft_constraint_count": len(clean_soft_filters),
-            "semantic_soft_constraint_match_count": full_match_count,
-            "semantic_soft_constraint_full_match_count": full_match_count,
-            "semantic_soft_constraint_partial_match_count": partial_match_count,
-            "semantic_soft_constraint_rank_applied": bool(scored_cards),
-            "semantic_soft_constraint_top_score": int(top_score),
-            "semantic_soft_constraint_rejection_reason": "",
+            "semantic_soft_constraint_keys": list(meta.get("semantic_soft_constraint_keys", []) or []),
+            "semantic_soft_constraint_count": int(meta.get("semantic_soft_constraint_count", 0) or 0),
+            "semantic_soft_constraint_match_count": int(meta.get("semantic_soft_constraint_match_count", 0) or 0),
+            "semantic_soft_constraint_full_match_count": int(meta.get("semantic_soft_constraint_full_match_count", 0) or 0),
+            "semantic_soft_constraint_partial_match_count": int(meta.get("semantic_soft_constraint_partial_match_count", 0) or 0),
+            "semantic_soft_constraint_rank_applied": bool(meta.get("semantic_soft_constraint_rank_applied", False)),
+            "semantic_soft_constraint_top_score": int(meta.get("semantic_soft_constraint_top_score", 0) or 0),
+            "semantic_soft_constraint_rejection_reason": str(meta.get("semantic_soft_constraint_rejection_reason", "") or ""),
         }
 
     @staticmethod
@@ -169,6 +154,32 @@ class PipelineCatalogSearchMixin:
         cards: Sequence[Any],
         semantic_hints: Sequence[str],
     ) -> tuple[List[Any], Dict[str, Any]]:
+        ranked_cards, meta = cls._apply_preference_rerank(
+            cards=cards,
+            soft_filters={},
+            semantic_hints=semantic_hints,
+        )
+        return ranked_cards, {
+            "semantic_hint_keys": list(meta.get("semantic_hint_keys", []) or []),
+            "semantic_hint_score": float(meta.get("semantic_hint_score", 0.0) or 0.0),
+            "semantic_hint_match_count": int(meta.get("semantic_hint_match_count", 0) or 0),
+            "semantic_hint_rank_applied": bool(meta.get("semantic_hint_rank_applied", False)),
+            "semantic_hint_rejection_reason": str(meta.get("semantic_hint_rejection_reason", "") or ""),
+        }
+
+    @classmethod
+    def _apply_preference_rerank(
+        cls,
+        *,
+        cards: Sequence[Any],
+        soft_filters: Dict[str, str],
+        semantic_hints: Sequence[str],
+    ) -> tuple[List[Any], Dict[str, Any]]:
+        clean_soft_filters = {
+            str(key).strip().lower(): str(value).strip()
+            for key, value in dict(soft_filters or {}).items()
+            if str(key).strip() and str(value).strip()
+        }
         clean_hints: List[str] = []
         seen_hints: set[str] = set()
         for raw in list(semantic_hints or []):
@@ -178,42 +189,84 @@ class PipelineCatalogSearchMixin:
             seen_hints.add(hint)
             clean_hints.append(hint)
 
-        if not clean_hints:
+        if not clean_soft_filters and not clean_hints:
             return list(cards or []), {
+                "semantic_soft_constraint_keys": [],
+                "semantic_soft_constraint_count": 0,
+                "semantic_soft_constraint_match_count": 0,
+                "semantic_soft_constraint_full_match_count": 0,
+                "semantic_soft_constraint_partial_match_count": 0,
+                "semantic_soft_constraint_rank_applied": False,
+                "semantic_soft_constraint_top_score": 0,
+                "semantic_soft_constraint_rejection_reason": "",
                 "semantic_hint_keys": [],
                 "semantic_hint_score": 0.0,
                 "semantic_hint_match_count": 0,
                 "semantic_hint_rank_applied": False,
                 "semantic_hint_rejection_reason": "",
+                "semantic_preference_rerank_passes": 0,
             }
 
-        scored_cards: List[tuple[float, int, Any]] = []
-        match_count = 0
+        scored_cards: List[tuple[int, float, int, Any]] = []
+        full_match_count = 0
+        partial_match_count = 0
+        hint_match_count = 0
         for index, card in enumerate(list(cards or [])):
-            haystack = cls._card_semantic_text(card)
-            score = 0.0
-            for hint in clean_hints:
-                if hint and hint in haystack:
-                    score += 1.0
-            if score > 0:
-                match_count += 1
-            scored_cards.append((score, index, card))
+            soft_match_count = 0
+            if clean_soft_filters:
+                soft_match_count = sum(
+                    1
+                    for key, expected in clean_soft_filters.items()
+                    if ProductDetailResolver._match_filter(card, key=key, expected=expected)
+                )
+                if soft_match_count >= len(clean_soft_filters):
+                    full_match_count += 1
+                elif soft_match_count > 0:
+                    partial_match_count += 1
 
-        scored_cards.sort(key=lambda item: (-item[0], item[1]))
-        positive_cards = [card for score, _index, card in scored_cards if score > 0]
-        ranked_cards = positive_cards or [card for _score, _index, card in scored_cards]
-        top_score = float(scored_cards[0][0]) if scored_cards else 0.0
-        normalized_score = top_score / max(1.0, float(len(clean_hints)))
-        rejection_reason = ""
-        if top_score <= 0:
-            rejection_reason = "semantic_concept_unclear"
+            hint_score = 0.0
+            if clean_hints:
+                haystack = cls._card_semantic_text(card)
+                for hint in clean_hints:
+                    if hint and hint in haystack:
+                        hint_score += 1.0
+                if hint_score > 0:
+                    hint_match_count += 1
+
+            scored_cards.append((soft_match_count, hint_score, index, card))
+
+        scored_cards.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        ranked_cards = [card for _soft_score, _hint_score, _index, card in scored_cards]
+        if clean_hints and hint_match_count > 0:
+            ranked_cards = [
+                card
+                for _soft_score, hint_score, _index, card in scored_cards
+                if hint_score > 0.0
+            ]
+        top_soft_score = scored_cards[0][0] if scored_cards else 0
+        top_hint_score = float(scored_cards[0][1]) if scored_cards else 0.0
+        hint_rejection_reason = ""
+        if clean_hints and top_hint_score <= 0.0:
+            hint_rejection_reason = "semantic_concept_unclear"
 
         return ranked_cards, {
+            "semantic_soft_constraint_keys": list(clean_soft_filters.keys()),
+            "semantic_soft_constraint_count": len(clean_soft_filters),
+            "semantic_soft_constraint_match_count": full_match_count,
+            "semantic_soft_constraint_full_match_count": full_match_count,
+            "semantic_soft_constraint_partial_match_count": partial_match_count,
+            "semantic_soft_constraint_rank_applied": bool(clean_soft_filters and scored_cards),
+            "semantic_soft_constraint_top_score": int(top_soft_score),
+            "semantic_soft_constraint_rejection_reason": "",
             "semantic_hint_keys": list(clean_hints),
-            "semantic_hint_score": round(normalized_score, 4),
-            "semantic_hint_match_count": int(match_count),
-            "semantic_hint_rank_applied": bool(scored_cards),
-            "semantic_hint_rejection_reason": rejection_reason,
+            "semantic_hint_score": round(
+                top_hint_score / max(1.0, float(len(clean_hints))) if clean_hints else 0.0,
+                4,
+            ),
+            "semantic_hint_match_count": int(hint_match_count),
+            "semantic_hint_rank_applied": bool(clean_hints and scored_cards),
+            "semantic_hint_rejection_reason": hint_rejection_reason,
+            "semantic_preference_rerank_passes": 1,
         }
 
     async def _run_catalog_retrieval_workflow(
@@ -298,8 +351,10 @@ class PipelineCatalogSearchMixin:
             detail=detail,
             unique_sku_tokens=unique_sku_tokens,
         )
+        pushdown_hard_filters = dict(hard_filters or {}) if hard_filters and not allow_semantic_rescue else {}
         debug_meta["semantic_rescue_allowed"] = allow_semantic_rescue
         debug_meta["semantic_precision_request"] = not allow_semantic_rescue
+        debug_meta["semantic_filter_pushdown_keys"] = list(pushdown_hard_filters.keys())
         embedding_error: Optional[str] = None
         if isinstance(cached_ids_payload, dict) and isinstance(cached_ids_payload.get("product_ids"), list):
             product_ids = list(cached_ids_payload.get("product_ids") or [])
@@ -426,17 +481,32 @@ class PipelineCatalogSearchMixin:
                 retrieval_source = semantic_result_source
             elif query_embedding is not None:
                 vector_started = time.perf_counter()
-                vector_result = await self._catalog_search.vector_search(
-                    query_embedding=query_embedding,
-                    limit=result_fetch_limit,
-                    candidate_limit=max(result_fetch_limit * 4, 36),
-                )
+                vector_kwargs = {
+                    "query_embedding": query_embedding,
+                    "limit": result_fetch_limit,
+                    "candidate_limit": max(result_fetch_limit * 4, 36),
+                }
+                vector_search = getattr(self._catalog_search, "vector_search")
+                if pushdown_hard_filters and self._supports_attribute_filter_pushdown(vector_search):
+                    vector_kwargs["attribute_filters"] = pushdown_hard_filters
+                vector_result = await vector_search(**vector_kwargs)
                 spans["vector_search_ms"] += (time.perf_counter() - vector_started) * 1000.0
                 semantic_cards = list(vector_result.cards or [])
                 vector_product_ids = getattr(vector_result, "product_ids", None)
                 product_ids = list(vector_product_ids or [self._card_identifier(card) for card in semantic_cards])
                 state.catalog.product_ids = list(product_ids)
                 semantic_best_distance = getattr(vector_result, "best_distance", None)
+                vector_meta = dict(getattr(self._catalog_search, "last_meta", {}) or {})
+                if "retrieval_filter_pushdown_keys" in vector_meta:
+                    debug_meta["vector_filter_pushdown_keys"] = list(
+                        vector_meta.get("retrieval_filter_pushdown_keys") or []
+                    )
+                    debug_meta["vector_filter_pushdown_count"] = int(
+                        vector_meta.get("retrieval_filter_pushdown_count", 0) or 0
+                    )
+                    debug_meta["vector_filter_pushdown_slot_count"] = int(
+                        vector_meta.get("retrieval_filter_pushdown_slot_count", 0) or 0
+                    )
             else:
                 product_ids = []
                 state.catalog.product_ids = []
@@ -545,24 +615,6 @@ class PipelineCatalogSearchMixin:
                             )
 
             soft_rerank_enabled = bool(capabilities.chat_semantic_soft_filter_rerank_enabled)
-            if semantic_cards and soft_filters and soft_rerank_enabled:
-                semantic_cards, soft_meta = self._apply_soft_hint_gate(
-                    cards=semantic_cards,
-                    soft_filters=soft_filters,
-                )
-                debug_meta.update(soft_meta)
-                product_ids = [self._card_identifier(card) for card in semantic_cards]
-                state.catalog.product_ids = list(product_ids)
-                if soft_meta.get("semantic_soft_constraint_rank_applied"):
-                    semantic_guardrail_used = True
-                    semantic_guardrail_reason = "soft_constraint_rerank"
-                    logger.debug(
-                        "Chat semantic soft rerank applied for filters=%s full_matches=%s partial_matches=%s",
-                        list(soft_filters.keys()),
-                        int(soft_meta.get("semantic_soft_constraint_full_match_count", 0) or 0),
-                        int(soft_meta.get("semantic_soft_constraint_partial_match_count", 0) or 0),
-                    )
-
             lexical_search = getattr(self._catalog_search, "lexical_search", None)
             if callable(lexical_search) and workflow == "catalog":
                 should_run_lexical = bool(
@@ -573,16 +625,30 @@ class PipelineCatalogSearchMixin:
                     try:
                         had_vector_candidates = bool(semantic_cards or product_ids)
                         lexical_started = time.perf_counter()
-                        lexical_result = await lexical_search(
-                            query_text=retrieval_query_text or text,
-                            limit=result_fetch_limit,
-                            candidate_limit=max(result_fetch_limit * 4, 36),
-                        )
+                        lexical_kwargs = {
+                            "query_text": retrieval_query_text or text,
+                            "limit": result_fetch_limit,
+                            "candidate_limit": max(result_fetch_limit * 4, 36),
+                        }
+                        if pushdown_hard_filters and self._supports_attribute_filter_pushdown(lexical_search):
+                            lexical_kwargs["attribute_filters"] = pushdown_hard_filters
+                        lexical_result = await lexical_search(**lexical_kwargs)
                         spans["db_product_lookup_ms"] += (time.perf_counter() - lexical_started) * 1000.0
                         lexical_cards = list(getattr(lexical_result, "cards", None) or [])
                         lexical_search_used = True
                         debug_meta["lexical_search_used"] = True
                         debug_meta["lexical_result_count"] = len(lexical_cards)
+                        lexical_meta = dict(getattr(self._catalog_search, "last_meta", {}) or {})
+                        if "retrieval_filter_pushdown_keys" in lexical_meta:
+                            debug_meta["lexical_filter_pushdown_keys"] = list(
+                                lexical_meta.get("retrieval_filter_pushdown_keys") or []
+                            )
+                            debug_meta["lexical_filter_pushdown_count"] = int(
+                                lexical_meta.get("retrieval_filter_pushdown_count", 0) or 0
+                            )
+                            debug_meta["lexical_filter_pushdown_slot_count"] = int(
+                                lexical_meta.get("retrieval_filter_pushdown_slot_count", 0) or 0
+                            )
                         if lexical_cards:
                             merged_cards: List[Any] = []
                             seen_ids: set[str] = set()
@@ -605,22 +671,36 @@ class PipelineCatalogSearchMixin:
                     except Exception as exc:
                         debug_meta["lexical_search_error"] = str(exc)
 
-            if semantic_cards and semantic_hints:
-                semantic_cards, semantic_hint_meta = self._apply_semantic_hint_rerank(
+            should_rerank_preferences = bool(
+                semantic_cards and ((soft_filters and soft_rerank_enabled) or semantic_hints)
+            )
+            if should_rerank_preferences:
+                semantic_cards, preference_meta = self._apply_preference_rerank(
                     cards=semantic_cards,
+                    soft_filters=soft_filters if soft_rerank_enabled else {},
                     semantic_hints=semantic_hints,
                 )
-                debug_meta.update(semantic_hint_meta)
+                debug_meta.update(preference_meta)
                 product_ids = [self._card_identifier(card) for card in semantic_cards]
                 state.catalog.product_ids = list(product_ids)
-                if semantic_hint_meta.get("semantic_hint_rank_applied"):
+                if preference_meta.get("semantic_soft_constraint_rank_applied"):
                     semantic_guardrail_used = True
-                if float(semantic_hint_meta.get("semantic_hint_score", 0.0) or 0.0) > 0.0 and lexical_search_used:
+                    semantic_guardrail_reason = "soft_constraint_rerank"
+                    logger.debug(
+                        "Chat semantic soft rerank applied for filters=%s full_matches=%s partial_matches=%s",
+                        list(soft_filters.keys()),
+                        int(preference_meta.get("semantic_soft_constraint_full_match_count", 0) or 0),
+                        int(preference_meta.get("semantic_soft_constraint_partial_match_count", 0) or 0),
+                    )
+                if preference_meta.get("semantic_hint_rank_applied"):
+                    semantic_guardrail_used = True
+                if float(preference_meta.get("semantic_hint_score", 0.0) or 0.0) > 0.0 and lexical_search_used:
                     lexical_rescue_used = True
                     debug_meta["lexical_rescue_used"] = True
                     debug_meta["semantic_search_mode"] = "vector_lexical_hybrid"
                 if (
-                    float(semantic_hint_meta.get("semantic_hint_score", 0.0) or 0.0) <= 0.0
+                    semantic_hints
+                    and float(preference_meta.get("semantic_hint_score", 0.0) or 0.0) <= 0.0
                     and not dict(getattr(detail, "attribute_filters", {}) or {})
                 ):
                     semantic_guardrail_reason = "semantic_hint_clarify"

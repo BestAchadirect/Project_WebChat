@@ -19,7 +19,7 @@ from app.services.chat.routing import routing_policy
 from app.services.chat.routing import signals as routing_signals
 from app.services.chat.routing.contracts import DecisionState
 from app.services.chat.runtime.capabilities import ChatRuntimeCapabilities, build_chat_runtime_capabilities
-from app.services.chat.runtime import alias_cache, clarification_state, conversation_state
+from app.services.chat.runtime import alias_cache, clarification_state, context_resolver, conversation_state
 from app.services.chat.runtime.search_plan import SearchPlan, build_search_plan
 from app.services.chat.text_normalization import normalize_user_text
 
@@ -117,6 +117,18 @@ def _merge_filter_maps(*, base: Dict[str, str], incoming: Dict[str, str]) -> Dic
     return merged
 
 
+def _replace_detail(detail: Any, **changes: Any) -> Any:
+    try:
+        return replace(detail, **changes)
+    except TypeError:
+        for key, value in changes.items():
+            try:
+                setattr(detail, key, value)
+            except Exception:
+                continue
+        return detail
+
+
 def _merge_semantic_hints(*, existing: Sequence[Any], incoming: Sequence[Any]) -> List[str]:
     hints: List[str] = []
     seen: set[str] = set()
@@ -127,68 +139,6 @@ def _merge_semantic_hints(*, existing: Sequence[Any], incoming: Sequence[Any]) -
         seen.add(text)
         hints.append(text)
     return hints
-
-
-def _extract_contextual_filter_overrides(text: str) -> Dict[str, str]:
-    normalized = normalize_user_text(text)
-    if not normalized:
-        return {}
-    material_terms = (
-        ("surgical steel", "surgical steel"),
-        ("stainless steel", "stainless steel"),
-        ("rose gold", "rose gold"),
-        ("titanium", "titanium"),
-        ("silicone", "silicone"),
-        ("acrylic", "acrylic"),
-        ("bioplast", "bioplast"),
-        ("glass", "glass"),
-        ("steel", "steel"),
-        ("gold", "gold"),
-    )
-    color_terms = (
-        "black",
-        "white",
-        "clear",
-        "blue",
-        "red",
-        "green",
-        "pink",
-        "purple",
-        "silver",
-    )
-    overrides: Dict[str, str] = {}
-    for phrase, value in material_terms:
-        if re.search(rf"\b{re.escape(phrase)}\b", normalized):
-            overrides["material"] = value
-            break
-    for value in color_terms:
-        if re.search(rf"\b{re.escape(value)}\b", normalized):
-            overrides.setdefault("color", value)
-            break
-    return overrides
-
-
-def _should_merge_conversation_filters(
-    *,
-    text: str,
-    current_filters: Dict[str, str],
-    prior_filters: Dict[str, str],
-) -> bool:
-    if not dict(prior_filters or {}):
-        return False
-    normalized = normalize_user_text(text)
-    if not normalized:
-        return False
-    if any(marker in normalized for marker in routing_signals.PRODUCT_CONTEXT_FOLLOW_UP_MARKERS):
-        return True
-    tokens = [token for token in normalized.split() if token]
-    if len(tokens) > 8:
-        return False
-    if re.match(r"^(?:do you have|do you carry|what about|how about|any|in|with)\b", normalized):
-        return bool(dict(current_filters or {}) or _extract_contextual_filter_overrides(normalized))
-    if re.search(r"\b(?:cheaper|cheapest|more|similar|same|other)\b", normalized):
-        return True
-    return False
 
 
 def _internal_workflow_from_query_intent(intent: str) -> str:
@@ -369,34 +319,60 @@ class PipelineSetupMixin:
                     confidence=0.0,
                 )
 
+            context_result = context_resolver.resolve_context(
+                user_message=text,
+                conversation_id=conversation_id,
+                loaded_state=state_working,
+                workflow=str(route_decision.workflow or ""),
+                extracted_filters=dict(getattr(detail, "attribute_filters", {}) or {}),
+                requested_fields=list(getattr(detail, "requested_fields", []) or []),
+                sku_tokens=unique_sku_tokens,
+                client_action=client_action_norm,
+                client_action_payload=client_action_payload,
+            )
+            context_debug = context_result.to_debug_dict()
             contextual_filters_applied = False
             contextual_filter_reason = ""
-            if conversation_state_enabled and not catalog_pagination_requested:
-                prior_filters = dict(conversation_memory.last_attribute_filters or {})
+            if context_result.pagination_action and not catalog_pagination_requested:
+                pagination_action = dict(context_result.pagination_action or {})
+                catalog_pagination_requested = bool(context_result.context_used)
+                catalog_pagination_query_key = str(pagination_action.get("query_cache_key") or catalog_pagination_query_key)
+                action_ids = [
+                    str(item).strip()
+                    for item in list(pagination_action.get("query_product_ids") or [])
+                    if str(item).strip()
+                ]
+                if action_ids:
+                    catalog_pagination_query_ids = list(action_ids)
+                catalog_pagination_offset = int(pagination_action.get("display_offset") or catalog_pagination_offset)
+                catalog_pagination_limit = int(pagination_action.get("display_limit") or catalog_pagination_limit)
+            if context_result.resolved_filters and context_result.context_action in {"reuse", "update", "reset"}:
                 current_filters = dict(getattr(detail, "attribute_filters", {}) or {})
-                if _should_merge_conversation_filters(
-                    text=text,
-                    current_filters=current_filters,
-                    prior_filters=prior_filters,
-                ):
-                    incoming_filters = _merge_filter_maps(
-                        base=current_filters,
-                        incoming=_extract_contextual_filter_overrides(text),
+                if dict(context_result.resolved_filters or {}) != current_filters:
+                    detail = _replace_detail(detail, attribute_filters=dict(context_result.resolved_filters or {}))
+                    contextual_filters_applied = bool(context_result.context_used and context_result.confidence >= context_resolver.CONTEXT_USE_THRESHOLD)
+                    contextual_filter_reason = str(context_result.reason or context_result.context_action)
+            if context_result.active_product and context_result.confidence >= context_resolver.CONTEXT_USE_THRESHOLD:
+                active_product = dict(context_result.active_product or {})
+                active_sku = str(active_product.get("sku") or active_product.get("master_code") or "").strip()
+                if active_sku and active_sku not in unique_sku_tokens:
+                    unique_sku_tokens.append(active_sku)
+                requested_fields = list(getattr(detail, "requested_fields", []) or [])
+                requested_fields = list(dict.fromkeys(requested_fields + _price_or_stock_fields_from_text(text)))
+                if context_result.resolved_intent == "product_detail" and "attributes" not in requested_fields:
+                    requested_fields.append("attributes")
+                if context_result.resolved_intent in {"product_detail", "inventory_check"}:
+                    detail = _replace_detail(
+                        detail,
+                        requested_fields=requested_fields,
+                        is_detail_request=True,
                     )
-                    merged_filters = _merge_filter_maps(
-                        base=prior_filters,
-                        incoming=incoming_filters,
-                    )
-                    if merged_filters and merged_filters != current_filters:
-                        detail = replace(detail, attribute_filters=merged_filters)
-                        contextual_filters_applied = True
-                        contextual_filter_reason = "contextual_filter_merge"
 
             product_anchor_present = _has_product_anchor(
                 text=text,
                 detail=detail,
                 sku_tokens=unique_sku_tokens,
-                contextual_filters_applied=contextual_filters_applied,
+                contextual_filters_applied=bool(contextual_filters_applied or context_result.active_product),
             )
 
             if catalog_pagination_requested:
@@ -491,6 +467,8 @@ class PipelineSetupMixin:
                     "last_requested_fields": list(conversation_memory.last_requested_fields or []),
                     "last_product_ids": list(conversation_memory.last_product_ids or []),
                     "last_product_skus": list(conversation_memory.last_product_skus or []),
+                    "active_product": dict(conversation_memory.active_product or {}),
+                    "displayed_products": list(conversation_memory.displayed_products or []),
                     "pending_task": dict(pending_task_resume or pending_task or {}),
                 }
                 query_understanding = await infer_catalog_query_understanding(
@@ -537,7 +515,7 @@ class PipelineSetupMixin:
                     requested_fields = list(getattr(detail, "requested_fields", []) or [])
                     if understanding.intent == "product_detail":
                         requested_fields = list(dict.fromkeys(requested_fields + _price_or_stock_fields_from_text(text)))
-                    detail = replace(
+                    detail = _replace_detail(
                         detail,
                         attribute_filters=merged_filters,
                         semantic_hints=merged_hints,
@@ -602,11 +580,11 @@ class PipelineSetupMixin:
                     "last_attribute_filters": dict(conversation_memory.last_attribute_filters or {}),
                     "last_route": str(conversation_memory.last_route or ""),
                 },
-                context_allowed=bool(query_understanding_uses_context or contextual_filters_applied),
+                context_allowed=bool(query_understanding_uses_context or contextual_filters_applied or context_result.context_used),
                 context_reason=(
                     "query_understanding_previous_context"
                     if query_understanding_uses_context
-                    else contextual_filter_reason
+                    else (contextual_filter_reason or str(context_result.reason or ""))
                 ),
                 strictness=query_understanding_strictness,
                 unresolved_constraints=query_understanding_unresolved,
@@ -639,6 +617,17 @@ class PipelineSetupMixin:
                     "conversation_state_written": False,
                     "conversation_state_filter_merge_applied": bool(contextual_filters_applied),
                     "conversation_state_filter_merge_reason": str(contextual_filter_reason or ""),
+                    "context_resolution": context_debug,
+                    "context_used": bool(context_result.context_used),
+                    "context_action": str(context_result.context_action or ""),
+                    "context_confidence": float(context_result.confidence or 0.0),
+                    "context_reason": str(context_result.reason or ""),
+                    "context_reset_reason": str(context_result.reset_reason or ""),
+                    "context_resolved_intent": str(context_result.resolved_intent or ""),
+                    "context_active_product": dict(context_result.active_product or {}),
+                    "context_referenced_products": [dict(item) for item in list(context_result.referenced_products or [])],
+                    "context_pending_task_action": dict(context_result.pending_task_action or {}),
+                    "context_requires_clarification": bool(context_result.context_action == "clarify"),
                     "pending_task_loaded": bool(pending_task),
                     "pending_task_resumed": bool(pending_task_resume),
                     "pending_task_cleared": bool(pending_task_cleared),

@@ -21,6 +21,7 @@ from app.services.chat.parsing.attribute_normalization import normalize_attribut
 from app.services.chat.parsing.parser_rule_types import ParserRuleSet, empty_rule_set
 from app.services.chat.parsing.search_policy import HARD_FILTER_KEYS
 import app.services.chat.routing.routing_policy as routing_policy
+from app.services.chat.routing import signals as routing_signals
 from app.services.chat.routing.decision_engine import build_decision_state
 from app.services.chat.routing.understanding import build_understanding_result
 from app.services.chat.runtime.capabilities import build_chat_runtime_capabilities
@@ -149,6 +150,44 @@ def _understanding_hint_bool(understanding: Any, key: str) -> bool:
 
 def _understanding_hint_text(understanding: Any, key: str) -> str:
     return str(dict(getattr(understanding, "entity_hints", {}) or {}).get(key) or "").strip()
+
+
+def _normalized_requested_field_set(requested_fields: Sequence[str] | None) -> set[str]:
+    return {
+        str(item or "").strip().lower()
+        for item in list(requested_fields or [])
+        if str(item or "").strip()
+    }
+
+
+def is_browse_like_product_request(*, user_text: str, sku_tokens: Sequence[str] | None = None) -> bool:
+    normalized = normalize_text(user_text)
+    if not normalized or list(sku_tokens or []):
+        return False
+    if routing_signals.looks_like_product_detail(normalized, sku_tokens or []):
+        return False
+    if any(term in normalized for term in ("image", "photo", "picture", "details", "detail")):
+        return False
+    if routing_signals.has_explicit_product_browse_signal(normalized):
+        return True
+    if any(marker in normalized for marker in ("show me", "do you have", "looking for", "looking to buy")):
+        return True
+    return bool(re.search(r"\b(?:show|find|browse|shop|buy|see)\b", normalized))
+
+
+def should_demote_attribute_detail_to_browse(
+    *,
+    user_text: str,
+    requested_fields: Sequence[str] | None,
+    wants_image: bool,
+    sku_tokens: Sequence[str] | None = None,
+) -> bool:
+    if bool(wants_image) or list(sku_tokens or []):
+        return False
+    fields = _normalized_requested_field_set(requested_fields)
+    if fields and not fields.issubset({"attributes"}):
+        return False
+    return is_browse_like_product_request(user_text=user_text, sku_tokens=sku_tokens)
 
 
 @dataclass(frozen=True)
@@ -1522,7 +1561,26 @@ async def infer_chat_interpretation(
             searchable_attribute_names=searchable_attribute_names,
             searchable_attribute_metadata=searchable_attribute_metadata,
         )
-        if has_product_detail_signal and not (detail.requested_fields or detail.wants_image):
+        if should_demote_attribute_detail_to_browse(
+            user_text=user_text,
+            requested_fields=detail.requested_fields,
+            wants_image=detail.wants_image,
+            sku_tokens=sku_tokens,
+        ):
+            detail = replace(
+                detail,
+                requested_fields=[],
+                wants_image=False,
+                debug={
+                    **dict(detail.debug or {}),
+                    "llm_detail_query_demoted_to_browse": True,
+                },
+            )
+        if (
+            has_product_detail_signal
+            and not (detail.requested_fields or detail.wants_image)
+            and not is_browse_like_product_request(user_text=user_text, sku_tokens=sku_tokens)
+        ):
             detail = replace(
                 detail,
                 requested_fields=["attributes"],
