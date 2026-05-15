@@ -1,0 +1,17 @@
+- id: db_product_code_detail
+  messages:
+    - role: user
+      content: "show details for DMBJ38"
+  expected:
+    product_anchor: "DMBJ38"
+    answer_should_be_grounded: true
+
+- id: db_gold_labret_search
+  messages:
+    - role: user
+      content: "show me gold labret"
+  expected:
+    filters:
+      product_type: "labret"
+      material: "gold"
+    answer_should_use_catalog_data: true

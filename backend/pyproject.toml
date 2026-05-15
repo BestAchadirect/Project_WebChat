@@ -34,6 +34,7 @@ markers = [
   "adversarial: adversarial robustness tests",
   "performance: repeatable performance guard tests",
   "imports: import pipeline tests",
+  "evaluation: scenario-based chatbot quality tests",
 ]
 filterwarnings = [
   "default::DeprecationWarning:app.services.*",

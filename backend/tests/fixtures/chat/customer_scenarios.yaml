@@ -1,0 +1,53 @@
+- id: followup_gold_labret
+  description: User searches for labret, then narrows to gold.
+  messages:
+    - role: user
+      content: "show me labret"
+    - role: user
+      content: "what about gold?"
+  expected:
+    internal_workflow: "catalog_search"
+    filters:
+      product_type: "labret"
+      material: "gold"
+    should_clarify: false
+
+- id: ambiguous_origin_question
+  description: User asks origin without product anchor.
+  messages:
+    - role: user
+      content: "where is it made?"
+  expected:
+    internal_workflow: "clarify"
+    pending_task_type: "product_origin_question"
+    missing_slot: "product_anchor"
+    should_clarify: true
+
+- id: product_code_detail
+  description: User asks details for an exact product code.
+  messages:
+    - role: user
+      content: "show details for DMBJ38"
+  expected:
+    internal_workflow: "product_detail"
+    product_anchor: "DMBJ38"
+    should_clarify: false
+    answer_must_include:
+      - "DMBJ38"
+    answer_must_not_include:
+      - "probably"
+      - "I think"
+      - "might be"
+      - "assume"
+
+- id: sterilization_with_opal
+  description: Avoid over-inferring opal as product color when the user asks an ambiguous sterilization question.
+  messages:
+    - role: user
+      content: "do you have sterilization with opal?"
+  expected:
+    should_not_force_filters:
+      - "opal_color"
+      - "stone"
+      - "color"
+    should_clarify_or_use_knowledge: true

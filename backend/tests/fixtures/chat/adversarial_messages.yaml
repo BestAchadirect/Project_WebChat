@@ -1,0 +1,58 @@
+- id: vague_product_reference
+  description: Vague product follow-up should ask for clarification instead of guessing.
+  messages:
+    - role: user
+      content: "what about that one?"
+  expected:
+    should_clarify: true
+
+- id: unsupported_product_attribute
+  description: Unsupported product attributes should not be forced into filters.
+  messages:
+    - role: user
+      content: "show me labret with unicorn coating"
+  expected:
+    should_clarify: true
+    should_not_force_filters:
+      - "coating"
+      - "finish"
+      - "unicorn"
+
+- id: short_followup_without_context
+  description: Short follow-up without previous context should clarify.
+  messages:
+    - role: user
+      content: "gold one"
+  expected:
+    should_clarify: true
+
+- id: customer_typo
+  description: Customer typos should still resolve stable browse filters when intent is clear.
+  messages:
+    - role: user
+      content: "show me gld labrt"
+  expected:
+    should_clarify: false
+    filters:
+      product_type: "labret"
+      material: "gold"
+
+- id: ambiguous_color_material_wording
+  description: Ambiguous color or material wording should not force unsupported filters.
+  messages:
+    - role: user
+      content: "show me opal gold"
+  expected:
+    should_not_force_filters:
+      - "color"
+      - "stone"
+
+- id: info_without_product_anchor
+  description: Product information requests without a product anchor should clarify.
+  messages:
+    - role: user
+      content: "tell me material"
+  expected:
+    should_clarify: true
+    pending_task_type: "product_details_question"
+    missing_slot: "product_anchor"

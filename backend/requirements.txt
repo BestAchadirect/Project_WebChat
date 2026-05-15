@@ -16,4 +16,5 @@ aiofiles
 supabase
 pytest
 pytest-asyncio
+PyYAML
 redis>=5
