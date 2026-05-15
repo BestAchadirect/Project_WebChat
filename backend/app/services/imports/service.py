@@ -65,6 +65,7 @@ from app.services.imports.products.upload_history import (
 from app.models.task import TaskType, TaskStatus
 from app.core.logging import get_logger
 from app.core.config import settings
+from app.utils.datetime import utc_now
 
 logger = get_logger(__name__)
 
@@ -382,7 +383,7 @@ class DataImportService:
                     search_text = search_payload["search_text"]
                     search_keywords = search_payload["search_keywords"]
                     search_hash = search_payload["search_hash"]
-                    stock_synced_at = datetime.utcnow()
+                    stock_synced_at = utc_now()
 
                     if existing_product:
                         update_fields: Dict[str, Any] = {
@@ -1276,8 +1277,8 @@ class DataImportService:
         session.status = status
         session.error_message = error_message
         if status == KnowledgeUploadStatus.COMPLETED:
-            session.completed_at = datetime.utcnow()
-        session.updated_at = datetime.utcnow()
+            session.completed_at = utc_now()
+        session.updated_at = utc_now()
         await db.commit()
     
     async def _create_product_upload(
@@ -1332,8 +1333,8 @@ class DataImportService:
         if imported_count is not None:
             upload.imported_products = imported_count
         if status == ProductUploadStatus.COMPLETED:
-            upload.completed_at = datetime.utcnow()
-        upload.updated_at = datetime.utcnow()
+            upload.completed_at = utc_now()
+        upload.updated_at = utc_now()
         await db.commit()
 
     async def list_product_uploads(

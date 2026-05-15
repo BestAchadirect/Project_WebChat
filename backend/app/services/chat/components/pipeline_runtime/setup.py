@@ -226,8 +226,12 @@ class PipelineSetupMixin:
             client_action_payload = dict(client_action_payload or {})
             capabilities = build_chat_runtime_capabilities()
 
-            alias_map = await alias_cache.get_alias_map(self.db)
-            parser_rules = await parser_rule_cache.get_parser_rules(self.db)
+            if hasattr(self.db, "execute"):
+                alias_map = await alias_cache.get_alias_map(self.db)
+                parser_rules = await parser_rule_cache.get_parser_rules(self.db)
+            else:
+                alias_map = {}
+                parser_rules = parser_rule_cache.get_cached_parser_rules()
             searchable_attribute_names: List[str] = []
             searchable_attribute_metadata: List[Dict[str, Any]] = []
             if hasattr(self.db, "execute"):
@@ -610,6 +614,13 @@ class PipelineSetupMixin:
                 or getattr(decision_state_override, "internal_workflow", "")
                 or workflow
             )
+            if (
+                workflow == "catalog"
+                and bool(getattr(detail, "is_detail_request", False))
+                and len(list(unique_sku_tokens or [])) == 1
+                and internal_workflow == "catalog_search"
+            ):
+                internal_workflow = "product_detail"
             effective_strictness = dict(contextual_strictness or {})
             effective_strictness.update(dict(query_understanding_strictness or {}))
             search_plan = build_search_plan(

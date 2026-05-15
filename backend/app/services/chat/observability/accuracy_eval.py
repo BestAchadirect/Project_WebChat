@@ -464,6 +464,18 @@ def _component_type_value(component: Dict[str, Any]) -> str:
     return str(getattr(raw_type, "value", raw_type) or "").strip().lower()
 
 
+def _component_data(component: Dict[str, Any]) -> Dict[str, Any]:
+    data = component.get("data")
+    return dict(data or {}) if isinstance(data, dict) else {}
+
+
+def _is_follow_up_text_component(component: Dict[str, Any]) -> bool:
+    if _component_type_value(component) != "assistant_message":
+        return False
+    data = _component_data(component)
+    return str(data.get("placement") or "").strip().lower() == "after_quick_replies"
+
+
 def _reply_text_from_components(components: List[Dict[str, Any]]) -> str:
     preferred_types = (
         "assistant_message",
@@ -484,15 +496,81 @@ def _reply_text_from_components(components: List[Dict[str, Any]]) -> str:
     return ""
 
 
+def _is_question_like_follow_up(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    starters = (
+        "how ",
+        "what ",
+        "when ",
+        "where ",
+        "why ",
+        "who ",
+        "which ",
+        "can ",
+        "could ",
+        "would ",
+        "should ",
+        "do ",
+        "does ",
+        "did ",
+        "is ",
+        "are ",
+        "will ",
+        "may ",
+    )
+    return lowered.endswith("?") or lowered.startswith(starters)
+
+
+def _reconstruct_follow_up_label(text: str) -> str:
+    label = str(text or "").strip()
+    if not label:
+        return ""
+    label = label.rstrip(" .")
+    if _is_question_like_follow_up(label):
+        return label if label.endswith("?") else f"{label}?"
+    if label.lower().startswith(("try ", "show ", "see ", "view ", "browse ")):
+        return label
+    return f"Try {label}"
+
+
+def _follow_up_text_questions_from_components(components: List[Dict[str, Any]]) -> List[str]:
+    questions: List[str] = []
+    seen: set[str] = set()
+    for component in components:
+        if not _is_follow_up_text_component(component):
+            continue
+        text = str(_component_data(component).get("text") or "").strip()
+        if not text:
+            continue
+        for raw_line in text.splitlines():
+            line = str(raw_line or "").strip()
+            if not line.startswith("-"):
+                continue
+            label = _reconstruct_follow_up_label(line.lstrip("-").strip())
+            key = label.lower()
+            if not label or key in seen:
+                continue
+            seen.add(key)
+            questions.append(label)
+    return questions
+
+
 def _quick_replies_from_components(components: List[Dict[str, Any]]) -> List[str]:
     for component in components:
         if _component_type_value(component) != "quick_replies":
             continue
-        data = dict(component.get("data") or {})
+        data = _component_data(component)
         items: List[str] = []
         seen: set[str] = set()
         for raw in list(data.get("items") or []):
-            text = str(raw or "").strip()
+            if isinstance(raw, dict):
+                text = str(
+                    raw.get("label") or raw.get("text") or raw.get("question") or raw.get("message") or ""
+                ).strip()
+            else:
+                text = str(raw or "").strip()
             if not text:
                 continue
             key = text.lower()
@@ -522,22 +600,36 @@ def _product_carousel_from_components(components: List[Dict[str, Any]]) -> List[
 def _normalize_actual_result(payload: Any) -> Dict[str, Any]:
     item = dict(payload or {})
     components = [dict(component or {}) for component in list(item.get("components") or []) if isinstance(component, dict)]
+    synthesized_follow_ups = _follow_up_text_questions_from_components(components)
     reply_text = item.get("reply_text")
     if not str(reply_text or "").strip():
         reply_text = _reply_text_from_components(components)
     follow_up_questions = list(item.get("follow_up_questions") or [])
     if not follow_up_questions:
         follow_up_questions = _quick_replies_from_components(components)
+    if not follow_up_questions:
+        follow_up_questions = synthesized_follow_ups
+    normalized_components = [component for component in components if not _is_follow_up_text_component(component)]
+    if (
+        follow_up_questions
+        and not any(_component_type_value(component) == "quick_replies" for component in normalized_components)
+    ):
+        normalized_components.append(
+            {
+                "type": "quick_replies",
+                "data": {"items": list(follow_up_questions)},
+            }
+        )
     product_carousel = list(item.get("product_carousel") or [])
     if not product_carousel:
-        product_carousel = _product_carousel_from_components(components)
+        product_carousel = _product_carousel_from_components(normalized_components)
     return {
         "workflow": dict(item.get("routing") or {}).get("workflow"),
         "reply_text": reply_text,
         "follow_up_questions": follow_up_questions,
         "sources": list(item.get("sources") or []),
         "product_carousel": product_carousel,
-        "components": components,
+        "components": normalized_components,
         "debug": dict(item.get("debug") or {}),
     }
 

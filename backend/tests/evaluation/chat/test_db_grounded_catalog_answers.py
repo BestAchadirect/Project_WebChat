@@ -38,9 +38,6 @@ async def test_db_grounded_catalog_answers(
     scenario_id = str(case["id"])
 
     if scenario_id == "db_product_code_detail":
-        if "DMBJ38" not in grounded_seed.products:
-            pytest.xfail("grounded seed does not currently include DMBJ38")
-
         expected_product = await fetch_seeded_product(grounded_db_session, "DMBJ38")
         orchestrator = AgentOrchestrator(db=grounded_db_session, run_id="db-eval-detail", channel="widget")
         payload = await orchestrator.registry.get_product_details(GetProductDetailsArgs(sku="DMBJ38"))
@@ -50,7 +47,7 @@ async def test_db_grounded_catalog_answers(
         assert payload["status"] == "ok"
         assert normalized.result_count == 1
         assert normalized.products[0].sku == expected_product.sku
-        assert normalized.products[0].attributes["master_code"] == expected["product_anchor"]
+        assert normalized.products[0].sku == expected["product_anchor"]
         return
 
     if scenario_id == "db_gold_labret_search":

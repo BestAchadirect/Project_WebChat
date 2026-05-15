@@ -392,6 +392,8 @@ async def build_clarify_policy(
     }
 
     async def _contextual_message(*, fallback: str, payload: Dict[str, Any]) -> str:
+        if not clarify_rewrite_allowed:
+            return str(fallback or "").strip()
         scoped_payload = dict(payload or {})
         scoped_payload.setdefault(
             "assistant_scope",

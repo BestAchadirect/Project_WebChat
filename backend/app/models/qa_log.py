@@ -1,10 +1,10 @@
 import uuid
-from datetime import datetime
 import enum
 from sqlalchemy import CheckConstraint, Column, String, DateTime, Enum, SmallInteger
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from app.db.base import Base
+from app.utils.datetime import utc_now
 
 class QAStatus(str, enum.Enum):
     SUCCESS = "success"
@@ -31,4 +31,4 @@ class QALog(Base):
     status = Column(Enum(QAStatus), default=QAStatus.SUCCESS, nullable=False)
     error_message = Column(String, nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)

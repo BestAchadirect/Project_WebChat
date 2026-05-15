@@ -15,6 +15,7 @@ from app.services.chat.routing import routing_policy
 from app.services.chat.components.canonical_model import CanonicalProduct
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.components.types import ComponentSource
+from app.services.chat.parsing.detail_query_parser import DetailQuery
 
 
 class _RedisStub:
@@ -103,8 +104,20 @@ async def test_component_pipeline_catalog_workflow_returns_catalog_products(
     async def fake_generate_embedding(text: str):
         return [0.1, 0.2, 0.3]
 
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
+        return DetailQuery(
+            requested_fields=[],
+            attribute_filters={"jewelry_type": "labret", "material": "titanium"},
+            wants_image=False,
+            is_detail_request=False,
+        )
+
     pipeline._field_resolver.resolve = fake_resolve  # type: ignore[method-assign]
     monkeypatch.setattr(llm_service, "generate_embedding", fake_generate_embedding)
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
+        fake_parse,
+    )
 
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="recommend titanium labrets", locale="en-US"),

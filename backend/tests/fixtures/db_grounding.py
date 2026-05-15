@@ -74,6 +74,7 @@ def _vector(key: str) -> list[float]:
         "shipping": 3,
         "returns": 4,
         "payment": 5,
+        "dmbj38_detail": 6,
     }
     axis = axis_by_key.get(str(key or "").strip(), 0) % dimensions
     vector[axis] = 1.0
@@ -86,6 +87,8 @@ def grounded_query_embedding(query: str) -> list[float]:
         return _vector("returns")
     if "payment" in normalized or "pay" in normalized or "visa" in normalized:
         return _vector("payment")
+    if "dmbj38" in normalized:
+        return _vector("dmbj38_detail")
     if "shipping" in normalized or "ship" in normalized or "delivery" in normalized:
         return _vector("shipping")
     if "gold" in normalized:

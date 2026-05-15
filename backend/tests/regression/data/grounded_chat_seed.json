@@ -65,6 +65,28 @@
       },
       "search_text": "surgical steel captive ring 18g",
       "vector_key": "steel_ring"
+    },
+    {
+      "sku": "DMBJ38",
+      "object_id": "dmbj38",
+      "group_key": "dmbj38-variant-group",
+      "group_title": "DMBJ38 Variant Group",
+      "master_code": "DMBJ38",
+      "description": "Implant-grade steel labret used for exact-code grounded detail tests.",
+      "price": 21.0,
+      "currency": "USD",
+      "stock_status": "in_stock",
+      "stock_qty": 7,
+      "image_url": "https://example.test/products/dmbj38.jpg",
+      "product_url": "https://example.test/products/dmbj38",
+      "attributes": {
+        "material": "steel",
+        "jewelry_type": "labret",
+        "finish": "polished",
+        "gauge": "14g"
+      },
+      "search_text": "dmbj38 polished steel labret 14g",
+      "vector_key": "dmbj38_detail"
     }
   ],
   "knowledge": [

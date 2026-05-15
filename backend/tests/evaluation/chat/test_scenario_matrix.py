@@ -40,21 +40,9 @@ def _assert_expected(result: ChatEvalResult, expected: dict[str, object]) -> Non
         assert result.should_clarify is True or result.public_workflow == "knowledge"
 
 
-def _maybe_xfail_known_gap(*, case: dict[str, object], result: ChatEvalResult) -> None:
-    case_id = str(case["id"])
-    if case_id != "product_code_detail":
-        return
-    if result.internal_workflow != "product_detail" or "DMBJ38" not in result.answer_text:
-        pytest.xfail(
-            "explicit product-code requests currently return a product_detail component, "
-            "but the internal workflow remains catalog_search and the assistant text omits the product code"
-        )
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["id"])
 async def test_customer_scenario_matrix(case: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
     harness = ChatEvalHarness(monkeypatch)
     result = await harness.run_messages(case["messages"])
-    _maybe_xfail_known_gap(case=case, result=result)
     _assert_expected(result, dict(case["expected"] or {}))

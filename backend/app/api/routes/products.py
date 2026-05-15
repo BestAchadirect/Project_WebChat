@@ -1,5 +1,4 @@
 from typing import Any, Dict, List, Literal, Optional
-from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request
@@ -25,6 +24,7 @@ from app.services.catalog.projection_service import product_projection_sync_serv
 from app.services.imports.service import data_import_service
 from app.services.catalog.attribute_sync_service import product_attribute_sync_service
 from app.services.catalog.category_taxonomy_service import category_taxonomy_service
+from app.utils.datetime import utc_now
 from app.utils.pagination import normalize_pagination
 
 router = APIRouter()
@@ -1108,7 +1108,7 @@ async def update_product(
         product.group_id = group.id
 
     if stock_status_updated:
-        product.last_stock_sync_at = datetime.utcnow()
+        product.last_stock_sync_at = utc_now()
 
     if attr_updates:
         await product_attribute_sync_service.apply_dual_canonical(
@@ -1131,7 +1131,7 @@ async def update_product(
         search_changed = product_attribute_sync_service.recompute_product_search_fields(product=product)
         if bool(getattr(settings, "CHAT_PROJECTION_DUAL_WRITE_ENABLED", True)):
             await product_projection_sync_service.sync_products(db, products=[product])
-    product.updated_at = datetime.utcnow()
+    product.updated_at = utc_now()
         
     await db.commit()
     if search_changed and background_tasks:
@@ -1203,7 +1203,7 @@ async def bulk_update_products(
             await db.flush()
         target_group_id = group.id
 
-    now_utc = datetime.utcnow()
+    now_utc = utc_now()
     embed_ids: List[UUID] = []
     for product in products:
         stock_status_updated = False

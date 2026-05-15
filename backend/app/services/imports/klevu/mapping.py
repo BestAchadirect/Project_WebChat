@@ -15,6 +15,17 @@ from app.services.imports.products.parser import parse_bool, parse_int, parse_st
 
 class KlevuMappingMixin:
     @staticmethod
+    def _normalize_klevu_attribute_value(key: str, value: Any) -> str:
+        text = KlevuMappingMixin._clean_text(value)
+        if not text:
+            return ""
+        if key == "material":
+            lowered = text.casefold().replace(" ", "")
+            if lowered == "316l":
+                return "Steel"
+        return text
+
+    @staticmethod
     def _clean_text(value: Any) -> str:
         if value is None:
             return ""
@@ -234,7 +245,7 @@ class KlevuMappingMixin:
             if target_key == "category":
                 text = KlevuMappingMixin._normalize_category_value(value) or ""
             else:
-                text = KlevuMappingMixin._clean_text(value)
+                text = KlevuMappingMixin._normalize_klevu_attribute_value(target_key, value)
             if text:
                 attrs[target_key] = text
         if "category" not in attrs:

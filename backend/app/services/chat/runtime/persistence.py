@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -12,6 +11,7 @@ from app.models.qa_log import QALog, QAStatus
 from app.schemas.chat import ChatComponent, ChatResponse, ProductCard, sanitize_assistant_text, sanitize_chat_component
 import app.services.chat.presentation.component_contract as component_contract
 import app.services.chat.observability.qa_metrics as qa_metrics
+from app.utils.datetime import utc_now
 
 logger = get_logger(__name__)
 
@@ -176,7 +176,7 @@ async def submit_feedback(*, db, qa_log_id: UUID, feedback: int) -> Optional[QAL
     if feedback not in (-1, 1):
         raise ValueError("feedback must be -1 or 1")
     qa_log.user_feedback = int(feedback)
-    qa_log.feedback_at = datetime.utcnow()
+    qa_log.feedback_at = utc_now()
     db.add(qa_log)
     await db.commit()
     await db.refresh(qa_log)

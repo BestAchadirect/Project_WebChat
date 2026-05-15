@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any, Dict, Sequence, Tuple
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -11,6 +10,7 @@ from app.core.config import settings
 from app.models.knowledge import KnowledgeChunkEnrichment
 from app.services.ai.llm_service import llm_service
 from app.services.knowledge.tagging import build_knowledge_chunk_tags
+from app.utils.datetime import utc_now, utc_now_iso
 
 
 def _normalize_text(text: str | None) -> str:
@@ -102,7 +102,7 @@ async def generate_knowledge_chunk_summary(
             "source": "llm",
             "model": summary_model,
             "confidence": float(data.get("confidence") or 0.0),
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": utc_now_iso(),
         }
         return summary, meta
     except Exception:
@@ -115,7 +115,7 @@ async def generate_knowledge_chunk_summary(
         meta = {
             "source": "fallback",
             "model": summary_model,
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": utc_now_iso(),
         }
         return summary, meta
 
@@ -142,7 +142,7 @@ async def upsert_knowledge_chunk_enrichment(
                 "summary_text": summary_text,
                 "summary_meta": summary_meta,
                 "generated_by": generated_by,
-                "updated_at": datetime.utcnow(),
+                "updated_at": utc_now(),
             },
         )
     )

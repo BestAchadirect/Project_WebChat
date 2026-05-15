@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
@@ -12,6 +11,7 @@ from app.models.product import Product
 from app.models.product_search_projection import ProductSearchProjection
 from app.services.catalog.attributes_service import eav_service
 from app.services.catalog.attribute_sync_service import product_attribute_sync_service
+from app.utils.datetime import utc_now
 
 
 class ProductProjectionSyncService:
@@ -120,8 +120,8 @@ class ProductProjectionSyncService:
             "search_text_norm": search_text_norm or None,
             "stock_status_norm": cls._norm(getattr(getattr(product, "stock_status", None), "value", product.stock_status)),
             "is_active": bool(getattr(product, "is_active", True)),
-            "updated_at": getattr(product, "updated_at", None) or datetime.utcnow(),
-            "created_at": getattr(product, "created_at", None) or datetime.utcnow(),
+            "updated_at": getattr(product, "updated_at", None) or utc_now(),
+            "created_at": getattr(product, "created_at", None) or utc_now(),
         }
 
     async def sync_products_by_ids(

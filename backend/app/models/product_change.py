@@ -1,10 +1,10 @@
 import uuid
-from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from app.db.base import Base
+from app.utils.datetime import utc_now
 
 
 class ProductChange(Base):
@@ -16,4 +16,4 @@ class ProductChange(Base):
     changed_fields = Column(JSONB, default=list)
     old_values = Column(JSONB, default=dict)
     new_values = Column(JSONB, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)

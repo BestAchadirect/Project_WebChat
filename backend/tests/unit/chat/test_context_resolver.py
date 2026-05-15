@@ -315,6 +315,31 @@ def test_context_resolver_resolves_product_index_detail_reference() -> None:
     assert result.selected_product_index == 0
 
 
+def test_context_resolver_allows_filtered_detail_request_without_prior_anchor() -> None:
+    result = context_resolver.resolve_context(
+        user_message="price and stock for black barbell 25mm",
+        conversation_id=1,
+        loaded_state=_state(
+            last_attribute_filters={},
+            displayed_products=[],
+            last_product_ids=[],
+            last_product_skus=[],
+            active_product={},
+        ),
+        workflow="catalog",
+        extracted_filters={"jewelry_type": "barbell", "color": "black", "gauge": "25mm"},
+        requested_fields=["price", "stock"],
+        is_detail_request=True,
+    )
+
+    assert result.context_type == "detail_reference"
+    assert result.context_action == "update"
+    assert result.safe_to_retrieve is True
+    assert result.should_clarify is False
+    assert result.resolved_intent == "inventory_check"
+    assert result.resolved_filters == {"jewelry_type": "barbell", "color": "black", "gauge": "25mm"}
+
+
 def test_context_resolver_resumes_pending_task_from_master_code() -> None:
     result = context_resolver.resolve_context(
         user_message="DMBJ38",

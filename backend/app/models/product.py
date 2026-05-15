@@ -2,12 +2,12 @@ from sqlalchemy import Column, String, Float, Boolean, Integer, ForeignKey, Date
 from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.orm import relationship, synonym
 from pgvector.sqlalchemy import Vector
-from datetime import datetime
 import uuid
 import enum
 
 from app.db.base import Base
 from app.core.config import settings
+from app.utils.datetime import utc_now
 
 class StockStatus(str, enum.Enum):
     in_stock = "in_stock"
@@ -50,8 +50,8 @@ class Product(Base):
 
     # Common product attributes are stored in JSONB and the EAV tables.
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     # Relationships
     embeddings = relationship("ProductEmbedding", back_populates="product", cascade="all, delete-orphan")
@@ -73,7 +73,7 @@ class ProductEmbedding(Base):
     model = Column(String, nullable=True)
     source_hash = Column(String, nullable=True, index=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     # Relationships
     product = relationship("Product", back_populates="embeddings")

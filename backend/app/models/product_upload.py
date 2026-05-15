@@ -1,4 +1,3 @@
-from datetime import datetime
 import enum
 import uuid
 
@@ -7,6 +6,7 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
+from app.utils.datetime import utc_now
 
 
 class ProductUploadStatus(str, enum.Enum):
@@ -48,8 +48,8 @@ class ProductUpload(Base):
     progress_percentage = Column(Integer, default=0)
     error_log = Column(JSONB, default=list)  # Store detailed error information
     
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
     completed_at = Column(DateTime, nullable=True)
 
     products = relationship("Product", back_populates="upload")

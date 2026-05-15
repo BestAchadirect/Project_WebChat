@@ -19,6 +19,7 @@ from app.services.chat.components.context import ComponentContext
 from app.services.chat.components.pipeline import ComponentPipeline
 from app.services.chat.components.pipeline_runtime.state import PipelineWorkflowState
 from app.services.chat.components.types import ComponentSource, ComponentType
+from app.services.chat.parsing.detail_query_parser import DetailQuery
 from app.services.chat.parsing.llm_attribute_extractor import AttributeExtractionResult
 from app.services.chat.components.pipeline_runtime import setup as pipeline_setup_module
 from app.services.chat.runtime import conversation_state
@@ -1025,8 +1026,20 @@ async def test_component_pipeline_store_overview_request_returns_overview_produc
     async def fake_resolve(*, product_ids, component_types, component_cache, **kwargs):
         return [labret, ring], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
 
+    async def fake_parse(*, user_text: str, nlu_data, **kwargs):
+        return DetailQuery(
+            requested_fields=[],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=False,
+        )
+
     monkeypatch.setattr(pipeline, "_load_store_overview_product_ids", fake_overview_ids)
     monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
+        fake_parse,
+    )
 
     result = await pipeline.run(
         request=ChatRequest(user_id="guest-1", message="What do you have in your store?", locale="en-US"),

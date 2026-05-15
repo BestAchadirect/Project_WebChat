@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import BigInteger, Column, DateTime, Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.config import settings
 from app.db.base import Base
+from app.utils.datetime import utc_now
 
 
 class SemanticCache(Base):
@@ -27,6 +26,6 @@ class SemanticCache(Base):
     response_json = Column(JSONB, nullable=False)
     reply_language = Column(String, nullable=False)
     target_currency = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     expires_at = Column(DateTime, nullable=False, index=True)
 

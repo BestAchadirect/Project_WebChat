@@ -472,6 +472,25 @@ def test_detail_response_builder_reports_missing_image() -> None:
     assert payload.follow_up_questions == []
 
 
+def test_detail_response_builder_includes_product_code_when_requested() -> None:
+    match = _card(
+        sku="DMBJ38",
+        name="DMBJ38",
+        attributes={"master_code": "DMBJ38", "material": "Steel", "jewelry_type": "Labret"},
+    )
+    payload = DetailResponseBuilder.build_detail_reply(
+        matches=[match],
+        requested_fields=["sku", "attributes"],
+        attribute_filters={},
+        missing_fields_by_product={},
+        wants_image=False,
+        max_matches=3,
+    )
+
+    assert "Product code: DMBJ38" in payload.reply_text
+    assert "Key details:" in payload.reply_text
+
+
 def test_product_detail_resolver_treats_master_code_as_exact_product_anchor() -> None:
     first = _card(
         sku="BLK466-F02A12",

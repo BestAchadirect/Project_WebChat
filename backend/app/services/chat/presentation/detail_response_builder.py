@@ -311,10 +311,15 @@ class DetailResponseBuilder:
                 if variant_count == 1
                 else f"I found {variant_count} matching products."
             )
-        attribute_focus_mode = bool(requested_set) and requested_set.issubset({"attributes"})
+        requested_without_sku = {field for field in requested_set if field != "sku"}
+        attribute_focus_mode = bool(requested_without_sku) and requested_without_sku.issubset({"attributes"})
 
         lines: List[str] = [header]
         if attribute_focus_mode:
+            if "sku" in requested_set and display_items:
+                master_code = cls._display_master_code(display_items[0])
+                if master_code:
+                    lines.append(f"Product code: {master_code}")
             highlights = cls._build_attribute_focus_summary(
                 display_items=display_items,
                 attribute_filters=attribute_filters,
@@ -324,6 +329,10 @@ class DetailResponseBuilder:
         elif requested_set.intersection({"price", "stock"}) and display_items:
             detail_bits: List[str] = []
             first = display_items[0]
+            if "sku" in requested_set:
+                master_code = cls._display_master_code(first)
+                if master_code:
+                    detail_bits.append(f"Product code: {master_code}")
             if "price" in requested_set:
                 price_value = str(getattr(first, "price", "") or "").strip()
                 if price_value:

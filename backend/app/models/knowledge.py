@@ -2,12 +2,12 @@ from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Enum, Integer
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
-from datetime import datetime
 import uuid
 import enum
 
 from app.db.base import Base
 from app.core.config import settings
+from app.utils.datetime import utc_now
 
 class KnowledgeUploadStatus(str, enum.Enum):
     PENDING = "pending"
@@ -26,8 +26,8 @@ class KnowledgeUpload(Base):
     uploaded_by = Column(String, nullable=True)
     status = Column(Enum(KnowledgeUploadStatus), default=KnowledgeUploadStatus.PENDING, nullable=False)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
     completed_at = Column(DateTime, nullable=True)
 
     # Relationships
@@ -48,8 +48,8 @@ class KnowledgeArticle(Base):
     active_version = Column(Integer, nullable=True)
     upload_session_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_uploads.id"), nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     # Relationships
     embeddings = relationship("KnowledgeEmbedding", back_populates="article", cascade="all, delete-orphan")
@@ -67,7 +67,7 @@ class KnowledgeArticleVersion(Base):
     article_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_articles.id"), nullable=False)
     version = Column(Integer, nullable=False)
     content_text = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     created_by = Column(String, nullable=True)
 
     # Relationships
@@ -85,7 +85,7 @@ class KnowledgeChunk(Base):
     chunk_index = Column(Integer, nullable=False)
     chunk_text = Column(Text, nullable=False)
     chunk_hash = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     # Relationships
     article = relationship("KnowledgeArticle", back_populates="chunks")
@@ -98,7 +98,7 @@ class KnowledgeChunkTag(Base):
     
     chunk_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_chunks.id"), primary_key=True)
     tag = Column(String, primary_key=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     # Relationships
     chunk = relationship("KnowledgeChunk", back_populates="tags")
@@ -110,8 +110,8 @@ class KnowledgeChunkEnrichment(Base):
     summary_text = Column(Text, nullable=False)
     summary_meta = Column(JSONB, nullable=False, default=dict)
     generated_by = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
     # Relationships
     chunk = relationship("KnowledgeChunk", back_populates="enrichment")
@@ -130,7 +130,7 @@ class KnowledgeEmbedding(Base):
     model = Column(String, nullable=True)
     version = Column(Integer, nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     # Relationships
     article = relationship("KnowledgeArticle", back_populates="embeddings")

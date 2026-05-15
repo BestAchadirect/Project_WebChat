@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Dict, Optional, Sequence
 
 from sqlalchemy import select
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.models.semantic_cache import SemanticCache
+from app.utils.datetime import utc_now
 
 logger = get_logger(__name__)
 
@@ -37,7 +38,7 @@ class SemanticCacheService:
         if not bool(getattr(settings, "SEMANTIC_CACHE_ENABLED", True)):
             return None
 
-        now = datetime.utcnow()
+        now = utc_now()
         max_distance = self._max_distance()
         if max_distance <= 0:
             return None
@@ -80,7 +81,7 @@ class SemanticCacheService:
 
         ttl_days = int(getattr(settings, "SEMANTIC_CACHE_TTL_DAYS", 7))
         ttl_days = max(1, min(365, ttl_days))
-        now = datetime.utcnow()
+        now = utc_now()
         expires_at = now + timedelta(days=ttl_days)
 
         entry = SemanticCache(

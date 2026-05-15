@@ -958,6 +958,22 @@ def resolve_context(
                 active_product=resolved_active,
                 referenced_products=[dict(selected_products[0])],
             )
+        if current_filters:
+            return ContextResolution(
+                context_type="detail_reference",
+                uses_previous_context=False,
+                confidence=0.72,
+                reason="Searchable detail request can be resolved from explicit filters",
+                merged_query=_build_merged_query(current_filters, fallback_query=user_message),
+                merged_attribute_filters=dict(current_filters),
+                bypass_missing_anchor_clarify=False,
+                should_clarify=False,
+                clarification_reason=None,
+                safe_to_retrieve=True,
+                debug=debug,
+                context_action="update",
+                resolved_intent=detail_intent if detail_intent != "unknown" else "product_detail",
+            )
         if len(descriptor_candidates) == 1:
             resolved_active = _active_from_displayed(
                 descriptor_candidates[0],

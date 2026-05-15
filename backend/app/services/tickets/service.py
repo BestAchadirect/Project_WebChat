@@ -1,6 +1,5 @@
 import uuid
 from pathlib import Path
-from datetime import datetime
 from typing import List, Optional, Tuple
 from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +10,7 @@ from app.models.chat import AppUser
 from app.schemas.ticket import TicketUpdate
 from app.core.config import settings
 from app.services.ai.llm_service import LLMService
+from app.utils.datetime import utc_now, utc_now_iso_z
 
 class TicketService:
     def __init__(self, db: AsyncSession):
@@ -57,7 +57,7 @@ class TicketService:
             image_urls=image_urls,
             ai_summary=ai_summary,
             admin_replies=[],
-            customer_last_activity_at=datetime.utcnow(),
+            customer_last_activity_at=utc_now(),
             status="pending"
         )
         self.db.add(ticket)
@@ -115,7 +115,7 @@ class TicketService:
                 replies.append(
                     {
                         "message": message,
-                        "created_at": datetime.utcnow().isoformat() + "Z",
+                        "created_at": utc_now_iso_z(),
                     }
                 )
                 ticket.admin_replies = replies
@@ -171,9 +171,9 @@ class TicketService:
                 customer_activity = True
 
         if customer_activity:
-            ticket.customer_last_activity_at = datetime.utcnow()
+            ticket.customer_last_activity_at = utc_now()
         if admin_activity:
-            ticket.admin_last_seen_at = datetime.utcnow()
+            ticket.admin_last_seen_at = utc_now()
 
         await self.db.commit()
         await self.db.refresh(ticket)
@@ -183,7 +183,7 @@ class TicketService:
         ticket = await self.db.get(Ticket, ticket_id)
         if not ticket:
             return None
-        ticket.customer_last_activity_at = datetime.utcnow()
+        ticket.customer_last_activity_at = utc_now()
         await self.db.commit()
         await self.db.refresh(ticket)
         return ticket
@@ -192,7 +192,7 @@ class TicketService:
         ticket = await self.db.get(Ticket, ticket_id)
         if not ticket:
             return None
-        ticket.admin_last_seen_at = datetime.utcnow()
+        ticket.admin_last_seen_at = utc_now()
         await self.db.commit()
         await self.db.refresh(ticket)
         return ticket

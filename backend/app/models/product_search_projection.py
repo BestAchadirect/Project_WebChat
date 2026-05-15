@@ -1,10 +1,9 @@
-from datetime import datetime
-
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
+from app.utils.datetime import utc_now
 
 
 class ProductSearchProjection(Base):
@@ -29,8 +28,8 @@ class ProductSearchProjection(Base):
     search_text_norm = Column(Text, nullable=True)
     stock_status_norm = Column(String(64), nullable=True, index=True)
     is_active = Column(Boolean, nullable=False, default=True, index=True)
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
 
     product = relationship("Product")
 

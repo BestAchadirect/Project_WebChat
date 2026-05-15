@@ -283,6 +283,88 @@ def test_accuracy_eval_response_contract_supports_exact_groundedness_checks() ->
     assert result["passed"] is True
 
 
+def test_accuracy_eval_normalizes_follow_up_text_components_into_contract_follow_ups() -> None:
+    case = {
+        "id": "response-follow-up-text-normalization",
+        "suite": "response",
+        "bucket": "product_contract",
+        "kind": "response_contract",
+        "expected": {
+            "workflow": "catalog",
+            "follow_ups_include": ["Try gold pieces"],
+            "component_types_exact": ["assistant_message", "quick_replies"],
+        },
+    }
+    actual_results = {
+        "response-follow-up-text-normalization": {
+            "routing": {"workflow": "catalog"},
+            "components": [
+                {
+                    "type": "assistant_message",
+                    "data": {"text": "I found matching gold products."},
+                },
+                {
+                    "type": "assistant_message",
+                    "data": {
+                        "text": "If you want, I can help you:\n- gold pieces",
+                        "placement": "after_quick_replies",
+                    },
+                },
+            ],
+            "sources": [],
+            "product_carousel": [],
+            "debug": {},
+        }
+    }
+
+    result = accuracy_eval.evaluate_case(case, actual_results=actual_results)
+
+    assert result["passed"] is True
+
+
+def test_accuracy_eval_quick_replies_extracts_labels_from_dict_items() -> None:
+    case = {
+        "id": "response-quick-reply-dict-items",
+        "suite": "response",
+        "bucket": "policy_contract",
+        "kind": "response_contract",
+        "expected": {
+            "workflow": "knowledge",
+            "follow_ups_include": ["Do you ship internationally?"],
+            "component_types_exact": ["assistant_message", "quick_replies"],
+        },
+    }
+    actual_results = {
+        "response-quick-reply-dict-items": {
+            "routing": {"workflow": "knowledge"},
+            "components": [
+                {
+                    "type": "assistant_message",
+                    "data": {"text": "Shipping depends on destination and service level."},
+                },
+                {
+                    "type": "quick_replies",
+                    "data": {
+                        "items": [
+                            {
+                                "label": "Do you ship internationally?",
+                                "action": "knowledge_follow_up",
+                            }
+                        ]
+                    },
+                },
+            ],
+            "sources": [],
+            "product_carousel": [],
+            "debug": {},
+        }
+    }
+
+    result = accuracy_eval.evaluate_case(case, actual_results=actual_results)
+
+    assert result["passed"] is True
+
+
 def test_accuracy_eval_response_contract_supports_context_anchor_checks() -> None:
     case = {
         "id": "response-context-check",
