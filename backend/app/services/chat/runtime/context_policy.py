@@ -33,6 +33,32 @@ PRODUCT_DETAIL_FIELD_TERMS = {
     "image": ("photo", "picture", "image"),
 }
 
+COLOR_TERMS = (
+    ("rose gold", "rose gold"),
+    ("silver", "silver"),
+    ("black", "black"),
+    ("white", "white"),
+    ("clear", "clear"),
+    ("blue", "blue"),
+    ("red", "red"),
+    ("green", "green"),
+    ("purple", "purple"),
+    ("pink", "pink"),
+    ("yellow", "yellow"),
+    ("orange", "orange"),
+    ("gold", "gold"),
+)
+
+THREADING_TERMS = (
+    ("internally threaded", "internally threaded"),
+    ("internal threaded", "internally threaded"),
+    ("externally threaded", "externally threaded"),
+    ("external threaded", "externally threaded"),
+    ("threadless", "threadless"),
+    ("push pin", "threadless"),
+    ("push-pin", "threadless"),
+)
+
 MATERIAL_TERMS = (
     ("surgical steel", "surgical steel"),
     ("stainless steel", "stainless steel"),
@@ -180,7 +206,7 @@ def has_pronoun_product_reference(text: str) -> bool:
     normalized = normalize_user_text(text)
     if not normalized:
         return False
-    return bool(re.search(r"\b(it|this|that|this one|that one|the item|the product|this product)\b", normalized))
+    return bool(re.search(r"\b(it|this|that|these|those|this one|that one|the item|the product|this product)\b", normalized))
 
 
 def _term_is_negated(normalized: str, term: str) -> bool:
@@ -200,6 +226,15 @@ def extract_filter_overrides(text: str) -> Dict[str, str]:
     if materials:
         filters["material"] = materials[-1]
 
+    colors: List[str] = []
+    for phrase, value in COLOR_TERMS:
+        if phrase == "gold" and materials:
+            continue
+        if re.search(rf"\b{re.escape(phrase)}\b", normalized) and not _term_is_negated(normalized, phrase):
+            colors.append(value)
+    if colors:
+        filters["color"] = colors[-1]
+
     length_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(mm|millimeter|millimeters|inch|inches|in)\b", normalized)
     if length_match and ("length" in normalized or normalized.startswith("with ") or normalized.startswith("in ")):
         unit = str(length_match.group(2) or "").lower()
@@ -209,6 +244,11 @@ def extract_filter_overrides(text: str) -> Dict[str, str]:
     gauge_match = re.search(r"\b(\d{1,2})\s*g(?:auge)?\b", normalized)
     if gauge_match:
         filters["gauge"] = f"{gauge_match.group(1)}g"
+
+    for phrase, value in THREADING_TERMS:
+        if re.search(rf"\b{re.escape(phrase)}\b", normalized) and not _term_is_negated(normalized, phrase):
+            filters["threading"] = value
+            break
 
     for phrase, value in JEWELRY_TYPE_TERMS:
         if re.search(rf"\b{re.escape(phrase)}\b", normalized):

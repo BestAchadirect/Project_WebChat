@@ -26,6 +26,12 @@ def _state(**overrides):
                     "sku": "A1",
                     "master_code": "A1",
                     "name": "Titanium Labret",
+                    "descriptors": {
+                        "material": "titanium",
+                        "color": "black",
+                        "gauge": "16g",
+                        "jewelry_type": "labret",
+                    },
                 },
                 {
                     "position": 2,
@@ -33,6 +39,12 @@ def _state(**overrides):
                     "sku": "B2",
                     "master_code": "B2",
                     "name": "Steel Labret",
+                    "descriptors": {
+                        "material": "steel",
+                        "color": "silver",
+                        "gauge": "14g",
+                        "jewelry_type": "labret",
+                    },
                 },
             ],
             "updated_at": context_policy.utc_timestamp(),
@@ -134,6 +146,7 @@ def test_context_resolver_handles_pagination_from_previous_state() -> None:
         "display_offset": 0,
         "display_limit": 10,
         "result_count": 30,
+        "state_offset": 0,
     }
 
 
@@ -177,6 +190,7 @@ def test_context_resolver_clarifies_vague_product_reference_with_multiple_produc
     assert result.context_action == "clarify"
     assert result.context_used is False
     assert result.confidence == 0.4
+    assert result.clarification_reason == "product_anchor_ambiguous"
 
 
 def test_context_resolver_maps_position_reference_to_displayed_product() -> None:
@@ -227,6 +241,7 @@ def test_context_resolver_resumes_pending_product_anchor_task() -> None:
     )
 
     assert result.resolved_intent == "clarification_response"
+    assert result.context_type == "pending_task_resume"
     assert result.pending_task_action == {"action": "resume", "clear": True}
     assert result.active_product["product_id"] == "p2"
 
@@ -257,3 +272,154 @@ def test_context_resolver_does_not_use_expired_active_product() -> None:
     assert result.context_action == "clarify"
     assert result.context_used is False
     assert result.confidence == 0.4
+
+
+def test_context_resolver_merges_strict_filter_refinement() -> None:
+    result = context_resolver.resolve_context(
+        user_message="Only black titanium",
+        conversation_id=1,
+        loaded_state=_state(
+            last_attribute_filters={"jewelry_type": "nose ring"},
+            displayed_products=[],
+            last_product_ids=[],
+        ),
+        workflow="catalog",
+        extracted_filters={},
+    )
+
+    assert result.context_type == "filter_refinement"
+    assert result.context_used is True
+    assert result.safe_to_retrieve is True
+    assert result.merged_attribute_filters == {
+        "jewelry_type": "nose ring",
+        "color": "black",
+        "material": "titanium",
+    }
+
+
+def test_context_resolver_resolves_product_index_detail_reference() -> None:
+    result = context_resolver.resolve_context(
+        user_message="How much is the first one?",
+        conversation_id=1,
+        loaded_state=_state(),
+        workflow="catalog",
+        extracted_filters={},
+        requested_fields=["price"],
+        is_detail_request=True,
+    )
+
+    assert result.context_type == "detail_reference"
+    assert result.safe_to_retrieve is True
+    assert result.should_clarify is False
+    assert result.resolved_product_anchor_ids == ["p1"]
+    assert result.selected_product_index == 0
+
+
+def test_context_resolver_resumes_pending_task_from_master_code() -> None:
+    result = context_resolver.resolve_context(
+        user_message="DMBJ38",
+        conversation_id=1,
+        loaded_state=_state(
+            pending_task={
+                "task_type": "product_details_question",
+                "missing_slot": "product_anchor",
+                "original_question": "Which product do you mean?",
+                "turns_remaining": 2,
+                "created_at": context_policy.utc_timestamp(),
+            }
+        ),
+        workflow="catalog",
+        extracted_filters={},
+    )
+
+    assert result.context_type == "pending_task_resume"
+    assert result.resume_pending_task is True
+    assert result.resolved_product_anchor_skus == ["DMBJ38"]
+    assert result.safe_to_retrieve is True
+
+
+def test_context_resolver_uses_previous_products_for_price_comparison() -> None:
+    result = context_resolver.resolve_context(
+        user_message="Which one is cheaper?",
+        conversation_id=1,
+        loaded_state=_state(),
+        workflow="catalog",
+        extracted_filters={},
+    )
+
+    assert result.context_type == "price_compare"
+    assert result.context_used is True
+    assert result.safe_to_retrieve is True
+    assert result.resolved_product_anchor_ids == ["p1", "p2"]
+
+
+def test_context_resolver_uses_previous_products_for_related_products() -> None:
+    result = context_resolver.resolve_context(
+        user_message="Show me similar products",
+        conversation_id=1,
+        loaded_state=_state(),
+        workflow="catalog",
+        extracted_filters={},
+    )
+
+    assert result.context_type == "related_products"
+    assert result.context_used is True
+    assert result.safe_to_retrieve is True
+    assert result.resolved_product_anchor_ids == ["p1", "p2"]
+
+
+def test_context_resolver_clarifies_stale_pagination_request() -> None:
+    result = context_resolver.resolve_context(
+        user_message="Show more",
+        conversation_id=1,
+        loaded_state=_state(last_display_offset=20, last_result_count=30),
+        workflow="catalog",
+        extracted_filters={},
+        client_action="catalog_pagination",
+        client_action_payload={"display_offset": 10, "display_limit": 10, "query_cache_key": "cache-key"},
+    )
+
+    assert result.context_type == "pagination"
+    assert result.should_clarify is True
+    assert result.clarification_reason == "pagination_stale"
+    assert result.safe_to_retrieve is False
+
+
+def test_context_resolver_resolves_compare_by_index() -> None:
+    result = context_resolver.resolve_context(
+        user_message="Compare the first and third one",
+        conversation_id=1,
+        loaded_state=_state(
+            last_product_ids=["p1", "p2", "p3"],
+            displayed_products=[
+                {
+                    "position": 1,
+                    "product_id": "p1",
+                    "sku": "A1",
+                    "master_code": "A1",
+                    "name": "Titanium Labret",
+                },
+                {
+                    "position": 2,
+                    "product_id": "p2",
+                    "sku": "B2",
+                    "master_code": "B2",
+                    "name": "Steel Labret",
+                },
+                {
+                    "position": 3,
+                    "product_id": "p3",
+                    "sku": "C3",
+                    "master_code": "C3",
+                    "name": "Gold Labret",
+                },
+            ],
+        ),
+        workflow="catalog",
+        extracted_filters={},
+    )
+
+    assert result.context_type == "compare_reference"
+    assert result.safe_to_retrieve is True
+    assert result.resolved_product_anchor_ids == ["p1", "p3"]
+    assert result.selected_product_indices == [0, 2]

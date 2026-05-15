@@ -47,6 +47,9 @@ def load(raw: Any) -> Dict[str, Any]:
         "task_id": task_id,
         "clarification_count": max(0, min(20, count)),
         "last_clarification_reason": _clean_text(raw.get("last_clarification_reason"), limit=120),
+        "last_context_type": _clean_text(raw.get("last_context_type"), limit=80),
+        "last_missing_slot": _clean_text(raw.get("last_missing_slot"), limit=80),
+        "answered_missing_slot": bool(raw.get("answered_missing_slot")),
         "previous_missing_slots": _clean_missing_slots(raw.get("previous_missing_slots")),
         "previous_user_answer": _clean_text(raw.get("previous_user_answer"), limit=500),
         "merged_into_search_plan": bool(raw.get("merged_into_search_plan")),
@@ -91,6 +94,8 @@ def record_clarification(
     task_id: str,
     reason: str,
     missing_slots: Sequence[str] | None = None,
+    context_type: str = "",
+    missing_slot: str = "",
 ) -> Dict[str, Any]:
     existing = load(raw)
     same_task = bool(existing and str(existing.get("task_id") or "") == str(task_id or ""))
@@ -99,6 +104,9 @@ def record_clarification(
         "task_id": _clean_text(task_id, limit=80),
         "clarification_count": count + 1,
         "last_clarification_reason": _clean_text(reason, limit=120),
+        "last_context_type": _clean_text(context_type, limit=80),
+        "last_missing_slot": _clean_text(missing_slot, limit=80),
+        "answered_missing_slot": False,
         "previous_missing_slots": _clean_missing_slots(list(missing_slots or [])),
         "previous_user_answer": str(existing.get("previous_user_answer") or "") if same_task else "",
         "merged_into_search_plan": False,
@@ -111,4 +119,5 @@ def record_answer_merged(raw: Any, *, user_answer: str) -> Dict[str, Any]:
         return {}
     existing["previous_user_answer"] = _clean_text(user_answer, limit=500)
     existing["merged_into_search_plan"] = True
+    existing["answered_missing_slot"] = True
     return existing

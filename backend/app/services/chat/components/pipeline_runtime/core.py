@@ -217,19 +217,9 @@ class ComponentPipeline(
                     answerability=str(getattr(decision_state, "answerability", "none") or "none"),
                 ),
             )
-            context_price_followup_possible = bool(
-                workflow == "catalog"
-                and list(debug_meta.get("conversation_last_product_ids") or [])
-                and str(getattr(decision_state, "missing_slot", "") or "").strip().lower() == "product_anchor"
-                and str(getattr(decision_state, "pending_task_type", "") or "").strip().lower()
-                in {"compare_price", "find_cheaper_products"}
-            )
-            context_related_followup_possible = bool(
-                workflow == "catalog"
-                and list(debug_meta.get("conversation_last_product_ids") or [])
-                and self._looks_like_related_product_followup(text=text)
-            )
             product_anchor_present = bool(debug_meta.get("catalog_product_anchor_present"))
+            context_type = str(debug_meta.get("context_type") or "none").strip().lower()
+            context_clarification_reason = str(debug_meta.get("context_clarification_reason") or "").strip().lower()
             unresolved_attributes = [
                 dict(item)
                 for item in list(debug_meta.get("unresolved_attributes") or [])
@@ -241,8 +231,17 @@ class ComponentPipeline(
                 and not catalog_pagination_requested
                 and bool(debug_meta.get("context_requires_clarification"))
                 and float(debug_meta.get("context_confidence") or 0.0) < 0.8
+                and not (
+                    context_type == "pending_task_resume"
+                    and context_clarification_reason == "product_anchor_missing"
+                )
             ):
-                state.decision.ambiguity_reason = "context_needs_clarification"
+                if context_clarification_reason == "pagination_stale":
+                    state.decision.ambiguity_reason = "pagination_stale"
+                elif context_clarification_reason == "pagination_unavailable":
+                    state.decision.ambiguity_reason = "pagination_stale"
+                else:
+                    state.decision.ambiguity_reason = "context_needs_clarification"
                 state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.CLARIFY]
                 state.presentation.canonical_products = []
                 state.catalog.product_ids = []
@@ -251,9 +250,19 @@ class ComponentPipeline(
                 state.retrieval.source = ComponentSource.ERROR
                 debug_meta["catalog_retrieval_blocked_reason"] = "context_resolution_clarify"
                 debug_meta["clarify_reason"] = state.decision.ambiguity_reason
+                if context_clarification_reason == "pagination_stale":
+                    debug_meta["catalog_pagination_requested"] = True
+                    debug_meta["catalog_pagination_error"] = "stale_pagination_state"
+                    debug_meta["catalog_pagination_state_offset"] = int(catalog_pagination_state_offset or 0)
+                    debug_meta["catalog_pagination_query_text"] = str(text or "").strip()
+                elif context_clarification_reason == "pagination_unavailable":
+                    debug_meta["catalog_pagination_requested"] = True
+                    debug_meta["catalog_pagination_error"] = "missing_pagination_state"
+                    debug_meta["catalog_pagination_state_offset"] = int(catalog_pagination_state_offset or 0)
+                    debug_meta["catalog_pagination_query_text"] = str(text or "").strip()
                 focus = (
                     "pagination"
-                    if str(debug_meta.get("context_resolved_intent") or "") == "pagination"
+                    if context_type == "pagination" or str(debug_meta.get("context_resolved_intent") or "") == "pagination"
                     else "product_anchor"
                 )
                 debug_meta["clarify_missing_slots"] = [focus]
@@ -300,8 +309,7 @@ class ComponentPipeline(
                 workflow == "catalog"
                 and not state.decision.ambiguity_reason
                 and not catalog_pagination_requested
-                and not context_price_followup_possible
-                and not context_related_followup_possible
+                and not bool(debug_meta.get("bypass_missing_anchor_clarify"))
                 and not dict(getattr(detail, "attribute_filters", {}) or {})
                 and "product_anchor" in str(getattr(decision_state, "missing_slot", "") or "").strip().lower()
                 and (

@@ -326,16 +326,23 @@ class PipelineSetupMixin:
                 workflow=str(route_decision.workflow or ""),
                 extracted_filters=dict(getattr(detail, "attribute_filters", {}) or {}),
                 requested_fields=list(getattr(detail, "requested_fields", []) or []),
+                semantic_hints=list(getattr(detail, "semantic_hints", []) or []),
+                is_detail_request=bool(getattr(detail, "is_detail_request", False)),
                 sku_tokens=unique_sku_tokens,
                 client_action=client_action_norm,
                 client_action_payload=client_action_payload,
+                decision_state=decision_state_override,
+                normalized_text=normalized_text,
             )
             context_debug = context_result.to_debug_dict()
             contextual_filters_applied = False
             contextual_filter_reason = ""
-            if context_result.pagination_action and not catalog_pagination_requested:
+            contextual_strictness: Dict[str, str] = {}
+            catalog_pagination_requested = False
+            catalog_pagination_stale_requested = False
+            if context_result.context_type == "pagination" and context_result.pagination_action and context_result.safe_to_retrieve:
                 pagination_action = dict(context_result.pagination_action or {})
-                catalog_pagination_requested = bool(context_result.context_used)
+                catalog_pagination_requested = True
                 catalog_pagination_query_key = str(pagination_action.get("query_cache_key") or catalog_pagination_query_key)
                 action_ids = [
                     str(item).strip()
@@ -346,12 +353,19 @@ class PipelineSetupMixin:
                     catalog_pagination_query_ids = list(action_ids)
                 catalog_pagination_offset = int(pagination_action.get("display_offset") or catalog_pagination_offset)
                 catalog_pagination_limit = int(pagination_action.get("display_limit") or catalog_pagination_limit)
+            elif context_result.context_type == "pagination" and context_result.should_clarify:
+                catalog_pagination_stale_requested = bool(context_result.clarification_reason == "pagination_stale")
             if context_result.resolved_filters and context_result.context_action in {"reuse", "update", "reset"}:
                 current_filters = dict(getattr(detail, "attribute_filters", {}) or {})
                 if dict(context_result.resolved_filters or {}) != current_filters:
                     detail = _replace_detail(detail, attribute_filters=dict(context_result.resolved_filters or {}))
                     contextual_filters_applied = bool(context_result.context_used and context_result.confidence >= context_resolver.CONTEXT_USE_THRESHOLD)
                     contextual_filter_reason = str(context_result.reason or context_result.context_action)
+            if context_result.context_type == "filter_refinement" and context_result.safe_to_retrieve:
+                for key in dict(context_result.debug.get("current_filters") or {}).keys():
+                    clean_key = str(key or "").strip().lower()
+                    if clean_key:
+                        contextual_strictness[clean_key] = "required"
             if context_result.active_product and context_result.confidence >= context_resolver.CONTEXT_USE_THRESHOLD:
                 active_product = dict(context_result.active_product or {})
                 active_sku = str(active_product.get("sku") or active_product.get("master_code") or "").strip()
@@ -372,7 +386,13 @@ class PipelineSetupMixin:
                 text=text,
                 detail=detail,
                 sku_tokens=unique_sku_tokens,
-                contextual_filters_applied=bool(contextual_filters_applied or context_result.active_product),
+                contextual_filters_applied=bool(
+                    contextual_filters_applied
+                    or context_result.active_product
+                    or context_result.bypass_missing_anchor_clarify
+                    or list(context_result.resolved_product_anchor_ids or [])
+                    or list(context_result.resolved_product_anchor_skus or [])
+                ),
             )
 
             if catalog_pagination_requested:
@@ -409,10 +429,30 @@ class PipelineSetupMixin:
             pending_task_cleared = False
             pending_task_advanced = False
             if conversation_state_enabled and state_working is not None and pending_task:
-                if _pending_task_is_filled_by_current_turn(
+                if bool(context_result.resume_pending_task):
+                    pending_task_resume = dict(pending_task)
+                    state_working = conversation_state.clear_pending_task(state_working)
+                    pending_task_cleared = True
+                    if route_decision.workflow != "catalog":
+                        route_decision = replace(
+                            route_decision,
+                            workflow="catalog",
+                            source=ComponentSource.SQL,
+                            needs_products=True,
+                            needs_knowledge=False,
+                            needs_clarification=False,
+                            store_overview_request=False,
+                            knowledge_query="",
+                            reason="pending_task_resumed",
+                            confidence=max(float(route_decision.confidence or 0.0), 0.8),
+                        )
+                elif (
+                    context_result.context_type in {"detail_reference", "explicit_sku"}
+                    and _pending_task_is_filled_by_current_turn(
                     pending_task=pending_task,
                     decision_state=decision_state_override,
                     product_anchor_present=product_anchor_present,
+                    )
                 ):
                     pending_task_resume = dict(pending_task)
                     state_working = conversation_state.clear_pending_task(state_working)
@@ -570,6 +610,8 @@ class PipelineSetupMixin:
                 or getattr(decision_state_override, "internal_workflow", "")
                 or workflow
             )
+            effective_strictness = dict(contextual_strictness or {})
+            effective_strictness.update(dict(query_understanding_strictness or {}))
             search_plan = build_search_plan(
                 user_text=text,
                 workflow=workflow,
@@ -586,7 +628,7 @@ class PipelineSetupMixin:
                     if query_understanding_uses_context
                     else (contextual_filter_reason or str(context_result.reason or ""))
                 ),
-                strictness=query_understanding_strictness,
+                strictness=effective_strictness,
                 unresolved_constraints=query_understanding_unresolved,
                 semantic_query=query_understanding_semantic_query,
                 uses_previous_context=query_understanding_uses_context,
@@ -617,17 +659,31 @@ class PipelineSetupMixin:
                     "conversation_state_written": False,
                     "conversation_state_filter_merge_applied": bool(contextual_filters_applied),
                     "conversation_state_filter_merge_reason": str(contextual_filter_reason or ""),
+                    "context_resolver_used": True,
                     "context_resolution": context_debug,
+                    "context_type": str(context_result.context_type or "none"),
+                    "uses_previous_context": bool(context_result.uses_previous_context),
                     "context_used": bool(context_result.context_used),
                     "context_action": str(context_result.context_action or ""),
                     "context_confidence": float(context_result.confidence or 0.0),
                     "context_reason": str(context_result.reason or ""),
                     "context_reset_reason": str(context_result.reset_reason or ""),
                     "context_resolved_intent": str(context_result.resolved_intent or ""),
+                    "context_merged_query": str(context_result.merged_query or ""),
+                    "merged_attribute_filters": dict(context_result.merged_attribute_filters or {}),
+                    "context_resolved_product_anchor_ids": list(context_result.resolved_product_anchor_ids or []),
+                    "context_resolved_product_anchor_skus": list(context_result.resolved_product_anchor_skus or []),
+                    "context_selected_product_index": context_result.selected_product_index,
+                    "context_selected_product_indices": list(context_result.selected_product_indices or []),
+                    "resume_pending_task": bool(context_result.resume_pending_task),
+                    "bypass_missing_anchor_clarify": bool(context_result.bypass_missing_anchor_clarify),
+                    "safe_to_retrieve": bool(context_result.safe_to_retrieve),
+                    "context_should_clarify": bool(context_result.should_clarify),
+                    "context_clarification_reason": str(context_result.clarification_reason or ""),
                     "context_active_product": dict(context_result.active_product or {}),
                     "context_referenced_products": [dict(item) for item in list(context_result.referenced_products or [])],
                     "context_pending_task_action": dict(context_result.pending_task_action or {}),
-                    "context_requires_clarification": bool(context_result.context_action == "clarify"),
+                    "context_requires_clarification": bool(context_result.should_clarify or context_result.context_action == "clarify"),
                     "pending_task_loaded": bool(pending_task),
                     "pending_task_resumed": bool(pending_task_resume),
                     "pending_task_cleared": bool(pending_task_cleared),

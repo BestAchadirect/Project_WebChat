@@ -6,13 +6,21 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from app.services.chat.runtime import clarification_state
 
-CONVERSATION_STATE_VERSION = 6
+CONVERSATION_STATE_VERSION = 7
 MAX_PRODUCT_IDS = 10
 MAX_PRODUCT_SKUS = 10
 MAX_SOURCE_IDS = 10
 MAX_TONE_RECENT = 8
 MAX_PENDING_TASK_TURNS = 2
 MAX_DISPLAYED_PRODUCTS = 10
+DISPLAYED_PRODUCT_DESCRIPTOR_KEYS = (
+    "material",
+    "color",
+    "gauge",
+    "length",
+    "threading",
+    "jewelry_type",
+)
 
 
 def _default_state() -> Dict[str, Any]:
@@ -241,6 +249,18 @@ def _clean_confidence(value: Any) -> float:
     return max(0.0, min(1.0, confidence))
 
 
+def _clean_descriptor_map(value: Any) -> Dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: Dict[str, str] = {}
+    for key in DISPLAYED_PRODUCT_DESCRIPTOR_KEYS:
+        raw = value.get(key)
+        clean_value = _clean_text(raw)
+        if clean_value:
+            cleaned[key] = clean_value
+    return cleaned
+
+
 def _clean_active_product(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -302,6 +322,7 @@ def _clean_displayed_products(value: Any) -> List[Dict[str, Any]]:
                 "sku": sku,
                 "master_code": master_code,
                 "name": name[:250],
+                "descriptors": _clean_descriptor_map(item.get("descriptors")),
             }
         )
         if len(displayed) >= MAX_DISPLAYED_PRODUCTS:
@@ -701,6 +722,14 @@ def displayed_products_from_cards(cards: Optional[Iterable[Any]]) -> List[Dict[s
         attrs = getattr(card, "attributes", {}) or {}
         if not isinstance(attrs, dict):
             attrs = {}
+        descriptors: Dict[str, str] = {}
+        for key in DISPLAYED_PRODUCT_DESCRIPTOR_KEYS:
+            raw = attrs.get(key)
+            if raw is None:
+                raw = getattr(card, key, None)
+            value = _clean_text(raw)
+            if value:
+                descriptors[key] = value
         displayed.append(
             {
                 "position": index,
@@ -708,6 +737,7 @@ def displayed_products_from_cards(cards: Optional[Iterable[Any]]) -> List[Dict[s
                 "sku": _clean_text(getattr(card, "sku", None)),
                 "master_code": _clean_text(attrs.get("master_code") or getattr(card, "object_id", None)),
                 "name": _clean_text(getattr(card, "name", None) or getattr(card, "title", None)),
+                "descriptors": descriptors,
             }
         )
     return _clean_displayed_products(displayed)

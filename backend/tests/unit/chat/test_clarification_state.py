@@ -46,3 +46,18 @@ def test_clarification_state_marks_answer_merged() -> None:
 
     assert merged["previous_user_answer"] == "the black titanium one"
     assert merged["merged_into_search_plan"] is True
+
+
+def test_clarification_state_tracks_context_metadata() -> None:
+    state = clarification_state.record_clarification(
+        {},
+        task_id="clarify:test",
+        reason="context_needs_clarification",
+        missing_slots=["product_anchor"],
+        context_type="detail_reference",
+        missing_slot="product_anchor",
+    )
+
+    assert state["last_context_type"] == "detail_reference"
+    assert state["last_missing_slot"] == "product_anchor"
+    assert state["answered_missing_slot"] is False

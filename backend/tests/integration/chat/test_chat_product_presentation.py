@@ -409,6 +409,142 @@ async def test_component_pipeline_catalog_pagination_falls_back_to_conversation_
 
 
 @pytest.mark.asyncio
+async def test_component_pipeline_text_show_more_uses_previous_pagination_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    products = [
+        _canonical_product(
+            sku=f"TI-{idx}",
+            title=f"Titanium {idx}",
+            master_code=f"TI-{idx}",
+        )
+        for idx in range(1, 13)
+    ]
+    full_ids = [str(item.product_id) for item in products]
+
+    class _RedisStub:
+        async def get_json(self, key):
+            if key == "chat:components:query_ids:text-pagination":
+                return {
+                    "product_ids": list(full_ids),
+                    "source": "vector",
+                    "result_count": len(full_ids),
+                }
+            return None
+
+        async def set_json(self, key, value, ttl_seconds=0):
+            return None
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=SimpleNamespace(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_load_conversation_state(*, conversation_id):
+        del conversation_id
+        return {
+            "version": conversation_state.CONVERSATION_STATE_VERSION,
+            "last_workflow": "catalog",
+            "last_refined_query": "Show me titanium jewelry",
+            "last_user_query": "Show me titanium jewelry",
+            "last_attribute_filters": {"material": "Titanium"},
+            "last_requested_fields": [],
+            "last_query_cache_key": "chat:components:query_ids:text-pagination",
+            "last_query_product_ids": list(full_ids),
+            "last_result_count": len(full_ids),
+            "last_display_offset": 0,
+            "last_display_limit": 10,
+            "last_product_ids": list(full_ids[:10]),
+            "last_product_skus": [item.sku for item in products[:10]],
+            "last_currency": "",
+            "last_route": "catalog",
+            "last_answer_source_ids": [],
+            "last_inventory_claim": {"sku": "", "stock_status": "", "last_stock_sync_at": ""},
+            "tone_recent": [],
+            "updated_at": "",
+        }
+
+    async def fake_resolve(*, product_ids, component_types, component_cache, **kwargs):
+        selected = [item for item in products if str(item.product_id) in {str(raw) for raw in product_ids}]
+        return selected, {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True, raising=False)
+    monkeypatch.setattr(pipeline, "_load_conversation_state", fake_load_conversation_state)
+    monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+
+    result = await pipeline.run(
+        request=ChatRequest(
+            user_id="guest-1",
+            message="Show more",
+            locale="en-US",
+        ),
+        conversation_id=52,
+        run_id="run-text-pagination",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    card_ids = [str(card.id) for card in result.response.product_carousel]
+    assert result.debug.get("context_type") == "pagination"
+    assert result.debug.get("catalog_pagination_requested") is True
+    assert card_ids == [str(products[10].product_id), str(products[11].product_id)]
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_text_show_more_without_state_clarifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _RedisStub:
+        async def get_json(self, key):
+            return None
+
+        async def set_json(self, key, value, ttl_seconds=0):
+            return None
+
+    class _CatalogStub:
+        async def structured_search(self, **kwargs):
+            raise AssertionError("missing pagination state should not run structured search")
+
+        async def structured_count(self, **kwargs):
+            return 0
+
+        async def vector_search(self, **kwargs):
+            raise AssertionError("missing pagination state should not run vector search")
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_load_conversation_state(*, conversation_id):
+        del conversation_id
+        return {"version": conversation_state.CONVERSATION_STATE_VERSION}
+
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True, raising=False)
+    monkeypatch.setattr(pipeline, "_load_conversation_state", fake_load_conversation_state)
+
+    result = await pipeline.run(
+        request=ChatRequest(
+            user_id="guest-1",
+            message="Show more",
+            locale="en-US",
+        ),
+        conversation_id=53,
+        run_id="run-text-pagination-missing",
+        route_decision_override=_workflow_decision("catalog"),
+    )
+
+    component_types = [component.type.value for component in list(result.response.components or [])]
+    assert result.debug.get("context_type") == "pagination"
+    assert result.debug.get("catalog_pagination_error") == "missing_pagination_state"
+    assert "clarify" in component_types
+    assert result.response.product_carousel == []
+
+
+@pytest.mark.asyncio
 async def test_prepare_pipeline_run_treats_see_more_as_catalog_pagination_when_scope_matches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1858,6 +1994,142 @@ async def test_component_pipeline_anchorless_sample_request_clarifies_instead_of
     assert "product_cards" not in component_types
     assert "clarify" in component_types
     assert result.debug.get("catalog_product_anchor_present") is False
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_cheapest_followup_uses_previous_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _canonical_product(sku="CMP-1", title="Option One", master_code="CMP-1")
+    second = _canonical_product(sku="CMP-2", title="Option Two", master_code="CMP-2")
+    first.price = Decimal("12.00")
+    second.price = Decimal("8.00")
+
+    class _CatalogStub:
+        async def structured_search(self, **kwargs):
+            raise AssertionError("cheapest follow-up should use previous resolved cards")
+
+        async def structured_count(self, **kwargs):
+            return 2
+
+        async def vector_search(self, **kwargs):
+            raise AssertionError("cheapest follow-up should not run vector search")
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=SimpleNamespace(),
+    )
+
+    async def fake_load_conversation_state(*, conversation_id):
+        del conversation_id
+        return {
+            "version": conversation_state.CONVERSATION_STATE_VERSION,
+            "last_workflow": "catalog",
+            "last_product_ids": [str(first.product_id), str(second.product_id)],
+            "displayed_products": [
+                {"position": 1, "product_id": str(first.product_id), "sku": first.sku, "master_code": "CMP-1", "name": "Option One"},
+                {"position": 2, "product_id": str(second.product_id), "sku": second.sku, "master_code": "CMP-2", "name": "Option Two"},
+            ],
+        }
+
+    async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
+        selected = [item for item in [first, second] if str(item.product_id) in {str(raw) for raw in product_ids}]
+        return selected, {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True, raising=False)
+    monkeypatch.setattr(pipeline, "_load_conversation_state", fake_load_conversation_state)
+    monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Which one is cheaper?", locale="en-US"),
+        conversation_id=60,
+        run_id="run-cheapest-followup",
+        route_decision_override=_workflow_decision("catalog"),
+        detail_override=SimpleNamespace(
+            requested_fields=[],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=False,
+            semantic_hints=[],
+            clarify_focus="",
+        ),
+    )
+
+    assert result.debug.get("context_type") == "price_compare"
+    assert result.debug.get("context_product_followup_used") is True
+    assert len(result.response.product_carousel or []) == 1
+    assert result.response.product_carousel[0].sku == second.sku
+    assert "8.00 usd" in result.response.reply_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_related_followup_returns_related_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = _canonical_product(sku="REL-1", title="Seed Product", master_code="REL-1")
+    related = _canonical_product(sku="REL-2", title="Related Product", master_code="REL-2")
+    related_two = _canonical_product(sku="REL-3", title="Related Product 2", master_code="REL-3")
+
+    class _CatalogStub:
+        async def structured_search(self, **kwargs):
+            raise AssertionError("related follow-up should use previous resolved cards")
+
+        async def structured_count(self, **kwargs):
+            return 1
+
+        async def vector_search(self, **kwargs):
+            raise AssertionError("related follow-up should not run vector search")
+
+        async def lexical_search(self, **kwargs):
+            return SimpleNamespace(cards=[seed, related, related_two])
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=SimpleNamespace(search=lambda *args, **kwargs: []),
+        redis_cache=SimpleNamespace(),
+    )
+
+    async def fake_load_conversation_state(*, conversation_id):
+        del conversation_id
+        return {
+            "version": conversation_state.CONVERSATION_STATE_VERSION,
+            "last_workflow": "catalog",
+            "last_product_ids": [str(seed.product_id)],
+            "displayed_products": [
+                {"position": 1, "product_id": str(seed.product_id), "sku": seed.sku, "master_code": "REL-1", "name": "Seed Product"},
+            ],
+        }
+
+    async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
+        selected = [item for item in [seed] if str(item.product_id) in {str(raw) for raw in product_ids}]
+        return selected, {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True, raising=False)
+    monkeypatch.setattr(pipeline, "_load_conversation_state", fake_load_conversation_state)
+    monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Show me similar products", locale="en-US"),
+        conversation_id=61,
+        run_id="run-related-followup",
+        route_decision_override=_workflow_decision("catalog"),
+        detail_override=SimpleNamespace(
+            requested_fields=[],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=False,
+            semantic_hints=[],
+            clarify_focus="",
+        ),
+    )
+
+    assert result.debug.get("context_type") == "related_products"
+    assert result.debug.get("context_related_product_followup_used") is True
+    assert len(result.response.product_carousel or []) == 2
+    assert {card.sku for card in result.response.product_carousel} == {"REL-2", "REL-3"}
 
 
 def test_product_anchor_helper_keeps_contextual_follow_ups_and_sample_images() -> None:

@@ -706,3 +706,241 @@ async def test_component_pipeline_ambiguous_product_pronoun_clarifies(
     assert result.debug.get("context_requires_clarification") is True
     assert result.debug.get("clarify_reason") == "context_needs_clarification"
     assert any(component.type.value == "clarify" for component in result.response.components)
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_answers_first_item_detail_from_previous_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True)
+    product = canonical_product(
+        sku="LAB-1",
+        name="Titanium Labret",
+        attributes={"master_code": "LAB-1", "material": "titanium", "jewelry_type": "labret"},
+    )
+
+    class CatalogStub:
+        async def structured_search(self, **kwargs):
+            raise AssertionError("indexed detail follow-up should not run catalog search")
+
+        async def structured_count(self, **kwargs):
+            return 1
+
+        async def vector_search(self, **kwargs):
+            raise AssertionError("indexed detail follow-up should not run vector search")
+
+    pipeline = ComponentPipeline(
+        db=ConversationStateDB(
+            {
+                "version": conversation_state.CONVERSATION_STATE_VERSION,
+                "last_product_ids": [str(product.product_id), "p2"],
+                "displayed_products": [
+                    {
+                        "position": 1,
+                        "product_id": str(product.product_id),
+                        "sku": "LAB-1",
+                        "master_code": "LAB-1",
+                        "name": "Titanium Labret",
+                    },
+                    {
+                        "position": 2,
+                        "product_id": "p2",
+                        "sku": "LAB-2",
+                        "master_code": "LAB-2",
+                        "name": "Steel Labret",
+                    },
+                ],
+            }
+        ),
+        catalog_search=CatalogStub(),
+        knowledge_retrieval=KnowledgeStub(),
+        redis_cache=RedisStub(),
+    )
+
+    async def fake_resolve(*, product_ids, component_types, redis_cache):
+        assert product_ids == [str(product.product_id)]
+        return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="How much is the first one?", locale="en-US"),
+        conversation_id=88,
+        run_id="run-first-item-detail",
+        route_decision_override=_workflow_decision(),
+        detail_override=DetailQuery(
+            requested_fields=[],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=True,
+            semantic_hints=[],
+            clarify_focus="",
+        ),
+    )
+
+    assert result.debug.get("context_type") == "detail_reference"
+    assert result.debug.get("context_detail_followup_used") is True
+    assert "12.50 usd" in result.response.reply_text.lower()
+    assert not any(component.type.value == "clarify" for component in result.response.components)
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_compares_previous_products_by_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True)
+    first = canonical_product(
+        sku="LAB-1",
+        name="Titanium Labret",
+        attributes={"master_code": "LAB-1", "material": "titanium", "jewelry_type": "labret"},
+    )
+    second = canonical_product(
+        sku="LAB-2",
+        name="Steel Labret",
+        attributes={"master_code": "LAB-2", "material": "steel", "jewelry_type": "labret"},
+    )
+    third = canonical_product(
+        sku="LAB-3",
+        name="Gold Labret",
+        attributes={"master_code": "LAB-3", "material": "gold", "jewelry_type": "labret"},
+    )
+
+    class CatalogStub:
+        async def structured_search(self, **kwargs):
+            raise AssertionError("compare-by-index should use resolved product ids, not structured search")
+
+        async def structured_count(self, **kwargs):
+            return 3
+
+        async def vector_search(self, **kwargs):
+            raise AssertionError("compare-by-index should not run vector search")
+
+    pipeline = ComponentPipeline(
+        db=ConversationStateDB(
+            {
+                "version": conversation_state.CONVERSATION_STATE_VERSION,
+                "last_product_ids": [str(first.product_id), str(second.product_id), str(third.product_id)],
+                "displayed_products": [
+                    {"position": 1, "product_id": str(first.product_id), "sku": "LAB-1", "master_code": "LAB-1", "name": "Titanium Labret"},
+                    {"position": 2, "product_id": str(second.product_id), "sku": "LAB-2", "master_code": "LAB-2", "name": "Steel Labret"},
+                    {"position": 3, "product_id": str(third.product_id), "sku": "LAB-3", "master_code": "LAB-3", "name": "Gold Labret"},
+                ],
+            }
+        ),
+        catalog_search=CatalogStub(),
+        knowledge_retrieval=KnowledgeStub(),
+        redis_cache=RedisStub(),
+    )
+
+    async def fake_resolve(*, product_ids, component_types, redis_cache):
+        assert product_ids == [str(first.product_id), str(third.product_id)]
+        return [first, third], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Compare the first and third one", locale="en-US"),
+        conversation_id=89,
+        run_id="run-compare-by-index",
+        route_decision_override=_workflow_decision(),
+        detail_override=DetailQuery(
+            requested_fields=[],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=False,
+            semantic_hints=[],
+            clarify_focus="",
+        ),
+    )
+
+    assert result.debug.get("context_type") == "compare_reference"
+    assert result.debug.get("compare_request_context_used") is True
+    assert result.debug.get("detail_compare_requested") is True
+    assert "i found 2 products to compare" in result.response.reply_text.lower()
+    assert len(result.response.product_carousel or []) == 2
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_strict_follow_up_preserves_previous_product_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "CHAT_CONVERSATION_STATE_ENABLED", True)
+    product = canonical_product(
+        sku="NR-BLACK-TI-1",
+        name="Black Titanium Nose Ring",
+        attributes={
+            "master_code": "NR-BLACK-TI-1",
+            "material": "titanium",
+            "color": "black",
+            "jewelry_type": "nose ring",
+        },
+    )
+    captured: dict[str, object] = {}
+
+    class CatalogStub:
+        async def vector_search(self, **kwargs):
+            captured["attribute_filters"] = dict(
+                kwargs.get("attribute_filters")
+                or kwargs.get("filters")
+                or kwargs.get("hard_filters")
+                or {}
+            )
+            return SimpleNamespace(
+                cards=[product],
+                product_ids=[str(product.product_id)],
+                best_distance=0.1,
+                distance_by_id={str(product.product_id): 0.1},
+            )
+
+        async def structured_search(self, **kwargs):
+            captured["attribute_filters"] = dict(kwargs["attribute_filters"])
+            return (
+                SimpleNamespace(product_ids=[str(product.product_id)]),
+                {},
+            )
+
+        async def structured_count(self, **kwargs):
+            return 1
+
+        async def smart_search(self, **kwargs):
+            raise AssertionError("strict follow-up should not need semantic fallback")
+
+    pipeline = ComponentPipeline(
+        db=ConversationStateDB(
+            {
+                "version": conversation_state.CONVERSATION_STATE_VERSION,
+                "last_attribute_filters": {"jewelry_type": "nose ring"},
+            }
+        ),
+        catalog_search=CatalogStub(),
+        knowledge_retrieval=KnowledgeStub(),
+        redis_cache=RedisStub(),
+    )
+
+    async def fake_resolve(*, product_ids, component_types, redis_cache):
+        return [product], {"field_union_size": 4, "db_round_trips": 0, "redis_cache_hits": 0}
+
+    monkeypatch.setattr(pipeline._field_resolver, "resolve", fake_resolve)
+
+    result = await pipeline.run(
+        request=ChatRequest(user_id="guest-1", message="Only black titanium", locale="en-US"),
+        conversation_id=90,
+        run_id="run-strict-follow-up",
+        route_decision_override=_workflow_decision(),
+        detail_override=DetailQuery(
+            requested_fields=[],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=False,
+            semantic_hints=[],
+            clarify_focus="",
+        ),
+    )
+
+    assert captured["attribute_filters"] == {
+        "jewelry_type": "nose ring",
+        "color": "black",
+        "material": "titanium",
+    }
+    assert result.debug.get("context_type") == "filter_refinement"
+    assert result.debug.get("conversation_state_filter_merge_applied") is True

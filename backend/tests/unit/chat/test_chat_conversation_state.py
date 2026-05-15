@@ -110,6 +110,42 @@ def test_apply_updates_store_extended_context_fields() -> None:
     assert state["active_product"]["product_id"] == "id-1"
     assert state["active_product"]["source"] == "single_result"
     assert state["displayed_products"][0]["position"] == 1
+    assert state["displayed_products"][0]["descriptors"] == {}
+
+
+def test_displayed_products_from_cards_persists_descriptor_subset() -> None:
+    card = type(
+        "Card",
+        (),
+        {
+            "id": "id-1",
+            "product_id": "id-1",
+            "sku": "SKU-1",
+            "name": "Titanium Labret",
+            "title": "Titanium Labret",
+            "attributes": {
+                "master_code": "SKU-1",
+                "material": "titanium",
+                "color": "black",
+                "gauge": "16g",
+                "length": "8mm",
+                "threading": "internally threaded",
+                "jewelry_type": "labret",
+                "ignored": "value",
+            },
+        },
+    )()
+
+    displayed = conversation_state.displayed_products_from_cards([card])
+
+    assert displayed[0]["descriptors"] == {
+        "material": "titanium",
+        "color": "black",
+        "gauge": "16g",
+        "length": "8mm",
+        "threading": "internally threaded",
+        "jewelry_type": "labret",
+    }
 
 
 def test_split_state_round_trips_memory_and_continuation_fields() -> None:

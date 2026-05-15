@@ -306,9 +306,20 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             fields = self._requested_context_detail_fields(text=text, detail=detail)
             if not fields:
                 return False
+            context_type = str(debug_meta.get("context_type") or "").strip().lower()
+            if context_type not in {"detail_reference", "pending_task_resume", "explicit_sku"}:
+                return False
             active_product = dict(debug_meta.get("context_active_product") or {})
             active_product_id = str(active_product.get("product_id") or "").strip()
-            if (
+            resolved_ids = [
+                str(item or "").strip()
+                for item in list(debug_meta.get("context_resolved_product_anchor_ids") or [])
+                if str(item or "").strip()
+            ]
+            if resolved_ids:
+                product_ids = list(resolved_ids)
+                index = 0
+            elif (
                 active_product_id
                 and float(debug_meta.get("context_confidence") or 0.0) >= 0.8
             ):
@@ -322,7 +333,9 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
                 ]
                 if not product_ids:
                     return False
-                index = self._referenced_product_index(text=text)
+                index = debug_meta.get("context_selected_product_index")
+                if index is None:
+                    index = self._referenced_product_index(text=text)
                 if index is None:
                     if len(product_ids) != 1:
                         return False
@@ -400,6 +413,43 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             debug_meta: Dict[str, Any],
             spans: Dict[str, float],
         ) -> bool:
+            context_type = str(debug_meta.get("context_type") or "").strip().lower()
+            context_product_ids = [
+                str(item or "").strip()
+                for item in list(debug_meta.get("context_resolved_product_anchor_ids") or [])
+                if str(item or "").strip()
+            ]
+            if context_type == "compare_reference" and len(context_product_ids) >= 2:
+                compare_products, _resolver_meta = await self._resolve_products_with_metrics(
+                    product_ids=context_product_ids,
+                    component_types=[ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS],
+                    spans=spans,
+                    debug_meta=debug_meta,
+                )
+                compare_products = [product for product in list(compare_products or []) if product is not None]
+                if len(compare_products) < 2:
+                    return False
+                compare_reply = product_presentation.build_compare_product_reply(
+                    products=compare_products,
+                    user_text=text,
+                )
+                state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
+                state.presentation.canonical_products = list(compare_products)
+                state.catalog.product_ids = [self._card_identifier(product) for product in compare_products if self._card_identifier(product)]
+                state.catalog.query_product_ids = list(state.catalog.product_ids)
+                state.retrieval.result_count = len(compare_products)
+                state.retrieval.source = ComponentSource.SQL
+                state.catalog.pagination_has_more = False
+                debug_meta["compare_request_used"] = True
+                debug_meta["compare_request_context_used"] = True
+                debug_meta["compare_request_tokens"] = list(debug_meta.get("context_resolved_product_anchor_skus") or [])
+                debug_meta["compare_match_count"] = len(compare_products)
+                debug_meta["detail_reply_text"] = compare_reply
+                debug_meta["detail_carousel_msg"] = "I compared the matching products below."
+                debug_meta["detail_follow_ups"] = []
+                debug_meta["detail_compare_requested"] = True
+                return True
+
             compare_tokens = [
                 str(token or "").strip()
                 for token in list(dict.fromkeys([str(item).strip() for item in list(unique_sku_tokens or [])]))
@@ -487,11 +537,14 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
         ) -> bool:
             if dict(getattr(detail, "attribute_filters", {}) or {}):
                 return False
-            if not self._looks_like_context_price_followup(state=state, detail=detail):
+            context_type = str(debug_meta.get("context_type") or "").strip().lower()
+            if context_type and context_type != "price_compare":
+                return False
+            if not context_type and not self._looks_like_context_price_followup(state=state, detail=detail):
                 return False
             product_ids = [
                 str(item or "").strip()
-                for item in list(debug_meta.get("conversation_last_product_ids") or [])
+                for item in list(debug_meta.get("context_resolved_product_anchor_ids") or debug_meta.get("conversation_last_product_ids") or [])
                 if str(item or "").strip()
             ]
             if not product_ids:
@@ -541,11 +594,14 @@ class PipelineWorkflowCatalogMixin(PipelineCatalogSearchMixin, PipelineWorkflowD
             spans: Dict[str, float],
         ) -> bool:
             del detail
-            if not self._looks_like_related_product_followup(text=text):
+            context_type = str(debug_meta.get("context_type") or "").strip().lower()
+            if context_type and context_type != "related_products":
+                return False
+            if not context_type and not self._looks_like_related_product_followup(text=text):
                 return False
             product_ids = [
                 str(item or "").strip()
-                for item in list(debug_meta.get("conversation_last_product_ids") or [])
+                for item in list(debug_meta.get("context_resolved_product_anchor_ids") or debug_meta.get("conversation_last_product_ids") or [])
                 if str(item or "").strip()
             ]
             if not product_ids:

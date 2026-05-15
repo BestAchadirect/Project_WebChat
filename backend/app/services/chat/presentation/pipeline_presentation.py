@@ -791,6 +791,8 @@ class PipelinePresentationMixin:
                         task_id=task_id,
                         reason=reason,
                         missing_slots=missing_slots,
+                        context_type=str(debug_meta.get("context_type") or ""),
+                        missing_slot=str((missing_slots or [""])[0] or ""),
                     )
                     state_working = conversation_state.apply_clarification_state_update(
                         state_working,
