@@ -375,6 +375,46 @@ class AgentToolRegistry:
         page = args.page
         filters = self._normalize_filters(args.filters.to_filter_map() if args.filters is not None else None)
 
+        if filters:
+            try:
+                structured_result, _structured_meta = await self._catalog_search.structured_search(
+                    sku_token="",
+                    attribute_filters=dict(filters),
+                    limit=max_items,
+                    candidate_cap=min(400, max(max_items * 6, 40)),
+                    catalog_version=str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
+                    return_ids_only=False,
+                )
+                structured_cards = [
+                    card
+                    for card in list(getattr(structured_result, "cards", None) or [])
+                    if product_card_matches_filters(card, filters)
+                ]
+                if structured_cards:
+                    page_items, total_items, safe_page, total_pages = paginate_items(
+                        structured_cards,
+                        page=page,
+                        page_size=page_size,
+                        max_items=max_items,
+                    )
+                    return {
+                        **self._tool_envelope(
+                            tool_name=TOOL_SEARCH_PRODUCTS,
+                            status="ok",
+                            source="catalog_db",
+                        ),
+                        "query": args.query,
+                        "filters": dict(filters),
+                        "items": [self._product_payload(item) for item in page_items],
+                        "totalItems": total_items,
+                        "page": safe_page,
+                        "pageSize": page_size,
+                        "totalPages": total_pages,
+                        "retrievalMode": "structured",
+                    }
+            except Exception:
+                pass
+
         query_embedding = await llm_service.generate_embedding(args.query)
         candidate_limit = min(400, max(max_items * 6, page * page_size * 4, 40))
         search_result = await self._catalog_search.vector_search(
@@ -382,7 +422,22 @@ class AgentToolRegistry:
             limit=candidate_limit,
             candidate_limit=candidate_limit,
         )
-        if not search_result.cards:
+        vector_cards = list(search_result.cards or [])
+        retrieval_mode = "vector"
+        if not vector_cards:
+            lexical_search = getattr(self._catalog_search, "lexical_search", None)
+            if callable(lexical_search):
+                try:
+                    lexical_result = await lexical_search(
+                        query_text=args.query,
+                        limit=candidate_limit,
+                        candidate_limit=candidate_limit,
+                    )
+                    vector_cards = list(getattr(lexical_result, "cards", None) or [])
+                    retrieval_mode = "lexical_rescue"
+                except Exception:
+                    vector_cards = []
+        if not vector_cards:
             return {
                 **self._tool_envelope(
                     tool_name=TOOL_SEARCH_PRODUCTS,
@@ -396,9 +451,28 @@ class AgentToolRegistry:
                 "page": page,
                 "pageSize": page_size,
                 "totalPages": 1,
+                "retrievalMode": retrieval_mode,
             }
 
-        filtered = [card for card in search_result.cards if product_card_matches_filters(card, filters)]
+        filtered = [card for card in vector_cards if product_card_matches_filters(card, filters)]
+        if not filtered and retrieval_mode != "lexical_rescue":
+            lexical_search = getattr(self._catalog_search, "lexical_search", None)
+            if callable(lexical_search):
+                try:
+                    lexical_result = await lexical_search(
+                        query_text=args.query,
+                        limit=candidate_limit,
+                        candidate_limit=candidate_limit,
+                    )
+                    lexical_cards = list(getattr(lexical_result, "cards", None) or [])
+                    lexical_filtered = [
+                        card for card in lexical_cards if product_card_matches_filters(card, filters)
+                    ]
+                    if lexical_filtered:
+                        filtered = lexical_filtered
+                        retrieval_mode = "lexical_rescue"
+                except Exception:
+                    pass
         page_items, total_items, safe_page, total_pages = paginate_items(
             filtered,
             page=page,
@@ -419,6 +493,7 @@ class AgentToolRegistry:
             "page": safe_page,
             "pageSize": page_size,
             "totalPages": total_pages,
+            "retrievalMode": retrieval_mode,
         }
 
     async def get_product_details(self, args: GetProductDetailsArgs) -> Dict[str, Any]:

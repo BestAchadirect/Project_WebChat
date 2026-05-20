@@ -16,7 +16,7 @@ from app.services.chat.agentic.tool_registry import (
     SearchProductsArgs,
     AgentToolRegistry,
 )
-from app.services.chat.agentic.tool_handlers import paginate_items
+from app.services.chat.agentic.tool_handlers import paginate_items, product_card_matches_filters
 
 
 def test_search_products_args_accepts_page_size_alias() -> None:
@@ -75,6 +75,27 @@ def test_search_product_filters_to_filter_map_omits_none_values() -> None:
         "material": "Titanium",
         "theme": "celestial",
     }
+
+
+def test_product_card_matches_filters_uses_fuzzy_attribute_matching() -> None:
+    card = ProductCard(
+        id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        sku="BLACK-OPAL-LABRET",
+        legacy_sku=[],
+        name="Black Opal Labret",
+        price=14.0,
+        currency="USD",
+        stock_status="in_stock",
+        attributes={
+            "category": "Body Jewelry;;Labrets",
+            "jewelry_type": "Labret",
+            "color": "Black Opal",
+            "material": "Titanium",
+        },
+    )
+
+    assert product_card_matches_filters(card, {"category": "labrets", "color": "black"})
+    assert not product_card_matches_filters(card, {"material": "opal"})
 
 
 def test_get_product_details_args_validates_empty_sku() -> None:
@@ -347,6 +368,76 @@ async def test_search_products_returns_normalized_envelope(
     assert payload["filters"] == {"material": "titanium"}
     assert payload["totalItems"] == 1
     assert payload["items"][0]["sku"] == "TI-1"
+
+
+@pytest.mark.asyncio
+async def test_search_products_uses_lexical_rescue_when_vector_filters_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = AgentToolRegistry(db=object())
+
+    async def fake_embedding(query: str):
+        return [0.1, 0.2]
+
+    async def fake_vector_search(**kwargs):
+        return SimpleNamespace(
+            cards=[
+                ProductCard(
+                    id="44444444-4444-4444-4444-444444444444",
+                    sku="NOPE-1",
+                    legacy_sku=[],
+                    name="Plain Ring",
+                    price=19.0,
+                    currency="USD",
+                    stock_status="in_stock",
+                    attributes={"jewelry_type": "Ring", "color": "Silver"},
+                )
+            ]
+        )
+
+    async def fake_lexical_search(**kwargs):
+        return SimpleNamespace(
+            cards=[
+                ProductCard(
+                    id="55555555-5555-5555-5555-555555555555",
+                    sku="BOLAB-1",
+                    legacy_sku=[],
+                    name="Black Opal Labret",
+                    price=14.0,
+                    currency="USD",
+                    stock_status="in_stock",
+                    attributes={
+                        "category": "Body Jewelry;;Labrets",
+                        "jewelry_type": "Labret",
+                        "color": "Black Opal",
+                    },
+                )
+            ]
+        )
+
+    async def fake_structured_search(**kwargs):
+        return SimpleNamespace(cards=[]), {}
+
+    monkeypatch.setattr(llm_service, "generate_embedding", fake_embedding)
+    registry._catalog_search.vector_search = fake_vector_search  # type: ignore[attr-defined]
+    registry._catalog_search.lexical_search = fake_lexical_search  # type: ignore[attr-defined]
+    registry._catalog_search.structured_search = fake_structured_search  # type: ignore[attr-defined]
+
+    payload = await registry.search_products(
+        SearchProductsArgs.model_validate(
+            {
+                "query": "labrets black opal",
+                "filters": {"category": "labrets", "color": "black"},
+                "page": 1,
+                "pageSize": 5,
+            }
+        )
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["retrievalMode"] == "lexical_rescue"
+    assert payload["totalItems"] == 1
+    assert payload["items"][0]["sku"] == "BOLAB-1"
 
 
 @pytest.mark.asyncio

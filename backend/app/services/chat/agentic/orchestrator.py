@@ -25,6 +25,21 @@ from app.services.chat.runtime.search_plan import SearchPlan
 from app.utils.debug_log import debug_log as _debug_log
 
 
+_SEARCH_PRODUCT_FILTER_KEYS = {
+    "min_price",
+    "max_price",
+    "stock_status",
+    "category",
+    "body_part",
+    "feature",
+    "presentation_type",
+    "material",
+    "jewelry_type",
+    "color",
+    "theme",
+}
+
+
 class AgentRunOutcome(str, Enum):
     TOOL_SUCCESS = "tool_success"
     NO_TOOL_ANSWER = "no_tool_answer"
@@ -300,12 +315,254 @@ class AgentOrchestrator:
         lines.append("Do not answer supported product or policy facts from memory when a matching tool is available.")
         return "\n".join(lines)
 
+    @staticmethod
+    def _append_unique_text(target: List[str], value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        if text.lower() not in {item.lower() for item in target}:
+            target.append(text)
+
+    @staticmethod
+    def _truncate_tool_text(value: Any, *, limit: int = 200) -> str:
+        return str(value or "").strip()[:limit].strip()
+
+    @staticmethod
+    def _tool_args_from_search_plan(
+        *,
+        tool_name: str,
+        args: Dict[str, Any],
+        request: AgentRunInput,
+    ) -> Dict[str, Any]:
+        plan = request.search_plan
+        normalized = dict(args or {})
+        if plan is None:
+            return normalized
+
+        if tool_name == TOOL_SEARCH_PRODUCTS:
+            required_filters = {
+                str(key or "").strip().lower(): str(value or "").strip()
+                for key, value in dict(plan.required_filters or {}).items()
+                if str(key or "").strip() and str(value or "").strip()
+            }
+            tool_filters = {
+                key: value
+                for key, value in required_filters.items()
+                if key in _SEARCH_PRODUCT_FILTER_KEYS
+            }
+            query_terms: List[str] = []
+            for value in required_filters.values():
+                AgentOrchestrator._append_unique_text(query_terms, value)
+            for value in list(plan.semantic_terms or []):
+                AgentOrchestrator._append_unique_text(query_terms, value)
+            if plan.semantic_query:
+                AgentOrchestrator._append_unique_text(query_terms, plan.semantic_query)
+            query = " ".join(query_terms) or str(normalized.get("query") or request.user_text or "").strip()
+            normalized["query"] = AgentOrchestrator._truncate_tool_text(query)
+            if tool_filters:
+                normalized["filters"] = tool_filters
+            elif not isinstance(normalized.get("filters"), dict):
+                normalized.pop("filters", None)
+            try:
+                normalized["page"] = max(1, int(normalized.get("page") or 1))
+            except Exception:
+                normalized["page"] = 1
+            page_size = normalized.get("pageSize", normalized.get("page_size", 10))
+            try:
+                normalized["pageSize"] = max(1, min(int(page_size or 10), 20))
+            except Exception:
+                normalized["pageSize"] = 10
+            normalized.pop("page_size", None)
+            return normalized
+
+        if tool_name == TOOL_SEARCH_KNOWLEDGE_BASE:
+            topic = ""
+            for raw_topic in list(plan.knowledge_topics or []):
+                topic = str(raw_topic or "").strip()
+                if topic:
+                    break
+            normalized["query"] = AgentOrchestrator._truncate_tool_text(
+                topic or normalized.get("query") or request.user_text
+            )
+            normalized.pop("category", None)
+            limit = normalized.get("limit", 5)
+            try:
+                normalized["limit"] = max(1, min(int(limit or 5), 5))
+            except Exception:
+                normalized["limit"] = 5
+            return normalized
+
+        if tool_name in {TOOL_GET_PRODUCT_DETAILS, TOOL_CHECK_INVENTORY_DB}:
+            for sku in list(plan.sku_tokens or []):
+                clean_sku = str(sku or "").strip()
+                if clean_sku:
+                    normalized["sku"] = clean_sku
+                    break
+            return normalized
+
+        return normalized
+
     async def _execute_one_tool(self, *, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if tool_name not in SUPPORTED_TOOLS:
             return {"error": f"Unsupported tool: {tool_name}"}
         return await asyncio.wait_for(
             self.registry.execute_tool(tool_name, args),
             timeout=self.timeout_seconds,
+        )
+
+    async def _execute_tool_call(
+        self,
+        *,
+        tool_name: str,
+        args: Dict[str, Any],
+        trace: List[Dict[str, Any]],
+        products: Dict[str, ProductCard],
+        sources: Dict[str, KnowledgeSource],
+        selection_source: str,
+        arg_error: Any = None,
+    ) -> tuple[bool, Dict[str, Any]]:
+        started = time.monotonic()
+        status = "ok"
+        result_payload: Dict[str, Any]
+        if arg_error:
+            status = "invalid_arguments"
+            result_payload = {"error": f"Invalid arguments: {arg_error}"}
+        else:
+            try:
+                result_payload = await self._execute_one_tool(tool_name=tool_name, args=args)
+            except asyncio.TimeoutError:
+                status = "timeout"
+                result_payload = {"error": f"Tool timeout for {tool_name}"}
+            except Exception as exc:
+                status = "error"
+                result_payload = {"error": str(exc)}
+            else:
+                if "error" in result_payload:
+                    status = "error"
+
+        duration_ms = int((time.monotonic() - started) * 1000)
+        normalized_result = self.registry.normalize_tool_result(
+            tool_name=tool_name,
+            result=result_payload,
+        )
+        count = int(normalized_result.result_count)
+        self._log_tool_event(
+            tool_name=tool_name,
+            args=args,
+            status=status,
+            duration_ms=duration_ms,
+            result_count=count,
+        )
+
+        trace_entry = {
+            "tool": tool_name,
+            "status": status,
+            "tool_status": str(normalized_result.status or ""),
+            "duration_ms": duration_ms,
+            "result_count": count,
+            "args": self._sanitize_for_trace(args),
+        }
+        if selection_source != "llm":
+            trace_entry["selection_source"] = selection_source
+        trace.append(trace_entry)
+        if status == "ok":
+            self._merge_tool_artifacts(
+                normalized=normalized_result,
+                products=products,
+                sources=sources,
+            )
+            return True, result_payload
+        return False, result_payload
+
+    @staticmethod
+    def _planned_tool_names(request: AgentRunInput) -> List[str]:
+        plan = request.search_plan
+        if plan is None:
+            return []
+        try:
+            groups = list(plan.expected_tool_groups() or [])
+        except Exception:
+            groups = []
+        selected: List[str] = []
+        for raw_group in groups:
+            if isinstance(raw_group, (list, tuple, set)):
+                group = [
+                    str(tool_name or "").strip()
+                    for tool_name in list(raw_group or [])
+                    if str(tool_name or "").strip()
+                ]
+            else:
+                group = [str(raw_group or "").strip()] if str(raw_group or "").strip() else []
+            if not group:
+                continue
+            if TOOL_SEARCH_PRODUCTS in group:
+                tool_name = TOOL_SEARCH_PRODUCTS
+            elif TOOL_SEARCH_KNOWLEDGE_BASE in group:
+                tool_name = TOOL_SEARCH_KNOWLEDGE_BASE
+            else:
+                tool_name = group[0]
+            if tool_name and tool_name not in selected:
+                selected.append(tool_name)
+        return selected
+
+    async def _run_search_plan_tool_fallback(
+        self,
+        *,
+        request: AgentRunInput,
+        trace: List[Dict[str, Any]],
+        products: Dict[str, ProductCard],
+        sources: Dict[str, KnowledgeSource],
+        model: str,
+    ) -> AgentRunResult | None:
+        planned_tools = self._planned_tool_names(request)
+        if not planned_tools:
+            return None
+
+        used_tools = False
+        for tool_name in planned_tools:
+            if len(trace) >= self.max_calls:
+                break
+            args = self._tool_args_from_search_plan(
+                tool_name=tool_name,
+                args={},
+                request=request,
+            )
+            tool_used, _payload = await self._execute_tool_call(
+                tool_name=tool_name,
+                args=args,
+                trace=trace,
+                products=products,
+                sources=sources,
+                selection_source="search_plan_fallback",
+            )
+            used_tools = used_tools or tool_used
+
+        if not used_tools:
+            return AgentRunResult.empty(trace=trace)
+
+        product_values = list(products.values())[: self.max_result_items]
+        source_values = list(sources.values())[: self.max_result_items]
+        final_text = await self._generate_final_tool_reply(
+            request=request,
+            products=product_values,
+            sources=source_values,
+            trace=trace,
+            model=model,
+        )
+        if not final_text:
+            return AgentRunResult.empty(trace=trace)
+        grounding = self._ground_agent_artifacts(
+            request=request,
+            products=product_values,
+            sources=source_values,
+            final_reply=final_text,
+        )
+        return AgentRunResult.tool_success(
+            final_reply=final_text,
+            product_carousel=product_values,
+            sources=source_values,
+            trace=trace,
+            grounding=grounding,
         )
 
     @staticmethod
@@ -500,15 +757,27 @@ class AgentOrchestrator:
         sources: Dict[str, KnowledgeSource] = {}
 
         for round_index in range(self.max_rounds):
-            llm_out = await llm_service.generate_chat_with_tools(
-                messages=messages,
-                tools=tool_defs,
-                model=model,
-                temperature=0.0,
-                max_tokens=450,
-                tool_choice="auto",
-                usage_kind="agentic_tool_round",
-            )
+            try:
+                llm_out = await llm_service.generate_chat_with_tools(
+                    messages=messages,
+                    tools=tool_defs,
+                    model=model,
+                    temperature=0.0,
+                    max_tokens=450,
+                    tool_choice="auto",
+                    usage_kind="agentic_tool_round",
+                )
+            except Exception:
+                fallback_result = await self._run_search_plan_tool_fallback(
+                    request=request,
+                    trace=trace,
+                    products=products,
+                    sources=sources,
+                    model=model,
+                )
+                if fallback_result is not None:
+                    return fallback_result
+                raise
             assistant_content = str(llm_out.get("content") or "").strip()
             last_assistant_text = assistant_content or last_assistant_text
             tool_calls = list(llm_out.get("tool_calls") or [])
@@ -582,57 +851,23 @@ class AgentOrchestrator:
                 call_id = str(call.get("id") or f"call_{round_index}_{len(trace)}")
                 tool_name = str(call.get("name") or "")
                 args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
-                arg_error = call.get("argument_error")
-
-                started = time.monotonic()
-                status = "ok"
-                result_payload: Dict[str, Any]
-                if arg_error:
-                    status = "invalid_arguments"
-                    result_payload = {"error": f"Invalid arguments: {arg_error}"}
-                else:
-                    try:
-                        result_payload = await self._execute_one_tool(tool_name=tool_name, args=args)
-                    except asyncio.TimeoutError:
-                        status = "timeout"
-                        result_payload = {"error": f"Tool timeout for {tool_name}"}
-                    except Exception as exc:
-                        status = "error"
-                        result_payload = {"error": str(exc)}
-                    else:
-                        if "error" in result_payload:
-                            status = "error"
-
-                duration_ms = int((time.monotonic() - started) * 1000)
-                normalized_result = self.registry.normalize_tool_result(
-                    tool_name=tool_name,
-                    result=result_payload,
-                )
-                count = int(normalized_result.result_count)
-                self._log_tool_event(
+                args = self._tool_args_from_search_plan(
                     tool_name=tool_name,
                     args=args,
-                    status=status,
-                    duration_ms=duration_ms,
-                    result_count=count,
+                    request=request,
                 )
-
-                trace_entry = {
-                    "tool": tool_name,
-                    "status": status,
-                    "tool_status": str(normalized_result.status or ""),
-                    "duration_ms": duration_ms,
-                    "result_count": count,
-                    "args": self._sanitize_for_trace(args),
-                }
-                trace.append(trace_entry)
-                if status == "ok":
+                arg_error = call.get("argument_error")
+                tool_used, result_payload = await self._execute_tool_call(
+                    tool_name=tool_name,
+                    args=args,
+                    trace=trace,
+                    products=products,
+                    sources=sources,
+                    selection_source="llm",
+                    arg_error=arg_error,
+                )
+                if tool_used:
                     used_tools = True
-                    self._merge_tool_artifacts(
-                        normalized=normalized_result,
-                        products=products,
-                        sources=sources,
-                    )
 
                 messages.append(
                     {

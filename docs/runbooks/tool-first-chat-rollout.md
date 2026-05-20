@@ -1,7 +1,7 @@
 # Tool-First Chat Rollout Runbook
 
 ## Purpose
-Use this runbook to validate the default-on tool-first chat path before any legacy runtime shim cleanup. This is backend-only rollout monitoring. Do not change frontend contracts, database schema, or public chat response shape as part of this validation.
+Use this runbook to validate the default-on tool-first chat path during local development and before staging/release rollout. This is backend-only rollout monitoring. Do not change frontend contracts, database schema, or public chat response shape as part of this validation.
 
 ## Rollout Summary Endpoint
 Query the rollout summary endpoint from an authenticated admin or local test environment:
@@ -58,6 +58,28 @@ Exit codes:
 - `1`: at least one checked channel is Red.
 - `2`: at least one checked channel is Yellow, has insufficient sample, or the endpoint could not be queried.
 
+## Local Smoke Traffic
+Use the smoke helper when a local or staging environment needs repeatable tool-first traffic before reading QA logs:
+
+```powershell
+cd backend
+.\venv\Scripts\python.exe scripts\smoke_tool_first_chat.py --channels widget qa_console
+```
+
+The smoke helper sends fixed catalog and knowledge requests, records rows through the normal chat service path, and fails if a case does not select agentic/tool-first, does not call the expected tool, falls back, or is not grounded.
+
+Useful options:
+
+- `--repeat 25`: run the four default smoke cases 25 times per channel.
+- `--case return_policy`: run one case id. Can be supplied multiple times.
+- `--output-json tmp/tool-first-smoke.json`: save the detailed smoke result.
+
+The script prints a `created_from` timestamp. Use that timestamp with the rollout checker to avoid mixing current smoke rows with older local failures:
+
+```powershell
+.\venv\Scripts\python.exe scripts\check_tool_first_rollout.py --base-url http://localhost:8000 --channels widget qa_console --created-from <created_from>
+```
+
 ## QA Log Filtering
 Use QA log list filters for row-level triage:
 
@@ -74,6 +96,11 @@ GET /api/v1/dashboard/qa/qa-logs?createdFrom=2026-05-18T00:00:00Z&createdTo=2026
 Open representative rows and inspect `token_usage.chat_metrics`, `debug.harness_trace`, route metadata, tool names, grounding status, fallback reason, and final answer shape.
 
 ## Thresholds
+Use two validation gates:
+
+- Local development gate: focused backend tests pass, `scripts/smoke_tool_first_chat.py --channels widget qa_console` passes, and the rollout checker is Green for that smoke window using the per-channel minimum printed by the smoke script.
+- Staging/release gate: the full sample threshold below passes on real QA traffic before production rollout.
+
 Minimum useful sample:
 
 - `100` tool-first selected rows per channel, or
@@ -98,7 +125,7 @@ Red:
 - `grounding_failed_rate > 5%`
 - Any spike in `failed` or `no_answer` QA statuses.
 
-If any channel is Red, do not proceed to legacy shim cleanup. Create a targeted tuning task from the highest-count failure bucket.
+If any channel is Red, do not proceed to production rollout. Create a targeted tuning task from the highest-count failure bucket.
 
 ## Required Validation Queries
 Run these before declaring the validation window healthy:
@@ -138,4 +165,4 @@ For `agentic_fallback_to_component`:
 - If `grounding_failed` dominates, inspect tool arguments and grounding decisions before changing thresholds.
 - If `fallback_to_component` dominates without expected-tool or grounding failure, inspect agentic errors, empty tool results, and no-tool answers.
 - Add a regression case for every repeated customer-facing issue before changing behavior.
-- Keep `runtime.unified_chat_runtime` and `runtime.execution_coordinator` compatibility shims until at least one Green validation window passes.
+- The old chat runtime compatibility shims have been removed in the non-production hard-cleanup path; validate any external QA tooling or notebooks before production rollout.

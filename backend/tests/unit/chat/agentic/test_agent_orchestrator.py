@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from app.services.ai.llm_service import llm_service
 from app.schemas.chat import KnowledgeSource, ProductCard
 from app.services.chat.agentic.orchestrator import AgentOrchestrator, AgentRunInput
 from app.services.chat.agentic.tool_registry import AgentToolRegistry, NormalizedAgentToolResult
+from app.services.chat.runtime.search_plan import SearchPlan
 
 
 def test_result_count_counts_candidates_for_ambiguous_lookup() -> None:
@@ -85,6 +87,118 @@ def test_deterministic_tool_reply_uses_knowledge_artifacts() -> None:
     )
 
     assert reply == "Here is what I found in Shipping Policy: Shipping usually takes 3-5 business days."
+
+
+def test_tool_args_from_search_plan_replaces_invented_catalog_filters() -> None:
+    args = AgentOrchestrator._tool_args_from_search_plan(
+        tool_name="search_products",
+        args={
+            "query": "opal labret",
+            "filters": {"material": "opal", "jewelry_type": "labret"},
+            "page": 2,
+            "pageSize": 20,
+        },
+        request=AgentRunInput(
+            user_text="Do you guys have any black opal labrets?",
+            search_plan=SearchPlan(
+                workflow="catalog",
+                required_filters={"category": "labrets", "color": "black"},
+                semantic_terms=["opal"],
+            ),
+        ),
+    )
+
+    assert args == {
+        "query": "labrets black opal",
+        "filters": {"category": "labrets", "color": "black"},
+        "page": 2,
+        "pageSize": 20,
+    }
+
+
+def test_tool_args_from_search_plan_removes_invented_knowledge_category() -> None:
+    args = AgentOrchestrator._tool_args_from_search_plan(
+        tool_name="search_knowledge_base",
+        args={"query": "refund", "category": "products", "limit": 99},
+        request=AgentRunInput(
+            user_text="What is your return policy?",
+            search_plan=SearchPlan(
+                workflow="knowledge",
+                knowledge_topics=["what is your return policy?"],
+            ),
+        ),
+    )
+
+    assert args == {"query": "what is your return policy?", "limit": 5}
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_uses_search_plan_tool_fallback_when_tool_round_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product = ProductCard(
+        id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        sku="LAB-TI",
+        legacy_sku=[],
+        name="Titanium Labret",
+        price=12.0,
+        currency="USD",
+        stock_status="in_stock",
+        attributes={"jewelry_type": "Labret", "material": "Titanium"},
+    )
+
+    async def failing_tool_round(**_kwargs):
+        raise TimeoutError("Request timed out.")
+
+    async def fake_generate_chat_response(**_kwargs):
+        return "I found titanium labrets."
+
+    async def fake_execute_one_tool(*, tool_name: str, args: dict):
+        assert tool_name == "search_products"
+        assert args["query"] == "labret titanium g23"
+        assert args["filters"] == {"jewelry_type": "labret", "material": "titanium g23"}
+        return {"tool": tool_name, "status": "ok", "products": [{"sku": "LAB-TI"}]}
+
+    monkeypatch.setattr(llm_service, "generate_chat_with_tools", failing_tool_round)
+    monkeypatch.setattr(llm_service, "generate_chat_response", fake_generate_chat_response)
+
+    orchestrator = AgentOrchestrator(db=object(), run_id="run-plan-fallback", channel="widget")
+    monkeypatch.setattr(orchestrator, "_execute_one_tool", fake_execute_one_tool)
+    monkeypatch.setattr(
+        orchestrator.registry,
+        "normalize_tool_result",
+        lambda **_kwargs: NormalizedAgentToolResult(
+            tool_name="search_products",
+            status="ok",
+            result_count=1,
+            products=[product],
+        ),
+    )
+
+    result = await orchestrator.run(
+        request=AgentRunInput(
+            user_text="Show me titanium labrets",
+            reply_language="en-US",
+            channel="widget",
+            run_id="run-plan-fallback",
+            search_plan=SearchPlan(
+                workflow="catalog",
+                required_filters={"jewelry_type": "labret", "material": "titanium g23"},
+            ),
+        )
+    )
+
+    assert result.used_tools is True
+    assert result.final_reply == "I found titanium labrets."
+    assert result.product_carousel == [product]
+    assert result.trace[0]["tool"] == "search_products"
+    assert result.trace[0]["selection_source"] == "search_plan_fallback"
+    assert result.trace[0]["args"] == {
+        "query": "labret titanium g23",
+        "filters": {"jewelry_type": "labret", "material": "titanium g23"},
+        "page": 1,
+        "pageSize": 10,
+    }
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,17 @@ LEGACY_MODULES = {
     "rag_service",
     "magento_service",
 }
+LEGACY_FULL_MODULES = {
+    *(f"app.services.{name}" for name in LEGACY_MODULES),
+    "app.services.chat.runtime.unified_chat_runtime",
+    "app.services.chat.runtime.execution_coordinator",
+}
+LEGACY_PARENT_IMPORTS = {
+    "app.services.chat.runtime": {
+        "unified_chat_runtime",
+        "execution_coordinator",
+    },
+}
 
 SKIP_DIRS = {
     ".git",
@@ -55,21 +66,24 @@ def _extract_signatures(file_path: Path) -> Set[str]:
     source = file_path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(file_path))
     signatures: Set[str] = set()
-    legacy_full = {f"app.services.{name}" for name in LEGACY_MODULES}
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
-            if module in legacy_full:
+            if module in LEGACY_FULL_MODULES:
                 imported = ", ".join(alias.name for alias in node.names)
                 signatures.add(f"from {module} import {imported}")
             elif module == "app.services":
                 names = [alias.name for alias in node.names if alias.name in LEGACY_MODULES]
                 if names:
                     signatures.add(f"from app.services import {', '.join(names)}")
+            elif module in LEGACY_PARENT_IMPORTS:
+                names = [alias.name for alias in node.names if alias.name in LEGACY_PARENT_IMPORTS[module]]
+                if names:
+                    signatures.add(f"from {module} import {', '.join(names)}")
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name in legacy_full:
+                if alias.name in LEGACY_FULL_MODULES:
                     signatures.add(f"import {alias.name}")
     return signatures
 

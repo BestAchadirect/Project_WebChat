@@ -163,6 +163,10 @@ async def _run_agentic_path(
                 debug_meta=context.debug_meta,
                 agentic_result=fallback_result,
             )
+            await _rollback_before_component_fallback(
+                context=context,
+                reason="agentic_expected_tool_missing",
+            )
             return None
         if _agentic_grounding_failed(normalized_agentic_result):
             if not fallback_enabled:
@@ -176,6 +180,10 @@ async def _run_agentic_path(
             dependencies.apply_agentic_fallback_debug(
                 debug_meta=context.debug_meta,
                 agentic_result=fallback_result,
+            )
+            await _rollback_before_component_fallback(
+                context=context,
+                reason="agentic_grounding_failed",
             )
             return None
         dependencies.apply_agentic_success_debug(
@@ -210,7 +218,29 @@ async def _run_agentic_path(
     )
     if normalized_agentic_result.outcome == dependencies.AgentRunOutcome.EMPTY and not fallback_enabled:
         raise RuntimeError("agentic workflow returned no result")
+    await _rollback_before_component_fallback(
+        context=context,
+        reason=str(getattr(fallback_result, "fallback_reason", "") or "agentic_fallback"),
+    )
     return None
+
+
+async def _rollback_before_component_fallback(
+    *,
+    context: ChatHarnessContext,
+    reason: str,
+) -> None:
+    """Reset read-only tool transactions before reusing the session for component fallback."""
+    db = getattr(context.service, "db", None)
+    if not hasattr(db, "rollback"):
+        return
+    context.debug_meta["agentic_component_fallback_rollback_reason"] = str(reason or "")
+    try:
+        await db.rollback()
+        context.debug_meta["agentic_component_fallback_rollback"] = True
+    except Exception as exc:
+        context.debug_meta["agentic_component_fallback_rollback"] = False
+        context.debug_meta["agentic_component_fallback_rollback_error"] = str(exc)
 
 
 def _expected_tool_groups(search_plan: Any) -> list[list[str]]:

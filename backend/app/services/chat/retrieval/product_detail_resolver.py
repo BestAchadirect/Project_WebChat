@@ -119,7 +119,7 @@ class ProductDetailResolver:
 
         if key in {"material", "threading", "color"}:
             actual = cls._normalize(attrs.get(key) or "")
-            return bool(actual) and expected_norm in actual
+            return bool(actual) and (expected_norm in actual or actual in expected_norm)
 
         if key == "sku":
             return cls._normalize(card.sku) == expected_norm

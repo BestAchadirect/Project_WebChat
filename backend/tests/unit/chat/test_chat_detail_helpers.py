@@ -449,6 +449,16 @@ def test_detail_resolver_filters_and_limits_top_matches() -> None:
     assert resolved.matches[0].sku == "B-25-BLK"
 
 
+def test_detail_resolver_allows_material_grade_to_match_base_material() -> None:
+    card = _card(
+        sku="TL-1",
+        name="Titanium Labret",
+        attributes={"material": "Titanium", "jewelry_type": "Labret"},
+    )
+
+    assert ProductDetailResolver._match_filter(card, key="material", expected="titanium g23")
+
+
 def test_detail_response_builder_reports_missing_image() -> None:
     match = _card(
         sku="A-1",

@@ -11,6 +11,14 @@ TOOL_GET_PRODUCT_DETAILS = "get_product_details"
 TOOL_SEARCH_KNOWLEDGE_BASE = "search_knowledge_base"
 TOOL_CHECK_INVENTORY_DB = "check_inventory_db"
 
+_DECORATIVE_MATERIAL_TERMS = {"opal"}
+_MATERIAL_CONTEXT_MARKERS = (
+    "material",
+    "made of",
+    "made from",
+    "made with",
+)
+
 
 @dataclass(frozen=True)
 class SearchPlan:
@@ -94,6 +102,36 @@ def _clean_terms(items: Sequence[Any] | None) -> List[str]:
     return clean
 
 
+def _append_unique_term(terms: List[str], value: Any) -> None:
+    text = normalize_user_text(str(value or ""))
+    if text and text not in terms:
+        terms.append(text)
+
+
+def _split_decorative_material_filters(
+    *,
+    user_text: str,
+    required_filters: Dict[str, str],
+    semantic_terms: List[str],
+) -> tuple[Dict[str, str], List[str]]:
+    filters = dict(required_filters or {})
+    terms = list(semantic_terms or [])
+    material = normalize_user_text(filters.get("material"))
+    if not material:
+        return filters, terms
+
+    text = normalize_user_text(user_text)
+    explicit_material_request = any(marker in text for marker in _MATERIAL_CONTEXT_MARKERS)
+    if explicit_material_request:
+        return filters, terms
+    if not any(term in material for term in _DECORATIVE_MATERIAL_TERMS):
+        return filters, terms
+
+    filters.pop("material", None)
+    _append_unique_term(terms, material)
+    return filters, terms
+
+
 def _knowledge_topics(*, workflow: str, knowledge_query: str, user_text: str) -> List[str]:
     workflow_norm = str(workflow or "").strip().lower()
     if workflow_norm not in {"knowledge", "catalog", "mixed"}:
@@ -126,6 +164,11 @@ def build_search_plan(
     workflow_norm = str(workflow or "fallback").strip().lower() or "fallback"
     required_filters = _clean_filter_map(getattr(detail, "attribute_filters", {}) or {})
     semantic_terms = _clean_terms(getattr(detail, "semantic_hints", []) or [])
+    required_filters, semantic_terms = _split_decorative_material_filters(
+        user_text=user_text,
+        required_filters=required_filters,
+        semantic_terms=semantic_terms,
+    )
     clean_strictness: Dict[str, str] = {}
     for key, value in dict(strictness or {}).items():
         clean_key = str(key or "").strip().lower()

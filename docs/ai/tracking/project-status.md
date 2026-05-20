@@ -117,19 +117,17 @@
   - post-completion smoke testing fixed explicit product-browse routing, return-policy routing, mixed payment/product routing, broad rescue compatibility, and attribute-list overreach
 - The historical AI runtime foundation work is complete and preserved in sprint history.
 - The customer-response-accuracy sprint is complete and remains useful as a finished evaluation-hardening reference.
-- The ChatHarness compatibility audit is complete:
-  - `runtime.unified_chat_runtime` is documented as a compatibility entrypoint into `ChatHarness`
-  - `runtime.execution_coordinator` is documented as a compatibility shim for harness finalizer/support helpers
-  - old `unified_chat_runtime` monkeypatch targets have been migrated to `harness.dependencies`
-  - compatibility tests guard the remaining shim import paths
-  - Phase 11.2 added private shim metadata and tests to keep migration targets/removal conditions explicit without widening public APIs
+- The ChatHarness compatibility cleanup is complete:
+  - `ChatService.process_chat()` now delegates directly to `ChatHarness`
+  - `runtime.unified_chat_runtime` and `runtime.execution_coordinator` have been removed
+  - old runtime monkeypatch targets have been migrated to `harness.dependencies`
+  - shim-only compatibility tests have been removed
 - Phase 3 harness QA observability now rolls trace fallback reasons, clarification reasons, tool names, grounding status, and retrieval counts into persisted chat metrics summaries.
 - Phase 3 backend tool-first diagnostics now expose agentic route support, tool-first candidacy, and selection blockers in routing debug, routing snapshots, and `harness_trace.metadata`.
 - Phase 3 tool-first default is implemented for supported catalog and knowledge requests while deterministic guardrails remain component-only.
 - Phase 3 expected-tool enforcement is implemented, including `agentic_expected_tool_missing` fallback tracking.
 - Phase 3 rollout monitoring is implemented through `/api/v1/dashboard/qa/qa-logs/rollout-summary` and QA filters for `agenticIssue`, `agenticFallbackReason`, `harnessTool`, `workflow`, `channel`, and date range.
-- Legacy shim cleanup remains blocked until one validation window passes under the rollout thresholds in `docs/runbooks/tool-first-chat-rollout.md`.
-- Local rollout validation on 2026-05-20 reached the QA endpoint; follow-up `qa_console` smoke traffic produced one grounded `agentic_primary` knowledge success but remains Red overall due high `agentic_grounding_failed` fallback rate.
+- Local rollout validation on 2026-05-20 reached the QA endpoint; after agentic tool-quality tuning, post-fix smoke windows for both `qa_console` and `widget` were Green. Follow-up stabilization added search-plan tool fallback for agentic tool-selection errors and corrected decorative `opal` planning. The local development gate passed with an `8/8` repeatable smoke run and Green persisted rollout metrics for both channels. The full rollout gate is deferred to staging/release traffic before production rollout.
 
 ## Not In Scope For This Tracker
 - Multi-tenant support

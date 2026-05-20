@@ -22,6 +22,8 @@ REMOVED_LEGACY_MODULES = [
     "app.services.ticket_service",
     "app.services.rag_service",
     "app.services.magento_service",
+    "app.services.chat.runtime.unified_chat_runtime",
+    "app.services.chat.runtime.execution_coordinator",
 ]
 
 CANONICAL_CASES = [

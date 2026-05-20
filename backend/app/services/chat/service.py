@@ -27,9 +27,11 @@ from app.services.chat.agentic.orchestrator import AgentOrchestrator, AgentRunIn
 from app.services.chat.runtime.search_plan import SearchPlan
 from app.services.chat.components.cache import component_cache
 from app.services.chat.components.pipeline import ComponentPipeline
+from app.services.chat.harness.chat_harness import ChatHarness
+from app.services.chat.harness.dependencies import build_default_harness_dependencies
 from app.services.chat.presentation import component_contract, public_response
 from app.services.chat.runtime.capabilities import build_chat_runtime_capabilities
-from app.services.chat.runtime import conversation_state, persistence, unified_chat_runtime
+from app.services.chat.runtime import conversation_state, persistence
 from app.services.chat.retrieval import follow_up_policy
 from app.services.chat.routing import routing_policy
 from app.services.chat.routing.contracts import DecisionState
@@ -534,4 +536,9 @@ class ChatService:
 
 
     async def process_chat(self, req: ChatRequest, channel: Optional[str] = None) -> ChatResponse:
-        return await unified_chat_runtime.process_chat(self, req, channel)
+        result = await ChatHarness(
+            service=self,
+            channel=channel,
+            dependencies=build_default_harness_dependencies(),
+        ).run(req)
+        return result.response

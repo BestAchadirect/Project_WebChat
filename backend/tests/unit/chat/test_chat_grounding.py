@@ -68,6 +68,23 @@ def test_search_plan_expected_tools_for_catalog_search() -> None:
     assert plan.to_debug_dict()["expected_tools"] == ["search_products"]
 
 
+def test_build_search_plan_treats_opal_as_semantic_term_not_material_filter() -> None:
+    detail = SimpleNamespace(
+        attribute_filters={"jewelry_type": "labret", "material": "opal", "color": "black"},
+        semantic_hints=[],
+    )
+
+    plan = build_search_plan(
+        user_text="Do you guys have any black opal labrets?",
+        workflow="catalog",
+        detail=detail,
+        sku_tokens=[],
+    )
+
+    assert plan.required_filters == {"jewelry_type": "labret", "color": "black"}
+    assert plan.semantic_terms == ["opal"]
+
+
 def test_search_plan_expected_tools_for_product_detail_or_stock_check() -> None:
     plan = build_search_plan(
         user_text="check stock for ABC-1",

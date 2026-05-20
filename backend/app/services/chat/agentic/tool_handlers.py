@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Sequence, Tuple, TypeVar
 from app.schemas.chat import ProductCard
 from app.services.chat.text_normalization import normalize_user_text as _normalize_text
 from app.services.chat.parsing.search_policy import ALLOWED_PRODUCT_FILTERS, normalize_filter_map
+from app.services.chat.retrieval.product_detail_resolver import ProductDetailResolver
 
 _T = TypeVar("_T")
 
@@ -17,7 +18,6 @@ def product_card_matches_filters(card: ProductCard, filters: Dict[str, Any]) -> 
     if not filters:
         return True
 
-    attributes = card.attributes or {}
     min_price = filters.get("min_price")
     max_price = filters.get("max_price")
     stock_status = filters.get("stock_status")
@@ -61,8 +61,7 @@ def product_card_matches_filters(card: ProductCard, filters: Dict[str, Any]) -> 
     ):
         if expected is None:
             continue
-        actual = _normalize_text(attributes.get(key))
-        if actual != _normalize_text(expected):
+        if not ProductDetailResolver._match_filter(card, key=key, expected=str(expected)):
             return False
 
     return True

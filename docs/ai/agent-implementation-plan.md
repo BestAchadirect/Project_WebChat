@@ -58,7 +58,6 @@ The main behavior path is still staged and spread across:
 - `backend/app/services/chat/harness/`
 - `backend/app/services/chat/routing/understanding.py`
 - `backend/app/services/chat/routing/decision_engine.py`
-- `backend/app/services/chat/runtime/unified_chat_runtime.py` as a compatibility entrypoint
 - `backend/app/services/chat/components/pipeline_runtime/`
 
 A real tool-calling path already exists in:
@@ -165,7 +164,6 @@ Do not prioritize broad UI/admin cleanup before these tests exist.
 
 ### Primary files to change first
 - `backend/app/services/chat/harness/`
-- `backend/app/services/chat/runtime/unified_chat_runtime.py` only for compatibility-entrypoint changes
 - `backend/app/services/chat/agentic/orchestrator.py`
 - `backend/app/services/chat/agentic/tool_registry.py`
 - `backend/app/services/chat/routing/understanding.py`
