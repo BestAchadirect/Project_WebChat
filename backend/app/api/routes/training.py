@@ -1,14 +1,15 @@
+from datetime import datetime
 from typing import List, Optional, Any, Dict
 from uuid import UUID
 import hashlib
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func, or_, cast, String
+from sqlalchemy import select, desc, func, or_, cast, String, and_
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db
-from app.models.qa_log import QALog
+from app.models.qa_log import QALog, QAStatus
 from app.models.knowledge import KnowledgeChunk, KnowledgeArticle, KnowledgeEmbedding
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.training import (
@@ -18,6 +19,7 @@ from app.schemas.training import (
     SimilarityTestRequest, SimilarityTestResponse, SimilarityResult
 )
 from app.services.chat.observability.regression_case_templates import build_review_bundle_from_qa_log
+from app.services.chat.observability import qa_metrics
 from app.services.embedding import EmbeddingService
 from app.services.chat.service import ChatService
 from app.core.config import settings
@@ -25,6 +27,107 @@ from app.utils.pagination import normalize_pagination
 
 router = APIRouter()
 qa_router = APIRouter()
+
+REVIEW_STATUS_VALUES = {"passed", "needs_review", "failed"}
+AGENTIC_ISSUE_VALUES = {
+    "expected_tool_missing",
+    "grounding_failed",
+    "fallback_to_component",
+    "tool_first_selected",
+}
+
+
+def _chat_metric_text(key: str):
+    return func.lower(
+        func.coalesce(QALog.token_usage["chat_metrics"][key].astext, "")
+    )
+
+
+def _chat_metric_bool(key: str):
+    return _chat_metric_text(key) == "true"
+
+
+def _chat_metric_eq(key: str, value: str):
+    return _chat_metric_text(key) == str(value or "").strip().lower()
+
+
+def _normalize_agentic_issue(agentic_issue: str) -> str:
+    normalized = agentic_issue.strip().lower().replace("-", "_")
+    if normalized not in AGENTIC_ISSUE_VALUES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid agenticIssue. Expected one of: "
+                "expected_tool_missing, grounding_failed, fallback_to_component, tool_first_selected."
+            ),
+        )
+    return normalized
+
+
+def build_agentic_issue_clause(agentic_issue: str):
+    normalized = _normalize_agentic_issue(agentic_issue)
+    if normalized == "expected_tool_missing":
+        return or_(
+            _chat_metric_bool("agentic_expected_tool_missing"),
+            _chat_metric_eq("agentic_fallback_reason", "agentic_expected_tool_missing"),
+            _chat_metric_eq("harness_fallback_reason", "agentic_expected_tool_missing"),
+        )
+    if normalized == "grounding_failed":
+        return or_(
+            _chat_metric_bool("agentic_grounding_failed"),
+            _chat_metric_eq("agentic_fallback_reason", "agentic_grounding_failed"),
+            _chat_metric_eq("harness_fallback_reason", "agentic_grounding_failed"),
+        )
+    if normalized == "fallback_to_component":
+        return _chat_metric_bool("agentic_fallback_to_component")
+    return _chat_metric_bool("tool_first_selected")
+
+
+def build_harness_tool_clause(harness_tool: str):
+    tool_value = str(harness_tool or "").strip()
+    if not tool_value:
+        raise HTTPException(status_code=400, detail="harnessTool must not be empty.")
+    return QALog.token_usage["chat_metrics"]["harness_tools_called"].contains([tool_value])
+
+
+def build_review_status_clause(review_status: str):
+    normalized = review_status.strip().lower()
+    if normalized not in REVIEW_STATUS_VALUES:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid reviewStatus. Expected one of: passed, needs_review, failed.",
+        )
+
+    failure_expr = _chat_metric_text("failure_bucket")
+    grounding_expr = _chat_metric_text("grounding_status")
+    has_review_failure = and_(failure_expr != "", failure_expr != "other")
+    has_grounding_issue = and_(grounding_expr != "", grounding_expr != "grounded")
+    has_agentic_review_issue = or_(
+        _chat_metric_bool("agentic_expected_tool_missing"),
+        _chat_metric_bool("agentic_grounding_failed"),
+        _chat_metric_bool("agentic_fallback_to_component"),
+    )
+
+    if normalized == "failed":
+        return QALog.status == QAStatus.FAILED
+    if normalized == "passed":
+        return and_(
+            QALog.status == QAStatus.SUCCESS,
+            ~has_review_failure,
+            ~has_grounding_issue,
+            ~has_agentic_review_issue,
+        )
+    return and_(
+        QALog.status != QAStatus.FAILED,
+        or_(
+            QALog.status.in_([QAStatus.NO_ANSWER, QAStatus.FALLBACK]),
+            has_agentic_review_issue,
+            and_(
+                QALog.status == QAStatus.SUCCESS,
+                or_(has_review_failure, has_grounding_issue),
+            ),
+        ),
+    )
 
 # --- QA Monitoring ---
 
@@ -34,10 +137,16 @@ async def list_qa_logs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, alias="pageSize", ge=1, le=9999),
     status: Optional[str] = None,
+    review_status: Optional[str] = Query(None, alias="reviewStatus"),
     channel: Optional[str] = None,
     workflow: Optional[str] = Query(None),
     grounding_status: Optional[str] = Query(None, alias="groundingStatus"),
     failure_bucket: Optional[str] = Query(None, alias="failureBucket"),
+    agentic_issue: Optional[str] = Query(None, alias="agenticIssue"),
+    agentic_fallback_reason: Optional[str] = Query(None, alias="agenticFallbackReason"),
+    harness_tool: Optional[str] = Query(None, alias="harnessTool"),
+    created_from: Optional[datetime] = Query(None, alias="createdFrom"),
+    created_to: Optional[datetime] = Query(None, alias="createdTo"),
     search: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db)
 ):
@@ -49,9 +158,18 @@ async def list_qa_logs(
 
     query = select(QALog)
     count_query = select(func.count()).select_from(QALog)
+    if created_from and created_to and created_to < created_from:
+        raise HTTPException(
+            status_code=400,
+            detail="createdTo must be greater than or equal to createdFrom.",
+        )
     if status:
         query = query.where(QALog.status == status)
         count_query = count_query.where(QALog.status == status)
+    if review_status:
+        review_clause = build_review_status_clause(review_status)
+        query = query.where(review_clause)
+        count_query = count_query.where(review_clause)
     if channel:
         channel_value = channel.strip()
         if channel_value:
@@ -64,27 +182,41 @@ async def list_qa_logs(
     if workflow:
         workflow_value = workflow.strip().lower()
         if workflow_value:
-            workflow_expr = func.lower(
-                func.coalesce(QALog.token_usage["chat_metrics"]["workflow"].astext, "")
-            )
+            workflow_expr = _chat_metric_text("workflow")
             query = query.where(workflow_expr == workflow_value)
             count_query = count_query.where(workflow_expr == workflow_value)
     if grounding_status:
         grounding_value = grounding_status.strip().lower()
         if grounding_value:
-            grounding_expr = func.lower(
-                func.coalesce(QALog.token_usage["chat_metrics"]["grounding_status"].astext, "")
-            )
+            grounding_expr = _chat_metric_text("grounding_status")
             query = query.where(grounding_expr == grounding_value)
             count_query = count_query.where(grounding_expr == grounding_value)
     if failure_bucket:
         failure_value = failure_bucket.strip().lower()
         if failure_value:
-            failure_expr = func.lower(
-                func.coalesce(QALog.token_usage["chat_metrics"]["failure_bucket"].astext, "")
-            )
+            failure_expr = _chat_metric_text("failure_bucket")
             query = query.where(failure_expr == failure_value)
             count_query = count_query.where(failure_expr == failure_value)
+    if agentic_issue:
+        agentic_issue_clause = build_agentic_issue_clause(agentic_issue)
+        query = query.where(agentic_issue_clause)
+        count_query = count_query.where(agentic_issue_clause)
+    if agentic_fallback_reason:
+        agentic_fallback_value = agentic_fallback_reason.strip().lower()
+        if agentic_fallback_value:
+            fallback_expr = _chat_metric_text("agentic_fallback_reason")
+            query = query.where(fallback_expr == agentic_fallback_value)
+            count_query = count_query.where(fallback_expr == agentic_fallback_value)
+    if harness_tool:
+        harness_tool_clause = build_harness_tool_clause(harness_tool)
+        query = query.where(harness_tool_clause)
+        count_query = count_query.where(harness_tool_clause)
+    if created_from:
+        query = query.where(QALog.created_at >= created_from)
+        count_query = count_query.where(QALog.created_at >= created_from)
+    if created_to:
+        query = query.where(QALog.created_at <= created_to)
+        count_query = count_query.where(QALog.created_at <= created_to)
     if search:
         search_value = search.strip()
         if search_value:
@@ -108,6 +240,87 @@ async def list_qa_logs(
         pageSize=page_size,
         totalPages=total_pages,
     )
+
+
+@qa_router.get("/qa-logs/rollout-summary", response_model=Dict[str, Any])
+async def get_qa_rollout_summary(
+    review_status: Optional[str] = Query(None, alias="reviewStatus"),
+    channel: Optional[str] = None,
+    workflow: Optional[str] = Query(None),
+    grounding_status: Optional[str] = Query(None, alias="groundingStatus"),
+    failure_bucket: Optional[str] = Query(None, alias="failureBucket"),
+    agentic_issue: Optional[str] = Query(None, alias="agenticIssue"),
+    agentic_fallback_reason: Optional[str] = Query(None, alias="agenticFallbackReason"),
+    harness_tool: Optional[str] = Query(None, alias="harnessTool"),
+    created_from: Optional[datetime] = Query(None, alias="createdFrom"),
+    created_to: Optional[datetime] = Query(None, alias="createdTo"),
+    max_rows: int = Query(5000, alias="maxRows", ge=1, le=20000),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    if created_from and created_to and created_to < created_from:
+        raise HTTPException(
+            status_code=400,
+            detail="createdTo must be greater than or equal to createdFrom.",
+        )
+
+    query = select(QALog.token_usage)
+    if review_status:
+        query = query.where(build_review_status_clause(review_status))
+    if channel:
+        channel_value = channel.strip()
+        if channel_value:
+            if channel_value.lower() == "unlabeled":
+                query = query.where(or_(QALog.channel.is_(None), QALog.channel == ""))
+            else:
+                query = query.where(QALog.channel == channel_value)
+    if workflow:
+        workflow_value = workflow.strip().lower()
+        if workflow_value:
+            query = query.where(_chat_metric_text("workflow") == workflow_value)
+    if grounding_status:
+        grounding_value = grounding_status.strip().lower()
+        if grounding_value:
+            query = query.where(_chat_metric_text("grounding_status") == grounding_value)
+    if failure_bucket:
+        failure_value = failure_bucket.strip().lower()
+        if failure_value:
+            query = query.where(_chat_metric_text("failure_bucket") == failure_value)
+    if agentic_issue:
+        query = query.where(build_agentic_issue_clause(agentic_issue))
+    if agentic_fallback_reason:
+        agentic_fallback_value = agentic_fallback_reason.strip().lower()
+        if agentic_fallback_value:
+            query = query.where(_chat_metric_text("agentic_fallback_reason") == agentic_fallback_value)
+    if harness_tool:
+        query = query.where(build_harness_tool_clause(harness_tool))
+    if created_from:
+        query = query.where(QALog.created_at >= created_from)
+    if created_to:
+        query = query.where(QALog.created_at <= created_to)
+
+    query = query.order_by(desc(QALog.created_at)).limit(max_rows)
+    result = await db.execute(query)
+    metric_rows = [
+        qa_metrics.extract_chat_metrics(token_usage)
+        for token_usage in list(result.scalars().all())
+    ]
+    return {
+        "sampledRows": len(metric_rows),
+        "maxRows": max_rows,
+        "filters": {
+            "reviewStatus": review_status,
+            "channel": channel,
+            "workflow": workflow,
+            "groundingStatus": grounding_status,
+            "failureBucket": failure_bucket,
+            "agenticIssue": agentic_issue,
+            "agenticFallbackReason": agentic_fallback_reason,
+            "harnessTool": harness_tool,
+            "createdFrom": created_from.isoformat() if created_from else None,
+            "createdTo": created_to.isoformat() if created_to else None,
+        },
+        "toolFirst": qa_metrics.build_tool_first_rollout_summary(metric_rows),
+    }
 
 
 @qa_router.get("/qa-logs/{qa_log_id}/review-bundle", response_model=Dict[str, Any])

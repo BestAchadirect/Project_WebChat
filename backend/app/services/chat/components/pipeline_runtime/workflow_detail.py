@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Sequence
 
 from app.core.config import settings
-from app.services.chat.components.types import ComponentType
+from app.services.chat.components.types import ComponentSource, ComponentType
 from app.services.chat.components.pipeline_runtime.state import PipelineWorkflowState
 from app.services.chat.presentation.detail_response_builder import DetailResponseBuilder
 from app.services.chat.retrieval.product_detail_resolver import ProductDetailResolver
@@ -12,6 +12,49 @@ from app.services.chat.text_normalization import normalize_user_text
 
 
 class PipelineWorkflowDetailMixin:
+    @staticmethod
+    def _build_multi_code_detail_text(
+            *,
+            requested_tokens: Sequence[str],
+            found_count: int,
+            missing_tokens: Sequence[str],
+        ) -> str:
+            total = len([
+                str(token or "").strip()
+                for token in list(requested_tokens or [])
+                if str(token or "").strip()
+            ])
+            missing = [
+                str(token or "").strip()
+                for token in list(missing_tokens or [])
+                if str(token or "").strip()
+            ]
+            if missing:
+                return (
+                    f"I found {found_count} of the {total} product codes you shared below. "
+                    f"I couldn't find: {', '.join(missing)}. "
+                    "Open a card to view the details."
+                )
+            return (
+                f"I found the {found_count} product codes you shared below. "
+                "Open a card to view the details."
+            )
+
+    @staticmethod
+    def _detail_request_should_render_as_cards(
+            *,
+            unique_sku_tokens: Sequence[str],
+            compare_request_used: bool = False,
+        ) -> bool:
+            if bool(compare_request_used):
+                return False
+            clean_tokens = [
+                str(token or "").strip()
+                for token in list(dict.fromkeys([str(item or "").strip() for item in list(unique_sku_tokens or [])]))
+                if str(token or "").strip()
+            ]
+            return len(clean_tokens) >= 2
+
     @staticmethod
     def _requested_field_set(requested_fields: Sequence[str]) -> set[str]:
         return {
@@ -78,6 +121,82 @@ class PipelineWorkflowDetailMixin:
             if value:
                 return value
         return ""
+
+    async def _render_multi_code_detail_as_cards(
+            self,
+            *,
+            state: PipelineWorkflowState,
+            unique_sku_tokens: Sequence[str],
+            debug_meta: Dict[str, Any],
+        ) -> bool:
+        tokens = [
+            str(token or "").strip()
+            for token in list(dict.fromkeys([str(item or "").strip() for item in list(unique_sku_tokens or [])]))
+            if str(token or "").strip()
+        ][:5]
+        if len(tokens) < 2:
+            return False
+
+        found_ids: list[str] = []
+        missing_tokens: list[str] = []
+        lookup_errors: dict[str, str] = {}
+        for token in tokens:
+            try:
+                structured_result, _structured_meta = await self._catalog_search.structured_search(
+                    sku_token=token,
+                    attribute_filters={},
+                    limit=1,
+                    candidate_cap=int(getattr(settings, "CHAT_STRUCTURED_CANDIDATE_CAP", 300)),
+                    catalog_version=str(getattr(settings, "CHAT_CATALOG_VERSION", "v1")),
+                    return_ids_only=True,
+                )
+            except Exception as exc:
+                lookup_errors[token] = str(exc)
+                missing_tokens.append(token)
+                continue
+            product_ids = [str(item or "").strip() for item in list(getattr(structured_result, "product_ids", []) or []) if str(item or "").strip()]
+            if not product_ids:
+                missing_tokens.append(token)
+                continue
+            product_id = product_ids[0]
+            if product_id in found_ids:
+                continue
+            found_ids.append(product_id)
+
+        if not found_ids:
+            return False
+
+        canonical_products, _resolver_meta = await self._resolve_products(
+            product_ids=found_ids,
+            component_types=[ComponentType.PRODUCT_CARDS],
+        )
+        if not canonical_products:
+            return False
+
+        count = len(canonical_products)
+        assistant_text = self._build_multi_code_detail_text(
+            requested_tokens=tokens,
+            found_count=count,
+            missing_tokens=missing_tokens,
+        )
+
+        state.presentation.selected_components = [ComponentType.QUERY_SUMMARY, ComponentType.PRODUCT_CARDS]
+        state.presentation.canonical_products = list(canonical_products)
+        state.catalog.product_ids = list(found_ids)
+        state.catalog.query_product_ids = list(found_ids)
+        state.catalog.pagination_has_more = False
+        state.retrieval.result_count = count
+        state.retrieval.source = ComponentSource.SQL
+        debug_meta["detail_reply_text"] = assistant_text
+        debug_meta["detail_carousel_msg"] = "Matching product codes are shown below."
+        debug_meta["detail_follow_ups"] = []
+        debug_meta["detail_match_count"] = count
+        debug_meta["detail_multi_code_requested"] = True
+        debug_meta["detail_multi_code_tokens"] = list(tokens)
+        debug_meta["detail_multi_code_missing_tokens"] = list(missing_tokens)
+        if lookup_errors:
+            debug_meta["detail_multi_code_lookup_errors"] = dict(lookup_errors)
+        return True
 
     @classmethod
     def _build_related_product_query(
@@ -184,6 +303,17 @@ class PipelineWorkflowDetailMixin:
             debug_meta: Dict[str, Any],
         ) -> None:
         if detail.is_detail_request and state.presentation.canonical_products:
+            if self._detail_request_should_render_as_cards(
+                unique_sku_tokens=unique_sku_tokens,
+                compare_request_used=bool(debug_meta.get("compare_request_used")),
+            ):
+                rendered_as_cards = await self._render_multi_code_detail_as_cards(
+                    state=state,
+                    unique_sku_tokens=unique_sku_tokens,
+                    debug_meta=debug_meta,
+                )
+                if rendered_as_cards:
+                    return
             candidate_cards = [self._to_product_card(item) for item in state.presentation.canonical_products]
             resolution = ProductDetailResolver().resolve_detail_request(
                 candidate_cards=candidate_cards,

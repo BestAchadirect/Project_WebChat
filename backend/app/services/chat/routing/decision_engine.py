@@ -319,6 +319,31 @@ def _supports_agentic_route(route_decision: routing_policy.WorkflowDecision) -> 
     return bool(route_decision.needs_products or route_decision.needs_knowledge)
 
 
+def _agentic_selection_blockers(
+    *,
+    route_decision: routing_policy.WorkflowDecision,
+    feature_enabled: bool,
+    channel_allowed: bool,
+    route_supported: bool,
+    tool_suitable: bool,
+) -> tuple[str, ...]:
+    blockers: list[str] = []
+    workflow = str(route_decision.workflow or "").strip().lower()
+    if not feature_enabled:
+        blockers.append("feature_disabled")
+    elif not channel_allowed:
+        blockers.append("channel_not_allowed")
+    if workflow not in routing_policy.AGENTIC_SUPPORTED_WORKFLOWS:
+        blockers.append("unsupported_workflow")
+    if bool(route_decision.needs_clarification):
+        blockers.append("clarification_required")
+    if not bool(route_decision.needs_products or route_decision.needs_knowledge):
+        blockers.append("no_tool_capability_requested")
+    if route_supported and not tool_suitable:
+        blockers.append("tool_not_suitable")
+    return tuple(blockers)
+
+
 def build_decision_state(
     *,
     understanding: UnderstandingResult,
@@ -344,10 +369,19 @@ def build_decision_state(
         needs_knowledge=route_decision.needs_knowledge,
     )
     route_supports_agentic = _supports_agentic_route(route_decision)
+    tool_first_candidate = bool(route_supports_agentic and tool_suitable)
+    selection_blockers = _agentic_selection_blockers(
+        route_decision=route_decision,
+        feature_enabled=feature_enabled,
+        channel_allowed=channel_allowed,
+        route_supported=route_supports_agentic,
+        tool_suitable=tool_suitable,
+    )
 
     if feature_enabled and channel_allowed and route_supports_agentic and tool_suitable:
         execution_mode = "agentic"
         selection_source = "agentic"
+        selection_blockers = ()
 
     execution_decision = routing_policy.ExecutionDecision(
         route_decision=route_decision,
@@ -356,6 +390,9 @@ def build_decision_state(
         feature_enabled=feature_enabled,
         channel_allowed=channel_allowed,
         tool_suitable=tool_suitable,
+        route_supported=route_supports_agentic,
+        tool_first_candidate=tool_first_candidate,
+        selection_blockers=selection_blockers,
         selection_source=selection_source,
         llm_reason=str(understanding.reason or ""),
         llm_confidence=float(understanding.intent_confidence or 0.0),

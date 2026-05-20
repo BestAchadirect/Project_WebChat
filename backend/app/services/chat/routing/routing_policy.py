@@ -52,6 +52,9 @@ class ExecutionDecision:
     feature_enabled: bool
     channel_allowed: bool
     tool_suitable: bool
+    route_supported: bool = False
+    tool_first_candidate: bool = False
+    selection_blockers: tuple[str, ...] = ()
     selection_source: str = "llm_fallback"
     llm_reason: str = ""
     llm_confidence: float = 0.0

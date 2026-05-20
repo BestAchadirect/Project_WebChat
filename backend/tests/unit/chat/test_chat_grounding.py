@@ -55,6 +55,57 @@ def test_build_search_plan_separates_filters_semantic_terms_and_context() -> Non
     assert plan.conversation_anchor["last_attribute_filters"] == {"jewelry_type": "labret"}
 
 
+def test_search_plan_expected_tools_for_catalog_search() -> None:
+    plan = build_search_plan(
+        user_text="show me titanium labrets",
+        workflow="catalog",
+        detail=SimpleNamespace(attribute_filters={}, semantic_hints=["labrets"]),
+        sku_tokens=[],
+    )
+
+    assert plan.expected_tools() == ["search_products"]
+    assert plan.expected_tool_groups() == [["search_products"]]
+    assert plan.to_debug_dict()["expected_tools"] == ["search_products"]
+
+
+def test_search_plan_expected_tools_for_product_detail_or_stock_check() -> None:
+    plan = build_search_plan(
+        user_text="check stock for ABC-1",
+        workflow="catalog",
+        detail=SimpleNamespace(attribute_filters={}, semantic_hints=[]),
+        sku_tokens=["ABC-1"],
+    )
+
+    assert plan.expected_tools() == ["get_product_details", "check_inventory_db"]
+    assert plan.expected_tool_groups() == [["get_product_details", "check_inventory_db"]]
+
+
+def test_search_plan_expected_tools_for_knowledge_search() -> None:
+    plan = build_search_plan(
+        user_text="what is your shipping policy?",
+        workflow="knowledge",
+        detail=SimpleNamespace(attribute_filters={}, semantic_hints=[]),
+        sku_tokens=[],
+        knowledge_query="what is your shipping policy?",
+    )
+
+    assert plan.expected_tools() == ["search_knowledge_base"]
+    assert plan.expected_tool_groups() == [["search_knowledge_base"]]
+
+
+def test_search_plan_expected_tools_for_catalog_plus_knowledge_request() -> None:
+    plan = build_search_plan(
+        user_text="show titanium labrets and shipping policy",
+        workflow="catalog",
+        detail=SimpleNamespace(attribute_filters={}, semantic_hints=["labrets"]),
+        sku_tokens=[],
+        knowledge_query="what is your shipping policy?",
+    )
+
+    assert plan.expected_tools() == ["search_products", "search_knowledge_base"]
+    assert plan.expected_tool_groups() == [["search_products"], ["search_knowledge_base"]]
+
+
 def test_catalog_grounding_allows_products_matching_required_filters() -> None:
     plan = SearchPlan(
         workflow="catalog",

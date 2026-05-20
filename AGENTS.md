@@ -32,6 +32,7 @@ Do not move or rename directories unless explicitly requested.
 - Chat component builders and registry stay in `backend/app/services/chat/components/`.
 - Chat pipeline orchestration internals belong in `backend/app/services/chat/components/pipeline_runtime/`.
 - Keep the public component pipeline entrypoint at `backend/app/services/chat/components/pipeline.py`.
+- Chat harness observability and control wrappers belong in `backend/app/services/chat/harness/`.
 - Backend schemas/models: `backend/app/schemas/` and `backend/app/models/`.
 - Backend shared internals: `backend/app/core/`, `backend/app/utils/`, `backend/app/db/`.
 - Backend prompts: `backend/app/prompts/`.

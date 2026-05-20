@@ -96,6 +96,9 @@ def test_routing_snapshot_captures_decision_details() -> None:
         llm_confidence=0.91,
         llm_workflow="catalog",
         llm_execution_mode="component",
+        route_supported=True,
+        tool_first_candidate=True,
+        selection_blockers=("feature_disabled",),
         confidence_gate_applied=False,
         timeout_retry_used=True,
     )
@@ -106,6 +109,9 @@ def test_routing_snapshot_captures_decision_details() -> None:
     )
     assert snapshot["workflow"] == "catalog"
     assert snapshot["selection_source"] == "llm_retry"
+    assert snapshot["agentic_route_supported"] is True
+    assert snapshot["agentic_tool_first_candidate"] is True
+    assert snapshot["agentic_selection_blockers"] == ["feature_disabled"]
     assert snapshot["timeout_retry_used"] is True
 
 
@@ -126,6 +132,9 @@ def test_routing_snapshot_captures_agentic_guardrail_block() -> None:
         llm_confidence=0.94,
         llm_workflow="catalog",
         llm_execution_mode="agentic",
+        route_supported=True,
+        tool_first_candidate=True,
+        selection_blockers=("feature_disabled",),
         confidence_gate_applied=False,
         timeout_retry_used=False,
     )
@@ -138,6 +147,9 @@ def test_routing_snapshot_captures_agentic_guardrail_block() -> None:
     assert snapshot["execution_mode"] == "component"
     assert snapshot["selection_source"] == "llm_guardrail"
     assert snapshot["llm_execution_mode"] == "agentic"
+    assert snapshot["agentic_route_supported"] is True
+    assert snapshot["agentic_tool_first_candidate"] is True
+    assert snapshot["agentic_selection_blockers"] == ["feature_disabled"]
 
 
 def test_routing_snapshot_captures_timeout_guardrail_catalog() -> None:

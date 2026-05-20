@@ -9,8 +9,8 @@ pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ChatRouting, KnowledgeSource, ProductCard
 from app.services.chat.agentic.orchestrator import AgentRunResult
+from app.services.chat.harness.finalizer import finalize_agentic_response
 from app.services.chat.runtime.agentic_adapter import build_agentic_response
-from app.services.chat.runtime.execution_coordinator import finalize_agentic_response
 
 
 def test_build_agentic_response_normalizes_result_and_preserves_component_contract() -> None:

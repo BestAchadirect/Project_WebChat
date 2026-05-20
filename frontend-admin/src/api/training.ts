@@ -245,20 +245,26 @@ export const trainingApi = {
         page?: number;
         pageSize?: number;
         status?: string;
+        reviewStatus?: string;
         channel?: string;
         workflow?: string;
         groundingStatus?: string;
         failureBucket?: string;
+        createdFrom?: string;
+        createdTo?: string;
         search?: string;
     }): Promise<QALogListResponse> {
         const searchParams = new URLSearchParams();
         searchParams.append('page', String(params?.page ?? 1));
         searchParams.append('pageSize', String(params?.pageSize ?? 20));
         if (params?.status) searchParams.append('status', params.status);
+        if (params?.reviewStatus) searchParams.append('reviewStatus', params.reviewStatus);
         if (params?.channel) searchParams.append('channel', params.channel);
         if (params?.workflow) searchParams.append('workflow', params.workflow);
         if (params?.groundingStatus) searchParams.append('groundingStatus', params.groundingStatus);
         if (params?.failureBucket) searchParams.append('failureBucket', params.failureBucket);
+        if (params?.createdFrom) searchParams.append('createdFrom', params.createdFrom);
+        if (params?.createdTo) searchParams.append('createdTo', params.createdTo);
         if (params?.search) searchParams.append('search', params.search);
         const response = await apiClient.get(`/dashboard/qa/qa-logs?${searchParams.toString()}`);
         return response.data;

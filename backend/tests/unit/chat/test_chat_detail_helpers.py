@@ -8,6 +8,7 @@ import pytest
 
 from app.services.chat.parsing.detail_query_parser import DetailQueryParser
 from app.services.chat.parsing.parser_rule_types import build_rule_set
+from app.services.chat.components.pipeline_runtime.workflow_detail import PipelineWorkflowDetailMixin
 from app.services.chat.presentation.detail_response_builder import DetailResponseBuilder
 from app.services.chat.retrieval.product_detail_resolver import ProductDetailResolver
 
@@ -548,6 +549,21 @@ def test_detail_response_builder_multi_match_followups_use_context() -> None:
     assert "Attributes:" not in payload.reply_text
     assert "Top master code:" not in payload.reply_text
     assert payload.follow_up_questions == []
+
+
+def test_detail_request_with_multiple_codes_prefers_product_cards() -> None:
+    assert PipelineWorkflowDetailMixin._detail_request_should_render_as_cards(
+        unique_sku_tokens=["ULBB3", "UTLBB3", "DNSM203"],
+        compare_request_used=False,
+    ) is True
+    assert PipelineWorkflowDetailMixin._detail_request_should_render_as_cards(
+        unique_sku_tokens=["ULBB3"],
+        compare_request_used=False,
+    ) is False
+    assert PipelineWorkflowDetailMixin._detail_request_should_render_as_cards(
+        unique_sku_tokens=["ULBB3", "UTLBB3"],
+        compare_request_used=True,
+    ) is False
 
 
 def test_detail_response_builder_stock_summary_uses_entire_variant_set() -> None:

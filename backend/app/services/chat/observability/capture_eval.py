@@ -10,6 +10,19 @@ from app.services.chat.service import ChatService
 
 
 CAPTURE_SUPPORTED_KINDS = {"response_contract"}
+_TRACE_SNAPSHOT_KEYS = (
+    "run_id",
+    "route",
+    "workflow",
+    "execution_mode",
+    "grounding_status",
+    "fallback_used",
+    "fallback_reason",
+    "clarification_required",
+    "clarification_reason",
+    "retrieved_products",
+    "retrieved_sources",
+)
 
 
 def filter_capture_cases(cases: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -54,8 +67,49 @@ async def capture_case_outputs(
         async with db_session_factory() as db:
             service = service_cls(db)
             response = await service.process_chat(request, channel=channel)
-            outputs[case_id] = response.model_dump(mode="json")
+            payload = response.model_dump(mode="json")
+            trace_snapshot = build_harness_trace_snapshot(payload)
+            if trace_snapshot:
+                payload["harness_trace_snapshot"] = trace_snapshot
+            outputs[case_id] = payload
     return outputs
+
+
+def build_harness_trace_snapshot(response_payload: Dict[str, Any]) -> Dict[str, Any]:
+    debug = response_payload.get("debug") if isinstance(response_payload, dict) else None
+    debug_payload = dict(debug or {}) if isinstance(debug, dict) else {}
+    raw_trace = debug_payload.get("harness_trace")
+    if not isinstance(raw_trace, dict):
+        return {}
+
+    snapshot: Dict[str, Any] = {
+        key: raw_trace.get(key)
+        for key in _TRACE_SNAPSHOT_KEYS
+        if raw_trace.get(key) not in (None, "")
+    }
+    tools = raw_trace.get("tools_called") if isinstance(raw_trace.get("tools_called"), list) else []
+    clean_tools = [
+        str(item or "").strip()
+        for item in list(tools or [])
+        if str(item or "").strip()
+    ]
+    if clean_tools:
+        snapshot["tools_called"] = clean_tools[:10]
+        snapshot["tool_count"] = len(clean_tools)
+    errors = raw_trace.get("errors") if isinstance(raw_trace.get("errors"), list) else []
+    warnings = raw_trace.get("warnings") if isinstance(raw_trace.get("warnings"), list) else []
+    if errors:
+        snapshot["error_count"] = len(errors)
+    if warnings:
+        snapshot["warning_count"] = len(warnings)
+    metadata = raw_trace.get("metadata") if isinstance(raw_trace.get("metadata"), dict) else {}
+    tool_events = metadata.get("tool_events") if isinstance(metadata.get("tool_events"), list) else []
+    if tool_events:
+        snapshot["tool_event_count"] = len(tool_events)
+    timings = raw_trace.get("timings_ms") if isinstance(raw_trace.get("timings_ms"), dict) else {}
+    if timings:
+        snapshot["timing_steps"] = sorted(str(key) for key in timings.keys() if str(key).strip())
+    return snapshot
 
 
 def write_capture_results(path: str | Path, outputs: Dict[str, Dict[str, Any]]) -> None:

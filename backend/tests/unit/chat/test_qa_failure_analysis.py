@@ -68,3 +68,69 @@ def test_classify_failure_detects_related_product_anchor_reuse() -> None:
 
     assert result.bucket == "related_product_anchor_reuse"
     assert "related_followup_signal" in result.signals
+
+
+def test_classify_failure_uses_harness_trace_when_metrics_are_sparse() -> None:
+    result = qa_failure_analysis.classify_failure(
+        user_text="I mean a labret that comes pre-sterilized",
+        response=_response(
+            reply_text="I couldn't find an exact match, so here are close alternatives.",
+            workflow="fallback",
+            debug={
+                "harness_trace": {
+                    "route": "catalog",
+                    "workflow": "catalog_search",
+                    "execution_mode": "component",
+                    "retrieved_products": 1,
+                    "grounding_status": "unrelated",
+                    "fallback_used": True,
+                    "fallback_reason": "agentic_empty",
+                    "clarification_required": True,
+                    "clarification_reason": "missing_product_anchor",
+                }
+            },
+        ),
+        chat_metrics={},
+    )
+
+    assert result.bucket == "hard_constraint_no_match"
+    assert "harness_route=catalog" in result.signals
+    assert "harness_workflow=catalog_search" in result.signals
+    assert "harness_fallback_used" in result.signals
+    assert "harness_fallback_reason=agentic_empty" in result.signals
+    assert "harness_clarification_required" in result.signals
+    assert "harness_clarification_reason=missing_product_anchor" in result.signals
+
+
+def test_classify_failure_detects_agentic_expected_tool_missing() -> None:
+    result = qa_failure_analysis.classify_failure(
+        user_text="what is your return policy?",
+        response=_response(reply_text="Could you clarify shipping scope?", workflow="knowledge"),
+        chat_metrics={
+            "workflow": "knowledge",
+            "status": "fallback",
+            "agentic_expected_tool_missing": True,
+            "agentic_fallback_reason": "agentic_expected_tool_missing",
+        },
+    )
+
+    assert result.bucket == "agentic_expected_tool_missing"
+    assert result.severity == "medium"
+    assert "agentic_expected_tool_missing" in result.signals
+
+
+def test_classify_failure_detects_agentic_grounding_failed() -> None:
+    result = qa_failure_analysis.classify_failure(
+        user_text="show me titanium labrets",
+        response=_response(reply_text="I found products.", workflow="catalog"),
+        chat_metrics={
+            "workflow": "catalog",
+            "status": "fallback",
+            "agentic_grounding_failed": True,
+            "agentic_fallback_reason": "agentic_grounding_failed",
+        },
+    )
+
+    assert result.bucket == "agentic_grounding_failed"
+    assert result.severity == "medium"
+    assert "agentic_grounding_failed" in result.signals

@@ -675,3 +675,175 @@ async def test_component_pipeline_detail_mode_broad_price_query_browses_products
     assert "prices are shown" in result.response.reply_text.lower()
     assert result.debug.get("detail_broad_request_as_catalog") is True
     assert result.debug.get("detail_match_count") == 2
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_detail_mode_multi_code_request_renders_product_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _canonical_product(
+        sku="ULBB3-F01000",
+        title="ULBB3",
+        attributes={"master_code": "ULBB3", "jewelry_type": "labret", "material": "Titanium G23", "gauge": "16g"},
+    )
+    second = _canonical_product(
+        sku="UTLBB3-F01A07",
+        title="UTLBB3",
+        attributes={"master_code": "UTLBB3", "jewelry_type": "labret", "material": "Titanium G23", "gauge": "16g"},
+    )
+    third = _canonical_product(
+        sku="DNSM203-A12G44",
+        title="DNSM203",
+        attributes={"master_code": "DNSM203", "jewelry_type": "labret", "material": "Steel", "gauge": "16g"},
+    )
+    by_token = {
+        "ULBB3": first,
+        "UTLBB3": second,
+        "DNSM203": third,
+    }
+    by_id = {str(product.product_id): product for product in by_token.values()}
+
+    class _CatalogStub:
+        async def structured_search(self, **kwargs):
+            token = str(kwargs.get("sku_token") or "").strip().upper()
+            product = by_token.get(token)
+            if not product:
+                return SimpleNamespace(product_ids=[], cards=[]), {}
+            if kwargs.get("return_ids_only"):
+                return SimpleNamespace(product_ids=[str(product.product_id)], cards=[]), {}
+            return SimpleNamespace(product_ids=[str(product.product_id)], cards=[product]), {}
+
+        async def structured_count(self, **kwargs):
+            return 3
+
+        async def smart_search(self, **kwargs):
+            raise AssertionError("multi-code detail requests should stay on structured product lookup")
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
+        return [by_id[str(product_id)] for product_id in product_ids if str(product_id) in by_id], {
+            "field_union_size": 4,
+            "db_round_trips": 0,
+            "redis_cache_hits": 0,
+        }
+
+    async def fake_parse(*, user_text: str, nlu_data, **_):
+        return DetailQuery(
+            requested_fields=["attributes"],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=True,
+        )
+
+    pipeline._field_resolver.resolve = fake_resolve  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
+        fake_parse,
+    )
+
+    result = await pipeline.run(
+        request=ChatRequest(
+            user_id="guest-1",
+            message="Find me these product ULBB3 UTLBB3 DNSM203",
+            locale="en-US",
+        ),
+        conversation_id=9,
+        run_id="run-detail-multi-code",
+        route_decision_override=_workflow_decision(),
+    )
+
+    component_types = [component.type.value for component in result.response.components]
+    assert result.detail_mode_triggered is True
+    assert component_types.count("product_cards") == 1
+    assert "product_detail" not in component_types
+    assert len(result.response.product_carousel) == 3
+    assert "product codes you shared below" in result.response.reply_text.lower()
+    assert result.debug.get("detail_multi_code_requested") is True
+    assert result.debug.get("detail_match_count") == 3
+
+
+@pytest.mark.asyncio
+async def test_component_pipeline_detail_mode_multi_code_request_reports_missing_codes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _canonical_product(
+        sku="ULBB3-F01000",
+        title="ULBB3",
+        attributes={"master_code": "ULBB3", "jewelry_type": "labret", "material": "Titanium G23", "gauge": "16g"},
+    )
+    second = _canonical_product(
+        sku="DNSM203-A12G44",
+        title="DNSM203",
+        attributes={"master_code": "DNSM203", "jewelry_type": "labret", "material": "Steel", "gauge": "16g"},
+    )
+    by_token = {
+        "ULBB3": first,
+        "DNSM203": second,
+    }
+    by_id = {str(product.product_id): product for product in by_token.values()}
+
+    class _CatalogStub:
+        async def structured_search(self, **kwargs):
+            token = str(kwargs.get("sku_token") or "").strip().upper()
+            product = by_token.get(token)
+            if not product:
+                return SimpleNamespace(product_ids=[], cards=[]), {}
+            if kwargs.get("return_ids_only"):
+                return SimpleNamespace(product_ids=[str(product.product_id)], cards=[]), {}
+            return SimpleNamespace(product_ids=[str(product.product_id)], cards=[product]), {}
+
+        async def structured_count(self, **kwargs):
+            return 2
+
+        async def smart_search(self, **kwargs):
+            raise AssertionError("multi-code detail requests should stay on structured product lookup")
+
+    pipeline = ComponentPipeline(
+        db=object(),
+        catalog_search=_CatalogStub(),
+        knowledge_retrieval=_KnowledgeStub(),
+        redis_cache=_RedisStub(),
+    )
+
+    async def fake_resolve(*, product_ids, component_types, component_cache=None, **kwargs):
+        return [by_id[str(product_id)] for product_id in product_ids if str(product_id) in by_id], {
+            "field_union_size": 4,
+            "db_round_trips": 0,
+            "redis_cache_hits": 0,
+        }
+
+    async def fake_parse(*, user_text: str, nlu_data, **_):
+        return DetailQuery(
+            requested_fields=["attributes"],
+            attribute_filters={},
+            wants_image=False,
+            is_detail_request=True,
+        )
+
+    pipeline._field_resolver.resolve = fake_resolve  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "app.services.chat.components.pipeline.DetailQueryParser.parse_async",
+        fake_parse,
+    )
+
+    result = await pipeline.run(
+        request=ChatRequest(
+            user_id="guest-1",
+            message="Find me these product ULBB3 UTLBB3 DNSM203",
+            locale="en-US",
+        ),
+        conversation_id=9,
+        run_id="run-detail-multi-code-missing",
+        route_decision_override=_workflow_decision(),
+    )
+
+    assert len(result.response.product_carousel) == 2
+    assert "i found 2 of the 3 product codes you shared below" in result.response.reply_text.lower()
+    assert "i couldn't find: utlbb3" in result.response.reply_text.lower()
+    assert result.debug.get("detail_multi_code_missing_tokens") == ["UTLBB3"]

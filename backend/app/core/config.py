@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     KNOWLEDGE_WEAK_DISTANCE: float = 0.60
 
     # Agentic function calling (phase 1 read-only)
-    AGENTIC_FUNCTION_CALLING_ENABLED: bool = False
+    AGENTIC_FUNCTION_CALLING_ENABLED: bool = True
     AGENTIC_ALLOWED_CHANNELS: str = "widget,qa_console"
     AGENTIC_MODEL: str = ""
     AGENTIC_MAX_TOOL_ROUNDS: int = 4

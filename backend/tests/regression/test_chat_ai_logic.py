@@ -177,7 +177,7 @@ def _build_response_contract_actual_results(cases: list[dict[str, object]]) -> d
         with ExitStack() as stack:
             stack.enter_context(
                 patch(
-                    "app.services.chat.runtime.unified_chat_runtime.build_understanding_result",
+                    "app.services.chat.harness.dependencies.build_understanding_result",
                     fake_understanding,
                 )
             )

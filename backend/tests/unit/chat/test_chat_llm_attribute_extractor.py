@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from app.core.config import settings
 from app.services.ai.llm_service import llm_service
 from app.services.chat.parsing import llm_attribute_extractor as extractor_module
 from app.services.chat.parsing.llm_attribute_extractor import (
@@ -922,6 +923,7 @@ async def test_infer_chat_interpretation_uses_company_info_route(
         )
 
     monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)
 
     result = await infer_chat_interpretation(
         user_text="Where is the company?",
@@ -1026,6 +1028,7 @@ async def test_infer_chat_interpretation_demotes_browse_attribute_detail(
         raise AssertionError(f"unexpected usage_kind: {usage_kind}")
 
     monkeypatch.setattr(llm_service, "generate_chat_json", fake_generate_chat_json)
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)
 
     result = await infer_chat_interpretation(
         user_text="Can i see opal color",

@@ -8,6 +8,7 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("pydantic_settings")
 
 from app.schemas.chat import ChatRequest
+from app.core.config import settings
 from app.services.chat.observability.accuracy_eval import evaluate_case
 from app.services.chat.routing.contracts import UnderstandingResult
 from app.services.chat.service import ChatService
@@ -83,7 +84,8 @@ async def test_adversarial_cases_stay_boundaried(
         monkeypatch,
         conversation=DummyConversation(conversation_id=77),
     )
-    monkeypatch.setattr("app.services.chat.runtime.unified_chat_runtime.build_understanding_result", fake_understanding)
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)
+    monkeypatch.setattr("app.services.chat.harness.dependencies.build_understanding_result", fake_understanding)
     monkeypatch.setattr(ChatService, "_run_component_pipeline", fake_component_pipeline)
 
     service = ChatService(db=object())

@@ -117,6 +117,7 @@ def apply_agentic_fallback_debug(*, debug_meta: Dict[str, Any], agentic_result: 
         fallback_reason=fallback_reason,
         existing_failure_reason=str(debug_meta.get("agentic_failure_reason") or ""),
     )
+    grounding = dict(getattr(normalized, "grounding", {}) or {})
     debug_meta["agentic"] = {
         **dict(debug_meta.get("agentic") or {}),
         **build_fallback_debug(
@@ -127,4 +128,7 @@ def apply_agentic_fallback_debug(*, debug_meta: Dict[str, Any], agentic_result: 
             trace=list(normalized.trace or []),
             final_reply_present=bool(str(normalized.final_reply or "").strip()),
         ),
+        "grounding": grounding,
     }
+    if grounding:
+        debug_meta["agentic_grounding"] = grounding

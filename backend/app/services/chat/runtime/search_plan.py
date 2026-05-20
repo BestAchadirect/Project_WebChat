@@ -6,6 +6,12 @@ from typing import Any, Dict, List, Mapping, Sequence
 from app.services.chat.text_normalization import normalize_user_text
 
 
+TOOL_SEARCH_PRODUCTS = "search_products"
+TOOL_GET_PRODUCT_DETAILS = "get_product_details"
+TOOL_SEARCH_KNOWLEDGE_BASE = "search_knowledge_base"
+TOOL_CHECK_INVENTORY_DB = "check_inventory_db"
+
+
 @dataclass(frozen=True)
 class SearchPlan:
     workflow: str
@@ -24,6 +30,26 @@ class SearchPlan:
     uses_previous_context: bool = False
     product_anchor_required: bool = False
 
+    def expected_tool_groups(self) -> List[List[str]]:
+        workflow = str(self.workflow or "").strip().lower()
+        groups: List[List[str]] = []
+        if workflow in {"catalog", "mixed"}:
+            if self.sku_tokens:
+                groups.append([TOOL_GET_PRODUCT_DETAILS, TOOL_CHECK_INVENTORY_DB])
+            else:
+                groups.append([TOOL_SEARCH_PRODUCTS])
+        if workflow in {"knowledge", "mixed"} or self.knowledge_topics:
+            groups.append([TOOL_SEARCH_KNOWLEDGE_BASE])
+        return groups
+
+    def expected_tools(self) -> List[str]:
+        tools: List[str] = []
+        for group in self.expected_tool_groups():
+            for tool_name in group:
+                if tool_name and tool_name not in tools:
+                    tools.append(tool_name)
+        return tools
+
     def to_debug_dict(self) -> Dict[str, Any]:
         return {
             "workflow": self.workflow,
@@ -41,6 +67,8 @@ class SearchPlan:
             "semantic_query": self.semantic_query,
             "uses_previous_context": bool(self.uses_previous_context),
             "product_anchor_required": bool(self.product_anchor_required),
+            "expected_tools": self.expected_tools(),
+            "expected_tool_groups": self.expected_tool_groups(),
         }
 
 
@@ -68,9 +96,12 @@ def _clean_terms(items: Sequence[Any] | None) -> List[str]:
 
 def _knowledge_topics(*, workflow: str, knowledge_query: str, user_text: str) -> List[str]:
     workflow_norm = str(workflow or "").strip().lower()
-    if workflow_norm not in {"knowledge", "catalog"}:
+    if workflow_norm not in {"knowledge", "catalog", "mixed"}:
         return []
-    query = normalize_user_text(knowledge_query) or normalize_user_text(user_text)
+    if workflow_norm == "catalog":
+        query = normalize_user_text(knowledge_query)
+    else:
+        query = normalize_user_text(knowledge_query) or normalize_user_text(user_text)
     if not query:
         return []
     return [query]

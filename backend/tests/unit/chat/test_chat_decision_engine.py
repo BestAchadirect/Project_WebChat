@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.prompts.routing import understanding_workflow_prompt
 from app.services.ai.llm_service import llm_service
 from app.services.chat.routing.decision_engine import build_decision_state
+from app.services.chat.routing import routing_policy
 from app.services.chat.routing.signals import classify_fallback_reason
 from app.services.chat.routing.contracts import UnderstandingResult
 from app.services.chat.routing.understanding import build_understanding_result
@@ -244,6 +245,9 @@ async def test_decision_engine_prefers_agentic_for_supported_catalog_requests(
     assert decision.execution_decision.execution_mode == "agentic"
     assert decision.execution_decision.selection_source == "agentic"
     assert decision.execution_decision.tool_suitable is True
+    assert decision.execution_decision.route_supported is True
+    assert decision.execution_decision.tool_first_candidate is True
+    assert decision.execution_decision.selection_blockers == ()
 
 
 @pytest.mark.asyncio
@@ -274,6 +278,190 @@ async def test_decision_engine_prefers_agentic_for_supported_knowledge_requests(
     assert decision.execution_decision.execution_mode == "agentic"
     assert decision.execution_decision.selection_source == "agentic"
     assert decision.execution_decision.tool_suitable is True
+    assert decision.execution_decision.route_supported is True
+    assert decision.execution_decision.tool_first_candidate is True
+    assert decision.execution_decision.selection_blockers == ()
+
+
+def test_decision_engine_records_agentic_feature_disabled_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", False)
+    monkeypatch.setattr(settings, "AGENTIC_ALLOWED_CHANNELS", "widget")
+
+    understanding = UnderstandingResult(
+        normalized_text="show me titanium labrets",
+        locale="en-US",
+        channel="widget",
+        sku_tokens=[],
+        workflow_hypothesis="catalog_search",
+        intent_confidence=0.91,
+        reason="catalog_signal_detected",
+        intent="product_information",
+        needs_products=True,
+    )
+
+    decision = build_decision_state(
+        understanding=understanding,
+        user_text="show me titanium labrets",
+        channel="widget",
+    )
+
+    assert decision.public_workflow == "catalog"
+    assert decision.execution_decision is not None
+    assert decision.execution_decision.execution_mode == "component"
+    assert decision.execution_decision.route_supported is True
+    assert decision.execution_decision.tool_suitable is True
+    assert decision.execution_decision.tool_first_candidate is True
+    assert decision.execution_decision.selection_blockers == ("feature_disabled",)
+
+
+def test_decision_engine_records_agentic_channel_not_allowed_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", True)
+    monkeypatch.setattr(settings, "AGENTIC_ALLOWED_CHANNELS", "qa_console")
+
+    understanding = UnderstandingResult(
+        normalized_text="show me titanium labrets",
+        locale="en-US",
+        channel="widget",
+        sku_tokens=[],
+        workflow_hypothesis="catalog_search",
+        intent_confidence=0.91,
+        reason="catalog_signal_detected",
+        intent="product_information",
+        needs_products=True,
+    )
+
+    decision = build_decision_state(
+        understanding=understanding,
+        user_text="show me titanium labrets",
+        channel="widget",
+    )
+
+    assert decision.execution_decision is not None
+    assert decision.execution_decision.execution_mode == "component"
+    assert decision.execution_decision.selection_blockers == ("channel_not_allowed",)
+
+
+def test_decision_engine_records_clarification_required_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", True)
+    monkeypatch.setattr(settings, "AGENTIC_ALLOWED_CHANNELS", "widget")
+
+    understanding = UnderstandingResult(
+        normalized_text="",
+        locale="en-US",
+        channel="widget",
+        sku_tokens=[],
+        workflow_hypothesis="clarify",
+        intent_confidence=0.0,
+        reason="clarify",
+        intent="clarify",
+    )
+
+    decision = build_decision_state(
+        understanding=understanding,
+        user_text="",
+        channel="widget",
+    )
+
+    assert decision.execution_decision is not None
+    assert decision.execution_decision.execution_mode == "component"
+    assert "clarification_required" in decision.execution_decision.selection_blockers
+
+
+def test_decision_engine_records_no_tool_capability_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", True)
+    monkeypatch.setattr(settings, "AGENTIC_ALLOWED_CHANNELS", "widget")
+
+    understanding = UnderstandingResult(
+        normalized_text="what can you help me with?",
+        locale="en-US",
+        channel="widget",
+        sku_tokens=[],
+        workflow_hypothesis="general_talking",
+        intent_confidence=0.9,
+        reason="capability question",
+        intent="general_talking",
+        response_policy="answer_from_allowed_capabilities",
+        needs_products=False,
+        needs_knowledge=False,
+    )
+
+    decision = build_decision_state(
+        understanding=understanding,
+        user_text="what can you help me with?",
+        channel="widget",
+    )
+
+    assert decision.execution_decision is not None
+    assert decision.execution_decision.execution_mode == "component"
+    assert "no_tool_capability_requested" in decision.execution_decision.selection_blockers
+
+
+def test_decision_engine_records_unsupported_workflow_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", True)
+    monkeypatch.setattr(settings, "AGENTIC_ALLOWED_CHANNELS", "widget")
+
+    understanding = UnderstandingResult(
+        normalized_text="can you write python code",
+        locale="en-US",
+        channel="widget",
+        sku_tokens=[],
+        workflow_hypothesis="off_topic",
+        intent_confidence=0.96,
+        reason="unrelated request",
+        intent="off_topic",
+    )
+
+    decision = build_decision_state(
+        understanding=understanding,
+        user_text="can you write python code",
+        channel="widget",
+    )
+
+    assert decision.execution_decision is not None
+    assert decision.execution_decision.execution_mode == "component"
+    assert "unsupported_workflow" in decision.execution_decision.selection_blockers
+
+
+def test_decision_engine_records_tool_not_suitable_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "AGENTIC_FUNCTION_CALLING_ENABLED", True)
+    monkeypatch.setattr(settings, "AGENTIC_ALLOWED_CHANNELS", "widget")
+    monkeypatch.setattr(routing_policy, "is_agentic_tool_suitable", lambda **kwargs: False)
+
+    understanding = UnderstandingResult(
+        normalized_text="show me titanium labrets",
+        locale="en-US",
+        channel="widget",
+        sku_tokens=[],
+        workflow_hypothesis="catalog_search",
+        intent_confidence=0.91,
+        reason="catalog_signal_detected",
+        intent="product_information",
+        needs_products=True,
+    )
+
+    decision = build_decision_state(
+        understanding=understanding,
+        user_text="show me titanium labrets",
+        channel="widget",
+    )
+
+    assert decision.execution_decision is not None
+    assert decision.execution_decision.route_supported is True
+    assert decision.execution_decision.tool_suitable is False
+    assert decision.execution_decision.execution_mode == "component"
+    assert decision.execution_decision.selection_blockers == ("tool_not_suitable",)
 
 
 def test_understanding_prompt_uses_response_intent_contract() -> None:
@@ -603,6 +791,9 @@ def test_decision_engine_execution_mode_no_longer_depends_on_legacy_workflow_lab
     assert decision.execution_decision is not None
     assert decision.execution_decision.execution_mode == "component"
     assert decision.execution_decision.tool_suitable is False
+    assert decision.execution_decision.route_supported is False
+    assert decision.execution_decision.tool_first_candidate is False
+    assert "unsupported_workflow" in decision.execution_decision.selection_blockers
 
 
 def test_classify_fallback_reason_is_shared_between_routing_and_knowledge_paths() -> None:

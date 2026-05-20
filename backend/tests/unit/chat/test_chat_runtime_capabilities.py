@@ -1,5 +1,9 @@
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.services.chat.runtime.capabilities import build_chat_runtime_capabilities
+
+
+def test_agentic_function_calling_default_is_enabled() -> None:
+    assert Settings.model_fields["AGENTIC_FUNCTION_CALLING_ENABLED"].default is True
 
 
 def test_build_chat_runtime_capabilities_reflects_updated_settings(monkeypatch) -> None:

@@ -1,11 +1,11 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom';
-import { DashboardLayout } from './DashboardLayout';
-import { DocumentsPage } from './DocumentsPage';
-import { MagentoSettingsPage } from './MagentoSettingsPage';
 import { AnalyticsPage } from './AnalyticsPage';
 import { ChatSettingsPage } from './ChatSettingsPage';
+import { DashboardLayout } from './DashboardLayout';
+import { DocumentsPage } from './DocumentsPage';
 import { DocumentControlPage, ProductTuningPage, SynonymsPage } from './Knowledge';
-import { QAMonitoringPage } from './QA';
+import { MagentoSettingsPage } from './MagentoSettingsPage';
+import { ConversationMonitoringPage } from './conversation-monitoring';
 import { TicketsPage } from './TicketsPage';
 
 export const router = createBrowserRouter([
@@ -37,7 +37,6 @@ export const router = createBrowserRouter([
                 path: 'chat',
                 element: <ChatSettingsPage />,
             },
-            // Knowledge Dashboard Routes
             {
                 path: 'knowledge/documents-control',
                 element: <DocumentControlPage />,
@@ -56,7 +55,7 @@ export const router = createBrowserRouter([
             },
             {
                 path: 'qa',
-                element: <QAMonitoringPage />,
+                element: <ConversationMonitoringPage />,
             },
         ],
     },

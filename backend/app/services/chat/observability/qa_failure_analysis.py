@@ -137,6 +137,20 @@ def _response_text(response: Any) -> str:
     return str(component_contract.assistant_text_from_response(response) or "").strip()
 
 
+def _trace_payload(*, debug: Mapping[str, Any], metrics: Mapping[str, Any]) -> Dict[str, Any]:
+    raw_trace = metrics.get("harness_trace")
+    if isinstance(raw_trace, Mapping):
+        return dict(raw_trace)
+    raw_trace = debug.get("harness_trace")
+    if isinstance(raw_trace, Mapping):
+        return dict(raw_trace)
+    return {}
+
+
+def _trace_text(trace: Mapping[str, Any], key: str) -> str:
+    return str(trace.get(key) or "").strip().lower()
+
+
 @dataclass(frozen=True)
 class FailureAnalysis:
     bucket: str
@@ -167,11 +181,53 @@ def classify_failure(
     reply = normalize_user_text(_response_text(response))
     metrics = dict(chat_metrics or {})
     debug = dict(getattr(response, "debug", {}) or {})
+    trace = _trace_payload(debug=debug, metrics=metrics)
 
-    workflow = str(metrics.get("workflow") or metrics.get("response_workflow") or "").strip().lower()
-    grounding_status = str(metrics.get("grounding_status") or "").strip().lower()
+    trace_route = _trace_text(trace, "route")
+    trace_workflow = _trace_text(trace, "workflow")
+    trace_grounding_status = _trace_text(trace, "grounding_status")
+    workflow = str(
+        metrics.get("workflow")
+        or metrics.get("response_workflow")
+        or metrics.get("harness_route")
+        or trace_route
+        or trace_workflow
+        or ""
+    ).strip().lower()
+    grounding_status = str(
+        metrics.get("grounding_status")
+        or metrics.get("harness_grounding_status")
+        or trace_grounding_status
+        or ""
+    ).strip().lower()
     grounding_action = str(metrics.get("grounding_safe_action") or "").strip().lower()
-    status = str(metrics.get("status") or "").strip().lower()
+    trace_fallback_used = bool(metrics.get("harness_fallback_used", False) or trace.get("fallback_used", False))
+    trace_fallback_reason = str(
+        metrics.get("harness_fallback_reason")
+        or trace.get("fallback_reason")
+        or ""
+    ).strip().lower()
+    agentic_fallback_reason = str(metrics.get("agentic_fallback_reason") or "").strip().lower()
+    agentic_expected_tool_missing = bool(
+        metrics.get("agentic_expected_tool_missing")
+        or agentic_fallback_reason == "agentic_expected_tool_missing"
+        or trace_fallback_reason == "agentic_expected_tool_missing"
+    )
+    agentic_grounding_failed = bool(
+        metrics.get("agentic_grounding_failed")
+        or agentic_fallback_reason == "agentic_grounding_failed"
+        or trace_fallback_reason == "agentic_grounding_failed"
+    )
+    trace_clarification_required = bool(
+        metrics.get("harness_clarification_required", False)
+        or trace.get("clarification_required", False)
+    )
+    trace_clarification_reason = str(
+        metrics.get("harness_clarification_reason")
+        or trace.get("clarification_reason")
+        or ""
+    ).strip().lower()
+    status = str(metrics.get("status") or ("fallback" if trace_fallback_used else "")).strip().lower()
     clarification_count = int(debug.get("clarification_loop_count") or 0)
     context_merge = bool(
         metrics.get("conversation_state_filter_merge_applied")
@@ -179,11 +235,37 @@ def classify_failure(
     )
     context_action = str(debug.get("context_action") or "").strip().lower()
     context_followup = bool(debug.get("context_related_product_followup_used"))
-    response_product_count = int(metrics.get("product_count") or 0)
+    response_product_count = int(
+        metrics.get("product_count")
+        or metrics.get("harness_retrieved_products")
+        or trace.get("retrieved_products")
+        or 0
+    )
     response_has_products = bool(metrics.get("has_products") or response_product_count > 0)
-    response_has_clarify = bool("clarify" in reply or grounding_action == "clarify")
+    response_has_clarify = bool("clarify" in reply or grounding_action == "clarify" or trace_clarification_required)
 
     signals: List[str] = []
+    if trace_route:
+        signals.append(f"harness_route={trace_route}")
+    if trace_workflow:
+        signals.append(f"harness_workflow={trace_workflow}")
+    if _trace_text(trace, "execution_mode"):
+        signals.append(f"harness_execution_mode={_trace_text(trace, 'execution_mode')}")
+    if trace_fallback_used:
+        signals.append("harness_fallback_used")
+    if trace_fallback_reason:
+        signals.append(f"harness_fallback_reason={trace_fallback_reason}")
+    if agentic_expected_tool_missing:
+        signals.append("agentic_expected_tool_missing")
+    if agentic_grounding_failed:
+        signals.append("agentic_grounding_failed")
+    if trace_clarification_required:
+        signals.append("harness_clarification_required")
+    if trace_clarification_reason:
+        signals.append(f"harness_clarification_reason={trace_clarification_reason}")
+    trace_tools = trace.get("tools_called") if isinstance(trace.get("tools_called"), list) else []
+    if trace_tools:
+        signals.append(f"harness_tool_count={len(trace_tools)}")
     if _product_signal(text):
         signals.append("product_signal")
     if _policy_signal(text):
@@ -218,6 +300,26 @@ def classify_failure(
             reason="same clarification task reached the loop limit",
             suggested_action="Stop asking again and return the safest broad results or a single concise fallback question.",
             severity="high",
+            signals=signals,
+        )
+
+    if agentic_expected_tool_missing:
+        return FailureAnalysis(
+            bucket="agentic_expected_tool_missing",
+            confidence=0.94,
+            reason="tool-first execution did not use the expected read-only tool",
+            suggested_action="Review tool-selection guidance and add a regression case for the missed tool path.",
+            severity="medium",
+            signals=signals,
+        )
+
+    if agentic_grounding_failed:
+        return FailureAnalysis(
+            bucket="agentic_grounding_failed",
+            confidence=0.94,
+            reason="tool-first execution returned tool artifacts, but grounding rejected them",
+            suggested_action="Inspect retrieved artifacts, grounding rules, and tool query arguments before widening rollout.",
+            severity="medium",
             signals=signals,
         )
 
@@ -296,4 +398,3 @@ def classify_failure(
         severity="low",
         signals=signals,
     )
-

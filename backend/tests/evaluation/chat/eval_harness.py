@@ -554,8 +554,8 @@ class ChatEvalHarness:
         self.monkeypatch.setattr(ChatService, "_finalize_response", fake_finalize_response)
         self.monkeypatch.setattr(ChatService, "get_conversation_state", fake_get_conversation_state)
         self.monkeypatch.setattr(ChatService, "_run_component_pipeline", wrapped_component_pipeline)
-        self.monkeypatch.setattr("app.services.chat.runtime.unified_chat_runtime.build_understanding_result", fake_understanding)
-        self.monkeypatch.setattr("app.services.chat.runtime.unified_chat_runtime.infer_detail_query", fake_infer_detail_query)
+        self.monkeypatch.setattr("app.services.chat.harness.dependencies.build_understanding_result", fake_understanding)
+        self.monkeypatch.setattr("app.services.chat.harness.dependencies.infer_detail_query", fake_infer_detail_query)
         self.monkeypatch.setattr(
             "app.services.chat.components.pipeline_runtime.setup.alias_cache.get_alias_map",
             fake_get_alias_map,

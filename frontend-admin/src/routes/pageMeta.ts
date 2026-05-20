@@ -50,9 +50,9 @@ export const pageMeta: PageMeta[] = [
     },
     {
         path: '/dashboard/qa',
-        section: 'Quality',
-        title: 'QA Monitoring',
-        description: 'Test assistant responses and review channel-specific logs.',
+        section: 'Monitoring',
+        title: 'Conversation Monitoring',
+        description: 'Monitor customer and bot conversations from a single review queue.',
     },
     {
         path: '/dashboard/chat',

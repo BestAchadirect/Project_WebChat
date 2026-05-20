@@ -1306,7 +1306,7 @@
       "product_carousel": [],
       "debug": {
         "clarify_reason": "knowledge_unavailable",
-        "agentic_failure_reason": "agentic_failed:no_tool_usage"
+        "agentic_failure_reason": "agentic_failed:agentic_expected_tool_missing"
       }
     },
     "expected": {
@@ -1335,7 +1335,7 @@
       "product_count_max": 0,
       "debug_equals": {
         "clarify_reason": "knowledge_unavailable",
-        "agentic.failure_reason": "agentic_failed:no_tool_usage"
+        "agentic.failure_reason": "agentic_failed:agentic_expected_tool_missing"
       }
     }
   },

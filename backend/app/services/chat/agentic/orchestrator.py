@@ -13,6 +13,10 @@ from app.services.chat.agentic.tool_registry import (
     SUPPORTED_TOOLS,
     AgentToolRegistry,
     NormalizedAgentToolResult,
+    TOOL_CHECK_INVENTORY_DB,
+    TOOL_GET_PRODUCT_DETAILS,
+    TOOL_SEARCH_KNOWLEDGE_BASE,
+    TOOL_SEARCH_PRODUCTS,
     agent_system_prompt,
 )
 from app.services.ai.llm_service import llm_service
@@ -228,6 +232,74 @@ class AgentOrchestrator:
             payload["reasons"] = ["agentic_no_artifacts"]
         return payload
 
+    @staticmethod
+    def _search_plan_tool_guidance(request: AgentRunInput) -> str:
+        plan = request.search_plan
+        if plan is None:
+            return ""
+        try:
+            payload = plan.to_debug_dict()
+        except Exception:
+            return ""
+
+        workflow = str(payload.get("workflow") or "").strip().lower()
+        sku_tokens = [
+            str(item or "").strip()
+            for item in list(payload.get("sku_tokens") or [])
+            if str(item or "").strip()
+        ]
+        required_filters = dict(payload.get("required_filters") or {})
+        semantic_terms = [
+            str(item or "").strip()
+            for item in list(payload.get("semantic_terms") or [])
+            if str(item or "").strip()
+        ]
+        knowledge_topics = [
+            str(item or "").strip()
+            for item in list(payload.get("knowledge_topics") or [])
+            if str(item or "").strip()
+        ]
+
+        lines = [
+            "Tool guidance for this turn:",
+            "Use read-only tools before answering supported product, inventory, policy, or FAQ facts.",
+        ]
+        if workflow in {"catalog", "mixed"}:
+            if sku_tokens:
+                lines.append(
+                    f"- For SKU, product detail, or inventory questions, prefer {TOOL_GET_PRODUCT_DETAILS} "
+                    f"or {TOOL_CHECK_INVENTORY_DB} before answering."
+                )
+            else:
+                lines.append(f"- For product browsing or catalog search, call {TOOL_SEARCH_PRODUCTS}.")
+            if required_filters:
+                filter_hints = ", ".join(
+                    f"{key}={value}"
+                    for key, value in list(required_filters.items())[:6]
+                    if str(key or "").strip() and str(value or "").strip()
+                )
+                if filter_hints:
+                    lines.append(
+                        f"- Required product filters from the planner: {filter_hints}. "
+                        "Use these exact filter names in search_products filters."
+                    )
+                    lines.append(
+                        "- Do not invent extra product filters. Keep softer descriptive terms in the query text."
+                    )
+            if semantic_terms:
+                hints = ", ".join(semantic_terms[:4])
+                if hints:
+                    lines.append(f"- Product query terms: {hints}.")
+        if workflow in {"knowledge", "mixed"} or knowledge_topics:
+            lines.append(
+                f"- For policies, FAQ, contact, shipping, returns, payment, or company info, "
+                f"call {TOOL_SEARCH_KNOWLEDGE_BASE}."
+            )
+            if knowledge_topics:
+                lines.append(f"- Knowledge search topic: {knowledge_topics[0]}.")
+        lines.append("Do not answer supported product or policy facts from memory when a matching tool is available.")
+        return "\n".join(lines)
+
     async def _execute_one_tool(self, *, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if tool_name not in SUPPORTED_TOOLS:
             return {"error": f"Unsupported tool: {tool_name}"}
@@ -235,6 +307,155 @@ class AgentOrchestrator:
             self.registry.execute_tool(tool_name, args),
             timeout=self.timeout_seconds,
         )
+
+    @staticmethod
+    async def _generate_final_tool_reply(
+        *,
+        request: AgentRunInput,
+        products: List[ProductCard],
+        sources: List[KnowledgeSource],
+        trace: List[Dict[str, Any]],
+        model: str,
+    ) -> str:
+        final_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a read-only e-commerce assistant. Write a concise, customer-facing answer "
+                    "using only the provided tool result summary. Do not invent product, inventory, or policy facts. "
+                    "If the summary is insufficient, say what is missing and ask one focused follow-up question. "
+                    "Never use em dashes or en dashes."
+                ),
+            },
+            {"role": "user", "content": request.user_text},
+            {
+                "role": "assistant",
+                "content": AgentOrchestrator._tool_artifact_summary(
+                    products=products,
+                    sources=sources,
+                    trace=trace,
+                ),
+            },
+            {
+                "role": "user",
+                "content": "Answer the original customer question using only that tool result summary.",
+            },
+        ]
+        try:
+            generated = str(
+                await llm_service.generate_chat_response(
+                    messages=final_messages,
+                    model=model,
+                    temperature=0.0,
+                    max_tokens=450,
+                    usage_kind="agentic_tool_finalize",
+                )
+                or ""
+            ).strip()
+        except Exception:
+            generated = ""
+        return generated or AgentOrchestrator._deterministic_tool_reply(
+            products=products,
+            sources=sources,
+            trace=trace,
+        )
+
+    @staticmethod
+    def _deterministic_tool_reply(
+        *,
+        products: List[ProductCard],
+        sources: List[KnowledgeSource],
+        trace: List[Dict[str, Any]],
+    ) -> str:
+        if products:
+            names = [
+                str(getattr(card, "name", "") or getattr(card, "sku", "") or "").strip()
+                for card in list(products or [])[:3]
+            ]
+            names = [name for name in names if name]
+            if names:
+                return f"I found {len(products)} matching product(s): {', '.join(names)}. Review the product cards for details."
+            return f"I found {len(products)} matching product(s). Review the product cards for details."
+        if sources:
+            source = sources[0]
+            title = str(getattr(source, "title", "") or "the help content").strip()
+            snippet = str(getattr(source, "content_snippet", "") or "").strip()
+            if snippet:
+                return f"Here is what I found in {title}: {snippet[:900]}"
+            return f"I found relevant information in {title}, but I need more detail to answer precisely."
+
+        not_found_tools = [
+            str(item.get("tool") or "").strip()
+            for item in list(trace or [])
+            if str(item.get("tool_status") or item.get("status") or "").strip().lower()
+            in {"empty", "not_found"}
+        ]
+        if not_found_tools:
+            return ""
+        return ""
+
+    @staticmethod
+    def _tool_artifact_summary(
+        *,
+        products: List[ProductCard],
+        sources: List[KnowledgeSource],
+        trace: List[Dict[str, Any]],
+    ) -> str:
+        lines = ["Tool result summary:"]
+        if products:
+            lines.append("Products:")
+            for card in list(products or [])[:8]:
+                attrs = dict(getattr(card, "attributes", {}) or {})
+                attr_text = ", ".join(
+                    f"{key}={value}"
+                    for key, value in list(attrs.items())[:6]
+                    if str(key or "").strip() and str(value or "").strip()
+                )
+                lines.append(
+                    " | ".join(
+                        item
+                        for item in [
+                            f"sku={getattr(card, 'sku', '')}",
+                            f"name={getattr(card, 'name', '')}",
+                            f"price={getattr(card, 'price', '')} {getattr(card, 'currency', '')}",
+                            f"stock={getattr(card, 'stock_status', '')}",
+                            f"attributes={attr_text}" if attr_text else "",
+                        ]
+                        if str(item or "").strip()
+                    )
+                )
+        if sources:
+            lines.append("Knowledge sources:")
+            for source in list(sources or [])[:6]:
+                snippet = str(getattr(source, "content_snippet", "") or "").strip()
+                lines.append(
+                    " | ".join(
+                        item
+                        for item in [
+                            f"title={getattr(source, 'title', '')}",
+                            f"relevance={getattr(source, 'relevance', '')}",
+                            f"snippet={snippet[:700]}",
+                        ]
+                        if str(item or "").strip()
+                    )
+                )
+        if trace:
+            lines.append("Tool calls:")
+            for item in list(trace or [])[:8]:
+                lines.append(
+                    " | ".join(
+                        part
+                        for part in [
+                            f"tool={item.get('tool')}",
+                            f"status={item.get('tool_status') or item.get('status')}",
+                            f"result_count={item.get('result_count')}",
+                        ]
+                        if str(part or "").strip()
+                    )
+                )
+        if not products and not sources:
+            lines.append("No product or knowledge artifacts were returned.")
+        return "\n".join(lines)
 
     async def run(
         self,
@@ -251,8 +472,12 @@ class AgentOrchestrator:
             channel=self.channel,
             run_id=self.run_id,
         )
+        system_prompt = agent_system_prompt(request.reply_language)
+        tool_guidance = self._search_plan_tool_guidance(request)
+        if tool_guidance:
+            system_prompt = f"{system_prompt}\n{tool_guidance}"
         messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": agent_system_prompt(request.reply_language)}
+            {"role": "system", "content": system_prompt}
         ]
         for entry in request.history[-6:]:
             role = str(entry.get("role") or "").strip().lower()
@@ -292,16 +517,25 @@ class AgentOrchestrator:
                 if not assistant_content and not used_tools:
                     return AgentRunResult.empty(trace=trace)
                 if used_tools:
+                    final_reply = assistant_content or last_assistant_text
+                    if not final_reply:
+                        final_reply = await self._generate_final_tool_reply(
+                            request=request,
+                            products=list(products.values())[: self.max_result_items],
+                            sources=list(sources.values())[: self.max_result_items],
+                            trace=trace,
+                            model=model,
+                        )
                     product_values = list(products.values())[: self.max_result_items]
                     source_values = list(sources.values())[: self.max_result_items]
                     grounding = self._ground_agent_artifacts(
                         request=request,
                         products=product_values,
                         sources=source_values,
-                        final_reply=assistant_content or last_assistant_text,
+                        final_reply=final_reply,
                     )
                     return AgentRunResult.tool_success(
-                        final_reply=assistant_content or last_assistant_text,
+                        final_reply=final_reply,
                         product_carousel=product_values,
                         sources=source_values,
                         trace=trace,
@@ -412,16 +646,14 @@ class AgentOrchestrator:
         if not used_tools:
             return AgentRunResult.empty(trace=trace)
 
-        final_out = await llm_service.generate_chat_with_tools(
-            messages=messages,
-            tools=tool_defs,
+        final_text = await self._generate_final_tool_reply(
+            request=request,
+            products=list(products.values())[: self.max_result_items],
+            sources=list(sources.values())[: self.max_result_items],
+            trace=trace,
             model=model,
-            temperature=0.0,
-            max_tokens=450,
-            tool_choice="none",
-            usage_kind="agentic_tool_finalize",
         )
-        final_text = str(final_out.get("content") or "").strip() or last_assistant_text
+        final_text = final_text or last_assistant_text
         if not final_text:
             return AgentRunResult.empty(trace=trace)
         product_values = list(products.values())[: self.max_result_items]
